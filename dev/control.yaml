@@ -64,7 +64,7 @@ meet:
 
   # Where the code running here can be read. Set to the fork, because a link to
   # somebody else's repository is not an offer of the source anybody is running.
-  source_url: https://github.com/Andyov0/Tomoshibi
+  source_url: https://github.com/Andyov0/Tomoshibi-Server
 
   rooms:
     opened_by: anyone

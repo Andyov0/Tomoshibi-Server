@@ -742,8 +742,8 @@ var defaults = Meet{
 	JoinRate:    10,
 	JoinBurst:   120,
 	TrustProxy:  false,
-	// Thirty days: long enough that a fortnightly meeting keeps its room, short
-	// enough that a name nobody has used since is not still holding one.
+	// Three days, the owner's choice: keep a room for three days. Rooms.Remember
+	// has the argument for it.
 	Rooms: Rooms{OpenedBy: room.ByAnyone, JoinedBy: room.ByInvitation, Remember: 3 * 24 * time.Hour},
 	Enrol: Enrol{ListenPort: 13377, UDPPort: 13378, TCPPort: 13379},
 	// Empty rather than a repository somebody else runs.

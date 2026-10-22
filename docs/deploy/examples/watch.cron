@@ -1,0 +1,11 @@
+# /etc/cron.d/tomoshibi-watch on the control node.
+#
+# Every five minutes. AT is the control node's own listener (meet.listen); the
+# script's built-in default is a documentation address and must be overridden.
+# WATCH_GATEWAY and WATCH_ENV are only needed when a watch-together gateway
+# answers /health (see docs/deploy/features.md); remove them otherwise.
+#
+# The script writes to /var/log/tomoshibi-watch.log and keeps its counters in
+# /var/lib/tomoshibi-watch.
+
+*/5 * * * * root AT=http://127.0.0.1:8080 WATCH_GATEWAY=http://10.0.0.30:18400 WATCH_ENV=/opt/watch/watch.env /usr/local/bin/tomoshibi-watch >/dev/null 2>&1

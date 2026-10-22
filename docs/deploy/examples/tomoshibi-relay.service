@@ -1,0 +1,27 @@
+# /etc/systemd/system/tomoshibi-relay.service
+#
+# What the enrolment script installs on a relay, reproduced for relays brought
+# up by hand. The script also creates the tomoshibi-certs group and gives
+# /etc/tomoshibi/relay.yaml and the certificate key mode 640 in that group.
+
+[Unit]
+Description=Tomoshibi relay (media only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tomoshibi serve /etc/tomoshibi/relay.yaml
+Restart=always
+RestartSec=3
+DynamicUser=yes
+StateDirectory=tomoshibi
+SupplementaryGroups=tomoshibi-certs
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

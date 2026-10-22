@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type Who, api } from "./api";
 import { usePoll } from "./poll";
 import { AdminsPanel } from "./AdminsPanel";
 import { AccountsPanel } from "./AccountsPanel";
+import { AppsPanel } from "./AppsPanel";
 import { NowPanel } from "./NowPanel";
 import { RelaysPanel } from "./RelaysPanel";
 import { RoomsPanel } from "./RoomsPanel";
@@ -10,6 +11,7 @@ import { RuntimePanel } from "./RuntimePanel";
 import { SignIn } from "./SignIn";
 import { type Panel, PANELS, Shell } from "./Shell";
 import { powers } from "./grants";
+import { useSwap } from "./swap";
 
 /**
  * The management pages.
@@ -23,6 +25,22 @@ export function Manage() {
 	const [who, setWho] = useState<Who>();
 	const [asking, setAsking] = useState(true);
 	const [panel, setPanel] = useState<Panel>(() => remembered());
+
+	// The panel on screen, which follows the one chosen once the last has left
+	// (swap.ts). The rail is told the chosen one, so it answers the press at
+	// once; the column underneath is told this.
+	const { shown, leaving } = useSwap(panel);
+
+	// Each panel from its top. The column scrolls, not the page, and it is one
+	// element whichever panel is in it, so without this the panel arriving
+	// was drawn as far down as the last had been scrolled: a phone that had
+	// scrolled to the end of the accounts opened the relays at their foot.
+	const column = useRef<HTMLDivElement>(null);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the panel changing is the trigger
+	useLayoutEffect(() => {
+		const main = column.current?.closest("main");
+		if (main) main.scrollTop = 0;
+	}, [shown]);
 
 	// Polled here rather than inside the panel that shows it, because the
 	// reading has to survive leaving that panel: it sits in the rail and in the
@@ -107,20 +125,31 @@ export function Manage() {
 				}
 			}
 		>
-			{panel === "Now" && <NowPanel now={load} onSignedOut={signedOut} />}
-			{panel === "Rooms" && (
-				<RoomsPanel canRooms={can.rooms} canSettings={can.settings} onSignedOut={signedOut} />
-			)}
-			{panel === "Accounts" && (
-				<AccountsPanel
-					canAccounts={can.accounts}
-					canModerate={can.moderate}
-					onSignedOut={signedOut}
-				/>
-			)}
-			{panel === "Relays" && <RelaysPanel canRelays={can.relays} onSignedOut={signedOut} />}
-			{panel === "Admins" && <AdminsPanel canModerate={can.moderate} onSignedOut={signedOut} />}
-			{panel === "Runtime" && <RuntimePanel onSignedOut={signedOut} />}
+			{/* Keyed by the panel, so that each arrives as itself rather than
+			    as the last one with its class changed; and the one wrapper, so
+			    that the two never share the column (swap.ts). */}
+			<div
+				key={shown}
+				ref={column}
+				data-panel={shown}
+				className={leaving ? "animate-page-leave" : "animate-page"}
+			>
+				{shown === "Now" && <NowPanel now={load} onSignedOut={signedOut} />}
+				{shown === "Rooms" && (
+					<RoomsPanel canRooms={can.rooms} canSettings={can.settings} onSignedOut={signedOut} />
+				)}
+				{shown === "Accounts" && (
+					<AccountsPanel
+						canAccounts={can.accounts}
+						canModerate={can.moderate}
+						onSignedOut={signedOut}
+					/>
+				)}
+				{shown === "Relays" && <RelaysPanel canRelays={can.relays} onSignedOut={signedOut} />}
+				{shown === "Apps" && <AppsPanel canSettings={can.settings} onSignedOut={signedOut} />}
+				{shown === "Admins" && <AdminsPanel canModerate={can.moderate} onSignedOut={signedOut} />}
+				{shown === "Runtime" && <RuntimePanel onSignedOut={signedOut} />}
+			</div>
 		</Shell>
 	);
 }

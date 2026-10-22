@@ -1,0 +1,146 @@
+# Tomoshibi Server control node (meet.role: control).
+#
+# Serves the client, the join API and the management pages, signs the tokens
+# the relays verify, and holds the store. Starts no media server: the bytes of
+# a call never pass through this machine.
+#
+# Everything in angle brackets, every example.com name and every address in
+# 203.0.113.0/24, 198.51.100.0/24 or 10.0.0.0/8 is a placeholder.
+#
+# Install as /etc/tomoshibi/control.yaml and run with tomoshibi.service.
+
+# Read by the media server's loader and unused under this role: no media
+# server is started here and these ports are never bound.
+port: 7880
+bind_addresses: ["127.0.0.1"]
+rtc:
+  udp_port: 7882
+  tcp_port: 7881
+  use_external_ip: false
+
+# The same single pair every relay carries. The control node signs with it and
+# the relays verify with it. Generate with `tomoshibi keygen`.
+keys:
+  APIreplaceme: REPLACE-WITH-THE-SECRET-FROM-tomoshibi-keygen
+
+# The control node does not connect to redis itself. This section is read for
+# two things: a startup warning when it is missing, and the password (and,
+# when meet.enrol.redis_addr is empty, the address) handed to relays that
+# enrol. Use the address the RELAYS will reach redis on.
+redis:
+  address: "203.0.113.20:6379"
+  password: "<redis password>"
+
+logging:
+  level: info
+
+meet:
+  role: control
+  listen: "127.0.0.1:8080"
+
+  # Behind nginx, which is behind a CDN: two proxies append to X-Forwarded-For.
+  # Without a CDN this is 1.
+  trust_proxy: true
+  proxies: 2
+
+  # probe: the browser measures every relay and the fastest answers wins.
+  #        Needs redis on the relays, because one meeting can span relays.
+  # sticky (default): everybody in one room goes to one relay, by its name.
+  # nearest: by X-Client-Region or CF-IPCountry; needs trust_proxy.
+  # round_robin: in turn.
+  relay_policy: probe
+
+  # At least one entry is REQUIRED on every start of a control node, even
+  # though the list is read into the store only on the first start and the
+  # management pages are the authority afterwards. Enrolling a relay with the
+  # same prefix later takes this entry over (the script asks, or REPLACE=1).
+  relays:
+    - name: hk
+      url: wss://hk.relay.example.com:13377
+      region: hk
+
+  # What a relay's network link is thought to carry, in Mb/s. Drives the
+  # bandwidth bars and the busy mark on the management pages. 0 means 1000.
+  link_mbits: 1000
+
+  # Only when this machine is behind NAT and is itself one of the relays'
+  # addresses. Saves a slow hairpin on every management call.
+  # public_addresses: ["203.0.113.10"]
+
+  database: /var/lib/tomoshibi/meet.db
+  tripcode_key: /var/lib/tomoshibi/tripcode.key
+
+  source_url: https://github.com/<your-account>/<your-fork>
+
+  # Read on the FIRST start only. See docs/deploy/control-node.md.
+  admins:
+    - trip: "<10-character trip printed by tomoshibi admin new>"
+      name: "<your name>"
+      can: [moderate]
+
+  rooms:
+    opened_by: accounts
+    joined_by: invited
+    remember: 72h
+
+  # Relays bring themselves up from one command. Absent (no secret or no
+  # domain), /install, /download/tomoshibi and /api/enrol do not exist.
+  enrol:
+    # Long random string, for example `openssl rand -hex 32`. Anybody holding
+    # it can add a relay and receive the API secret, the redis password and the
+    # certificate key. Treat it as the credential it is.
+    secret: "<long random string>"
+    # New relays become <prefix>.<domain>. Must not be (or sit under) a name
+    # that carries a CNAME.
+    domain: relay.example.com
+    # Where a new relay reaches this node: the install script, the binary and
+    # the enrolment API are fetched from here.
+    public_url: https://meet.example.com
+    # The ports every relay in the deployment uses (these are the defaults).
+    listen_port: 13377
+    udp_port: 13378
+    tcp_port: 13379
+    # Written into every new relay as meet.probe_port. 0 (the default) means
+    # new relays answer no STUN and are timed the slow way. Not 3478.
+    probe_port: 13380
+    # The certificate handed to new relays and pushed to every relay hourly.
+    # Must cover <prefix>.<domain>, so a wildcard for *.relay.example.com here.
+    # Falls back to meet.tls_cert / meet.tls_key, which a control node behind a
+    # TLS-terminating proxy does not have: set these explicitly then.
+    cert_file: /etc/tomoshibi/certs/relay-wildcard.fullchain.pem
+    key_file: /etc/tomoshibi/certs/relay-wildcard.key
+    # Where relays reach redis. Empty falls back to redis.address above, which
+    # is wrong if that is a loopback address.
+    redis_addr: "203.0.113.20:6379"
+    # What /download/tomoshibi serves. Empty serves this process's own binary,
+    # so the fleet must share this machine's CPU architecture.
+    # binary: /usr/local/bin/tomoshibi
+    # Optional: create and remove each relay's A record in this Cloudflare zone.
+    # The token needs permission to edit DNS in that zone.
+    cloudflare_token: "<cloudflare api token>"
+    cloudflare_zone: "<cloudflare zone id>"
+
+  # Optional gateways. See docs/deploy/features.md.
+  # music:
+  #   url: http://10.0.0.30:18300
+  #   token: "<at least 24 characters>"
+  # watch:
+  #   url: http://10.0.0.30:18400
+  #   token: "<at least 24 characters>"
+  #   direct_only: true
+
+  # Optional. The native apps. See docs/deploy/native-apps.md.
+  # apps:
+  #   mac_dir: /var/lib/tomoshibi/apps
+  #   android_package: com.example.tomoshibi
+  #   android_certificates:
+  #     - "<SHA-256 fingerprint, 32 colon-separated hex bytes, from keytool -list -v>"
+  #   apple_app_ids:
+  #     - ABCDE12345.com.example.tomoshibi.ios
+  #     - ABCDE12345.com.example.tomoshibi.mac
+  #   testflight:
+  #     key_id: "<key id>"
+  #     issuer: "<issuer id>"
+  #     key_file: /etc/tomoshibi/asc-testflight.p8
+  #     group: "<external beta group id>"
+  #     public_link: https://testflight.apple.com/join/<code>

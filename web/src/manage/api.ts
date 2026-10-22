@@ -411,6 +411,54 @@ export interface Runtime {
 	codecs: string[];
 }
 
+/**
+ * The lobby's notice in the apps, as the apps' remote.json holds it
+ * (internal/remote). The id is what an app remembers a notice by once somebody
+ * has closed it, which is why every publish is given a new one.
+ */
+export interface AppNotice {
+	id: string;
+	level: "info" | "warning";
+	/** By language tag: zh-Hans, zh-Hant, ja, en. At least one. */
+	text: Record<string, string>;
+	/** RFC 3339, absent for until it is taken down. */
+	until?: string;
+}
+
+/**
+ * The notice in the file, and whether the apps are shown it now: a notice past
+ * its end is still in the file and is no longer sent.
+ */
+export interface AppNoticeReading {
+	notice: AppNotice | null;
+	showing: boolean;
+}
+
+/**
+ * One rule turning a feature off in the apps, or on again.
+ *
+ * Platforms empty is every platform; from is the first version it holds for
+ * and below the first it does not. A later rule for the same feature overrides
+ * an earlier one, so the list's order is part of what it says.
+ */
+export interface AppSwitch {
+	feature: string;
+	off: boolean;
+	platforms?: string[];
+	from?: string;
+	below?: string;
+	note?: string;
+}
+
+/**
+ * Every switch the file holds that could be read, and how many it holds that
+ * could not. A save replaces the whole list, so those would be lost by it.
+ */
+export interface AppSwitches {
+	switches: AppSwitch[];
+	unread: number;
+}
+
 /** Raised when the session has gone, so a caller can send somebody to sign in. */
 export class SignedOut extends Error {
 	constructor() {
@@ -576,6 +624,37 @@ function explain(reason: string | undefined, status: number): string {
 			return t("A scope uses lowercase letters, numbers and dashes, at most 32 of them.");
 		case "under_score":
 			return t("A name cannot start with an underscore.");
+		// The apps' notice and switches (internal/admin/remote.go).
+		case "no_apps_directory":
+			return t("This deployment has no apps directory (meet.apps.mac_dir), so there is nowhere to keep this.");
+		case "remote_unreadable":
+			return t("remote.json in the apps directory is not valid JSON. Mend the file first; nothing was changed.");
+		case "remote_unwritable":
+			return t("remote.json could not be written, so nothing was changed.");
+		case "bad_notice_id":
+			return t("The notice was sent without an id. Reload the page and publish it again.");
+		case "no_notice_text":
+			return t("Fill in at least one language.");
+		case "notice_too_long":
+			return t("A notice is at most 500 characters in each language.");
+		case "not_a_language":
+			return t("That is not a language the apps are written in.");
+		case "no_such_level":
+			return t("A notice is either normal or a warning.");
+		case "not_a_time":
+			return t("That is not a time.");
+		case "notice_over":
+			return t("That time has already gone.");
+		case "bad_feature":
+			return t("A switch needs a feature.");
+		case "no_such_platform":
+			return t("That is not a platform the apps run on.");
+		case "not_a_version":
+			return t("That is not a version.");
+		case "note_too_long":
+			return t("That note is too long.");
+		case "too_many_switches":
+			return t("That is more switches than can be saved at once.");
 		default:
 			// A code this build has no sentence for. Better a status than the
 			// code itself: media_server_unreachable on a screen is an internal
@@ -1007,4 +1086,27 @@ export const api = {
 			`/rooms/${encodeURIComponent(room)}/participants/${encodeURIComponent(identity)}/mute`,
 			{ method: "POST", body: JSON.stringify({ track }) },
 		),
+
+	/** The lobby's notice in the apps, and whether they are shown it now. */
+	notice: () => call<AppNoticeReading>("/remote/notice"),
+
+	/** Publish a notice, in place of whatever was there. */
+	publishNotice: (notice: AppNotice) =>
+		call<AppNoticeReading>("/remote/notice", { method: "PUT", body: JSON.stringify(notice) }),
+
+	/**
+	 * Take the notice down. The same address and verb as publishing, with
+	 * nothing in place of a notice, so that the notice has one way in and out.
+	 */
+	takeDownNotice: () => call<AppNoticeReading>("/remote/notice", { method: "PUT", body: "null" }),
+
+	/** Every switch in the apps' remote.json. */
+	switches: () => call<AppSwitches>("/remote/switches"),
+
+	/**
+	 * Replace every switch. The whole list, in its order, because the order is
+	 * what decides between two rules for one feature.
+	 */
+	setSwitches: (switches: AppSwitch[]) =>
+		call<AppSwitches>("/remote/switches", { method: "PUT", body: JSON.stringify({ switches }) }),
 };

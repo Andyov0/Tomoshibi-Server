@@ -1,0 +1,88 @@
+# Tomoshibi Server on one machine (meet.role: full).
+#
+# The client, the join API, the management pages and the media server all run
+# in this one process. Put it behind a reverse proxy that terminates TLS
+# (see nginx-meet.conf), or give it meet.tls_cert and meet.tls_key.
+#
+# Everything in angle brackets, and every example.com name, is a placeholder.
+# The loader is strict: a misspelt key, or one at the wrong depth, stops the
+# server at startup with the name of the key.
+#
+# Install as /etc/tomoshibi/meet.yaml and run with tomoshibi.service.
+
+# The embedded media server's own HTTP listener. Kept on loopback: browsers
+# reach it through meet.listen below, which forwards signalling to it.
+port: 7880
+bind_addresses: ["127.0.0.1"]
+
+rtc:
+  # One UDP port carries every track of every call. Must be reachable from the
+  # internet and must not be proxied.
+  udp_port: 7882
+  # Media over TCP, for networks that drop UDP.
+  tcp_port: 7881
+  # True on any machine with a public address. False hands participants an
+  # address only this machine can reach, and calls connect to nothing.
+  use_external_ip: true
+  # Measured settings for screen shares on narrow or lossy lines; RELAY.md and
+  # docs/deploy/relays.md explain them and what they cost in memory.
+  packet_buffer_size_video: 4000
+  congestion_control:
+    enabled: true
+    use_send_side_bwe: true
+
+# Exactly one pair. Generate it with `tomoshibi keygen` and paste its output
+# here in place of these two lines.
+keys:
+  APIreplaceme: REPLACE-WITH-THE-SECRET-FROM-tomoshibi-keygen
+
+logging:
+  # debug, info, warn or error. Anything else falls back to info, with a warning.
+  level: info
+
+meet:
+  role: full
+
+  # Loopback, because nginx on this machine is the only thing that should talk
+  # to it. Use ":8080" only if the proxy is on another machine.
+  listen: "127.0.0.1:8080"
+
+  database: /var/lib/tomoshibi/meet.db
+  # Created on first use. Never replace or lose it: every passphrase signature
+  # (administrators, accounts, hosts) is derived from it. Back it up.
+  tripcode_key: /var/lib/tomoshibi/tripcode.key
+
+  # Behind a proxy, the address clients open their signalling WebSocket to.
+  public_url: https://meet.example.com
+
+  # Believe X-Forwarded-For / -Host / -Proto. Only behind a proxy that sets them.
+  trust_proxy: true
+  # How many proxies append to X-Forwarded-For: 1 for nginx alone, 2 for a CDN
+  # in front of nginx.
+  proxies: 1
+
+  # Where the code running here can be read (AGPL-3.0 section 13). Point it at
+  # your own fork if you changed anything.
+  source_url: https://github.com/<your-account>/<your-fork>
+
+  # Read on the FIRST start only, then kept in the store. Make the trip with
+  # `tomoshibi admin new /etc/tomoshibi/meet.yaml` before starting the service.
+  admins:
+    - trip: "<10-character trip printed by tomoshibi admin new>"
+      name: "<your name>"
+      can: [moderate]
+
+  rooms:
+    # Who may use a room name nobody has used before: anyone, signed,
+    # accounts or admins. The management pages offer accounts and admins.
+    # Starting value only; the store decides after the first start.
+    opened_by: admins
+    # Who may enter a room that exists: invited (default), accounts, anyone.
+    joined_by: invited
+    # How long a name is remembered after its last join. 0 keeps names forever.
+    remember: 72h
+
+  # Optional. The download page and the native apps' update shelf.
+  # See docs/deploy/native-apps.md.
+  # apps:
+  #   mac_dir: /var/lib/tomoshibi/apps

@@ -21,6 +21,7 @@ import (
 
 	"tomoshibi/internal/config"
 	"tomoshibi/internal/limit"
+	"tomoshibi/internal/remote"
 	"tomoshibi/internal/room"
 	"tomoshibi/internal/store"
 	"tomoshibi/internal/testflight"
@@ -195,6 +196,12 @@ type appsDesk struct {
 	// each file again, tens of megabytes apiece, while looking as if it
 	// remembered. The iOS app's is never used, having no file to hash.
 	verified [len(shelves)]verifiedImage
+
+	// remote is the directory's remote.json, what the apps are told without a
+	// release of them (remote.go). Read through one value for the life of the
+	// desk, which keeps the last reading, so that a file nobody has changed is
+	// not parsed again for every app that asks.
+	remote *remote.File
 }
 
 // newAppsDesk reads the apps section into what the endpoints use.
@@ -213,6 +220,7 @@ func newAppsDesk(conf *config.Config) *appsDesk {
 		// a sixth in a minute.
 		byCaller:  limit.New(1.0/60, 10, conf.Meet.Hops()),
 		byAccount: limit.New(1.0/60, 5, 0),
+		remote:    remote.At(apps.MacDir),
 	}
 
 	if flight := apps.TestFlight; flight.Configured() {
@@ -242,6 +250,9 @@ func (a *App) mountApps(mux *http.ServeMux) {
 	// What the apps themselves ask, to update themselves. See updates.go.
 	mux.HandleFunc("GET /api/apps/latest/{platform}", a.latest)
 	mux.HandleFunc("GET /api/apps/latest/{platform}/file", a.latestFile)
+
+	// And what they say and do between releases. See remote.go.
+	mux.HandleFunc("GET /api/apps/remote", a.remoteSettings)
 
 	// The page itself, which is the account page's document: it shares that
 	// page's sign-in, and somebody who arrives signed out is asked to sign in

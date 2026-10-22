@@ -1,0 +1,86 @@
+# Tomoshibi Server relay (meet.role: relay).
+#
+# Media and signalling only: no client pages, no join API, no store, no
+# administrators. This is the shape the enrolment script writes to
+# /etc/tomoshibi/relay.yaml; write it by hand only for a relay you are not
+# enrolling. Placeholders are in angle brackets, example.com names and the
+# documentation address ranges.
+#
+# Run with tomoshibi-relay.service. File mode 640, group tomoshibi-certs: it
+# holds the API secret and the redis password.
+
+port: 7880
+bind_addresses: ["127.0.0.1"]
+
+rtc:
+  udp_port: 13378
+  tcp_port: 13379
+  # Required on a relay. False advertises an address only this machine can
+  # reach and every call fails after appearing to connect.
+  use_external_ip: true
+  # Only when the external address cannot be discovered (the startup line
+  # "settings: what clients are told to dial" shows what was found).
+  # node_ip: 203.0.113.31
+  packet_buffer_size_video: 4000
+  congestion_control:
+    enabled: true
+    use_send_side_bwe: true
+  # The installer names the interface carrying traffic outward, so docker
+  # bridges and the like are not offered to browsers as media addresses.
+  interfaces:
+    includes: ["eth0"]
+
+# The same single pair as the control node and every other relay.
+keys:
+  APIreplaceme: REPLACE-WITH-THE-SECRET-FROM-tomoshibi-keygen
+
+# One redis for the whole fleet. It is what lets a meeting whose participants
+# landed on different relays hear itself, and what carries signalling for a
+# relay that signals through another.
+redis:
+  address: "203.0.113.20:6379"
+  password: "<redis password>"
+
+logging:
+  level: info
+
+# Distance-aware placement. The enrolment writes these two only when at least
+# two relays have a location ("Where it is") recorded and this relay is one of
+# them. The list must include this relay's own name or the media server refuses
+# to start.
+# region: hk
+# node_selector:
+#   kind: regionaware
+#   sysload_limit: 0.9
+#   regions:
+#     - name: hk
+#       lat: 22.3
+#       lon: 114.2
+#     - name: tokyo
+#       lat: 35.7
+#       lon: 139.7
+
+# Optional: the media server's own TURN server, so this relay can carry a call
+# that is held on another relay ("Forwards through" / "Forwards other rooms"
+# on the relay page). UDP only, so no domain or certificate is needed. The
+# enrolment does not write this section, and re-enrolling with REPLACE=1
+# removes it.
+# turn:
+#   enabled: true
+#   udp_port: 13381
+#   relay_range_start: 30000
+#   relay_range_end: 40000
+
+meet:
+  role: relay
+  listen: ":13377"
+  # The certificate every relay serves for wss://<prefix>.relay.example.com.
+  # The control node pushes renewals here hourly; it is re-read on the next
+  # TLS handshake without a restart.
+  tls_cert: /etc/tomoshibi/certs/relay.fullchain.pem
+  tls_key: /etc/tomoshibi/certs/relay.key
+  # Where this relay answers STUN so browsers can time one round trip.
+  probe_port: 13380
+  # Only for a relay on a network that probes ports for websites (mainland
+  # China): answer nothing but a WebSocket upgrade.
+  # silent: true

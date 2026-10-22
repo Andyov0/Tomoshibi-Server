@@ -1,27 +1,64 @@
-# Tomoshibi Server
+<p align="center">
+  <img src="web/public/favicon.svg" width="104" alt="Tomoshibi">
+</p>
 
-> **A modified version** of [Tomoshibi](https://github.com/5t-RawBeRry/Tomoshibi) by
-> 5t-RawBeRry, released under the same licence, AGPL-3.0. It is the server of the
-> [Tomoshibi Native](https://github.com/Andyov0/Tomoshibi-Native) apps, which do not
-> work with upstream Tomoshibi. It was forked from upstream on
-> 2026-08-15 (eb0def1) and has been changed since by Andyov0; among what it adds:
->
-> - media relays: a fleet of relay machines a room is placed on, picked by who is in it,
->   probed for whether media reaches them, a mainland relay carrying media with its
->   signalling through another (RELAY.md);
-> - invitations and arranged meetings, opened from their names and handed to calendars;
-> - watching a video together in step, the song desk and lossless music, a fuller voice,
->   stereo and an app's own sound;
-> - raised hands and reactions, rejoining after a refresh, staying in a call when a
->   device fails;
-> - the native apps: the download page, TestFlight invitations, and the apps' own
->   update checks and downloads;
-> - more of the management surface: the relays, the load over six months, read-only
->   administrators.
->
-> This repository is published without its development history: each update here is a
-> snapshot of the deployment's own source. `dev/` holds the tools and notes that
-> deployment is run with.
+<h1 align="center">Tomoshibi Server</h1>
+
+<p align="center">
+  A video meeting server in one binary, with media relays, invitations and the native apps' own updates.<br>
+  A modified version of <a href="https://github.com/5t-RawBeRry/Tomoshibi">Tomoshibi</a> by 5t-RawBeRry.
+</p>
+
+<p align="center">
+  <img alt="Go 1.26" src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat-square&logo=go&logoColor=white">
+  <img alt="TypeScript" src="https://img.shields.io/badge/web-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white">
+  <img alt="LiveKit" src="https://img.shields.io/badge/media-LiveKit-111111?style=flat-square">
+  <img alt="License AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-FFA23B?style=flat-square">
+  <a href="https://github.com/5t-RawBeRry/Tomoshibi"><img alt="Based on 5t-RawBeRry/Tomoshibi" src="https://img.shields.io/badge/based%20on-5t--RawBeRry%2FTomoshibi-55524E?style=flat-square&logo=github&logoColor=white"></a>
+  <a href="https://github.com/Andyov0/Tomoshibi-Native"><img alt="Apps: Tomoshibi Native" src="https://img.shields.io/badge/apps-Tomoshibi%20Native-55524E?style=flat-square"></a>
+</p>
+
+---
+
+This is a modified version of [Tomoshibi](https://github.com/5t-RawBeRry/Tomoshibi),
+released under the same licence, AGPL-3.0. It was forked from upstream on
+2026-08-15 (eb0def1) and has been changed since by Andyov0. It is the server of
+the [Tomoshibi Native](https://github.com/Andyov0/Tomoshibi-Native) apps, which
+do not work with upstream Tomoshibi.
+
+## What this version adds
+
+- **Media relays.** A fleet of relay machines a room is placed on, picked by who
+  is in it and probed for whether media reaches them; a relay inside mainland
+  China can carry the media with its signalling through another machine
+  ([RELAY.md](RELAY.md)).
+- **Invitations and arranged meetings,** opened from their names and handed to
+  calendars.
+- **Watching together and the song desk:** a video kept in step for everybody,
+  lossless music, a fuller voice, stereo and an app's own sound.
+- **Raised hands and reactions,** rejoining after a refresh, and staying in a
+  call when a device fails.
+- **The native apps:** the download page, TestFlight invitations, the apps' own
+  update checks and downloads, and what the deployment tells the apps between
+  their releases.
+- **More of the management surface:** the relays, the load over six months,
+  read-only administrators.
+
+## Documentation
+
+| Guide | What it covers |
+|---|---|
+| [Deployment guide](DEPLOY.md) | A control node, relays, the cross-border set-up, the native apps' shelf and day-to-day operation, step by step |
+| [Relays](RELAY.md) | How rooms are placed on relays and how a relay joins |
+| [Building it](#building-it) · [Running it](#running-it) · [Deploying it](#deploying-it) | From source to a running server |
+| [Configuration](#configuration) · [Commands](#commands) | Every setting and command |
+| [How it works](#how-it-works) | What happens between a link and a call |
+| [Testing](#testing) · [Watching it](#watching-it) | Checks and monitoring |
+
+This repository is published without its development history: each update
+here is a snapshot of the source.
+
+## About Tomoshibi
 
 A video meeting server in one binary. The media server, the API, and the client
 are compiled together into a single file: deploying is copying it to a machine
@@ -309,14 +346,14 @@ meet:
     opened_by: admins   # or `anyone`, which is the default
 ```
 
-Rooms age out. A name nobody has joined for `meet.rooms.remember` — thirty days
-by default, `0` to keep them for ever — is forgotten, and is a name nobody has
-used again. That is one setting doing two things that happen to agree: a name was
-written down the first time somebody joined it and nothing ever took one away, so
-the store grew for as long as anybody asked it for names, bounded by the rate
-limiter in how fast and by nothing in how many. And a name nobody has spoken in a
-month is not a room in use — calling it one leaves a room open for good because
-somebody said its name once, last year.
+Rooms age out. A name nobody has joined for `meet.rooms.remember` — three days
+(72 hours) by default, `0` to keep them for ever — is forgotten, and is a name
+nobody has used again. That is one setting doing two things that happen to agree:
+a name was written down the first time somebody joined it and nothing ever took
+one away, so the store grew for as long as anybody asked it for names, bounded by
+the rate limiter in how fast and by nothing in how many. And a name nobody has
+spoken in three days is not a room in use — calling it one leaves a room open for
+good because somebody said its name once, last year.
 
 The sweep runs hourly in bounded passes, because the store admits one writer and
 a join is a write: clearing a neglected file in a single transaction would make

@@ -57,10 +57,11 @@ meet:
     # How long a name stays used after the last time somebody joined it. Two
     # things at once, and they agree: a name was written down on first use and
     # nothing ever took one away, so the file grew for as long as anybody asked
-    # for names — and a name nobody has spoken in a month is not a room in use.
-    # Under `admins` this is therefore how long a room stays open unattended.
-    # Zero keeps every name for ever, which is what this did before it existed.
-    remember: 720h
+    # for names — and a name nobody has spoken in three days is not a room in
+    # use. Under `admins` this is therefore how long a room stays open
+    # unattended. Three days (72h) is the default; zero keeps every name for
+    # ever, which is what this did before it existed.
+    remember: 72h
 
   # The download page at /apps, for somebody signed in, and the page an
   # invitation or meeting link opens in a browser, which offers its holder the

@@ -1,0 +1,41 @@
+# /etc/systemd/system/tomoshibi.service
+#
+# A control node (control.yaml) or a single machine (meet.yaml). Keep the unit
+# name "tomoshibi" on the control node: dev/watch/watch.sh reads
+# `journalctl -u tomoshibi`.
+#
+#   systemctl daemon-reload
+#   systemctl enable --now tomoshibi
+#
+# Nothing here needs a privileged port, a shell, or anybody else's files. The
+# store, the tripcode key, its daily copies and the apps directory live under
+# /var/lib/tomoshibi, the only place the service may write.
+
+[Unit]
+Description=Tomoshibi Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/tomoshibi serve /etc/tomoshibi/control.yaml
+WorkingDirectory=/var/lib/tomoshibi
+Restart=on-failure
+RestartSec=2
+
+DynamicUser=yes
+StateDirectory=tomoshibi
+
+# Only when this process reads private keys from /etc/tomoshibi/certs
+# (meet.tls_cert / meet.tls_key, or meet.enrol.cert_file / key_file for the
+# relays). Create the group first, `groupadd -f tomoshibi-certs`, and make the
+# key files group-readable (640, group tomoshibi-certs). Remove the line
+# otherwise: a group that does not exist stops the unit from starting.
+SupplementaryGroups=tomoshibi-certs
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

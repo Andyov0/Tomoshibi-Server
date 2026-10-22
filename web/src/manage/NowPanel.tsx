@@ -9,7 +9,7 @@ import { say } from "@/live/i18n";
 import { usePoll } from "./poll";
 import { Card, Failed } from "./Shell";
 import { Trend } from "./Trend";
-import { bitrate, linkBits, count, moment, rate, since, size, width } from "./units";
+import { bitrate, linkBits, count, moment, rate, since, size, typed, width } from "./units";
 
 /**
  * How the server is doing, and how it got here.
@@ -388,16 +388,6 @@ function Field({
 				className="h-8 w-auto text-[12px]"
 			/>
 		</label>
-	);
-}
-
-/** What a datetime-local field wants, which is local time and no zone. */
-function typed(when: Date): string {
-	const pad = (value: number) => String(value).padStart(2, "0");
-
-	return (
-		`${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}` +
-		`T${pad(when.getHours())}:${pad(when.getMinutes())}`
 	);
 }
 

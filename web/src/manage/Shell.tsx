@@ -3,18 +3,20 @@ import { Flagged } from "@/components/room/Flag";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/hooks/useT";
 import { cn } from "@/lib/utils";
-import { Activity, LayoutGrid, ScrollText, Server, Users, UsersRound } from "lucide-react";
+import { Activity, LayoutGrid, ScrollText, Server, Smartphone, Users, UsersRound } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Phrase } from "@/live/i18n";
 import type { Who } from "./api";
 import { rate } from "./units";
 
 /** The panels, in the order somebody works through them. */
-// Six, not seven. The audit panel was removed rather than fixed: everything it
-// showed goes to the process log, which survives a restart and is readable with
-// the service down — and a page behind the management sign-in is readable only
-// when the thing it reports on is already answering.
-export const PANELS = ["Now", "Rooms", "Accounts", "Relays", "Admins", "Runtime"] as const;
+// Seven, and not the audit panel. That was removed rather than fixed:
+// everything it showed goes to the process log, which survives a restart and is
+// readable with the service down — and a page behind the management sign-in is
+// readable only when the thing it reports on is already answering. The seventh
+// is what the apps are told between releases (AppsPanel.tsx), after the relays
+// because both are about the machines and the apps people call from.
+export const PANELS = ["Now", "Rooms", "Accounts", "Relays", "Apps", "Admins", "Runtime"] as const;
 
 /**
  * What each panel is called on screen.
@@ -30,6 +32,7 @@ export const PANEL_NAMES: Record<Panel, Phrase> = {
 	Rooms: "Rooms",
 	Accounts: "Accounts",
 	Relays: "Relays",
+	Apps: "Apps",
 	Admins: "Admins",
 	Runtime: "Runtime",
 };
@@ -40,6 +43,7 @@ const ICONS: Record<Panel, typeof Activity> = {
 	Rooms: LayoutGrid,
 	Accounts: UsersRound,
 	Relays: Server,
+	Apps: Smartphone,
 	Admins: Users,
 	Runtime: ScrollText,
 };

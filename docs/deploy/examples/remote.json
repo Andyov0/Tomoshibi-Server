@@ -1,0 +1,43 @@
+{
+ "phrases": {
+  "<an English sentence exactly as the apps' own dictionary holds it>": {
+   "en": "<the English wording to show instead>",
+   "zh-Hans": "<Simplified Chinese>",
+   "zh-Hant": "<Traditional Chinese>",
+   "ja": "<Japanese>"
+  }
+ },
+ "switches": [
+  {
+   "feature": "screen-share",
+   "off": true,
+   "platforms": ["android"],
+   "from": "0.1.4",
+   "below": "0.1.5",
+   "note": "Example: off for Android 0.1.4.x until 0.1.5 ships the fix. Never sent to the apps."
+  },
+  {
+   "feature": "background-blur",
+   "off": true,
+   "platforms": ["ios"],
+   "note": "Example: off on every iPhone and iPad version."
+  }
+ ],
+ "params": [
+  {"name": "screen_share_max_fps", "value": 30, "platforms": ["android"]},
+  {"name": "screen_share_max_height", "value": 1080},
+  {"name": "screen_share_hot_fps", "value": 15},
+  {"name": "update_check_hours", "value": 6}
+ ],
+ "notice": {
+  "id": "2026-10-22-maintenance",
+  "level": "info",
+  "until": "2026-10-23T12:00:00Z",
+  "text": {
+   "en": "Maintenance tonight from 22:00 UTC. Calls may drop for a minute.",
+   "zh-Hans": "<Simplified Chinese>",
+   "zh-Hant": "<Traditional Chinese>",
+   "ja": "<Japanese>"
+  }
+ }
+}

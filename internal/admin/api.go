@@ -13,6 +13,7 @@ import (
 
 	"tomoshibi/internal/config"
 	"tomoshibi/internal/limit"
+	"tomoshibi/internal/remote"
 	"tomoshibi/internal/room"
 	"tomoshibi/internal/rtc"
 	"tomoshibi/internal/store"
@@ -182,6 +183,11 @@ type API struct {
 	// enrolment is what a new relay is told; nil where bringing one up from a
 	// page is not configured.
 	enrolment *Enrolment
+	// remote is the apps' remote.json, where the lobby's notice and the
+	// feature switches are written (remote.go). Nil where there is no store or
+	// no apps directory, which the pages are told rather than shown a notice
+	// that was never kept anywhere.
+	remote Remote
 	// onRelaysChanged lets the choosing side drop its cache the moment this
 	// list moves, so a relay added here is used by the very next join.
 	onRelaysChanged func()
@@ -236,6 +242,14 @@ func New(conf *config.Config, media *rtc.Server, st *store.Store, tripKey []byte
 		api.ledger = st
 		api.placing = st
 		api.settings = st
+
+		// Only where there is a directory to keep it in. A *remote.File for no
+		// directory is a value, not nil, and put into the interface it would
+		// be an interface that is not nil either: the pages would offer to
+		// publish a notice and every press would fail to write it.
+		if dir := conf.Meet.Apps.MacDir; dir != "" {
+			api.remote = remote.At(dir)
+		}
 
 		// So that restarting the process does not sign everybody out. It used
 		// to, and during an afternoon of deployments that reads as the sign-in
@@ -574,6 +588,14 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/admin/policy", a.need(config.ManageSettings, a.setPolicy))
 	mux.HandleFunc("GET /api/admin/settings", a.observe(a.readSettings))
 	mux.HandleFunc("PUT /api/admin/settings", a.need(config.ManageSettings, a.setSettings))
+
+	// What the apps are told between releases: the lobby's notice and which
+	// features are off. The same kind of decision as the switches above, and
+	// behind the same capability. See remote.go.
+	mux.HandleFunc("GET /api/admin/remote/notice", a.observe(a.readNotice))
+	mux.HandleFunc("PUT /api/admin/remote/notice", a.need(config.ManageSettings, a.setNotice))
+	mux.HandleFunc("GET /api/admin/remote/switches", a.observe(a.readSwitches))
+	mux.HandleFunc("PUT /api/admin/remote/switches", a.need(config.ManageSettings, a.setSwitches))
 
 	mux.HandleFunc("DELETE /api/admin/rooms/{room}", a.need(config.ManageRooms, a.closeRoom))
 	mux.HandleFunc("DELETE /api/admin/rooms/{room}/participants/{identity}", a.need(config.ManageRooms, a.removeOne))

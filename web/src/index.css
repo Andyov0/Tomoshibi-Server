@@ -224,6 +224,42 @@
 	}
 
 	/*
+	 * How one screen gives way to the next, where there is a moment for it to.
+	 *
+	 * The management pages' panels, which used to be replaced between two
+	 * frames: the new one rose in and the old one was simply gone, which is the
+	 * asymmetry useLingering's comment describes — the arrival says where the
+	 * panel came from and the departure says the page redrew itself. The owner's
+	 * rule is that nothing appears or disappears without moving.
+	 *
+	 * The same distance as the arrival and on the leaving curve, and quicker,
+	 * for the reason depart gives: what is being left has already been decided
+	 * about. Forwards rather than backwards, unlike the arrival: the panel stays
+	 * at its last frame, transparent, until it is taken away, where backwards
+	 * would put it back on screen for the frame between the animation ending
+	 * and the panel leaving the page. The transform it holds meanwhile is the
+	 * containing-block trap described above, and harmless here, since nothing
+	 * on a panel that is leaving is being opened.
+	 */
+	@keyframes page-leave {
+		to {
+			opacity: 0;
+			transform: translateY(4px) scale(0.995);
+		}
+	}
+
+	.animate-page-leave {
+		animation: page-leave 160ms var(--ease-leave) forwards;
+		pointer-events: none;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.animate-page-leave {
+			animation-duration: 1ms;
+		}
+	}
+
+	/*
 	 * The ground behind a dialog, arriving and leaving.
 	 *
 	 * Separate from the panel's own animation because they are doing different

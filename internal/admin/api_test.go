@@ -130,6 +130,8 @@ var endpoints = []struct {
 	{http.MethodGet, "/api/admin/admins", config.Observe},
 	{http.MethodGet, "/api/admin/accounts", config.Observe},
 	{http.MethodPost, "/api/admin/admins/me/passphrase", config.Observe},
+	{http.MethodGet, "/api/admin/remote/notice", config.Observe},
+	{http.MethodGet, "/api/admin/remote/switches", config.Observe},
 
 	{http.MethodDelete, "/api/admin/rooms/x", config.ManageRooms},
 	{http.MethodDelete, "/api/admin/rooms/x/participants/y", config.ManageRooms},
@@ -152,6 +154,8 @@ var endpoints = []struct {
 
 	{http.MethodPut, "/api/admin/policy", config.ManageSettings},
 	{http.MethodPut, "/api/admin/settings", config.ManageSettings},
+	{http.MethodPut, "/api/admin/remote/notice", config.ManageSettings},
+	{http.MethodPut, "/api/admin/remote/switches", config.ManageSettings},
 
 	{http.MethodPost, "/api/admin/admins", config.Moderate},
 	{http.MethodPatch, "/api/admin/admins/x", config.Moderate},

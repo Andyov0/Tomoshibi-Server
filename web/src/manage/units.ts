@@ -70,6 +70,23 @@ export function day(iso: string): string {
 }
 
 /**
+ * What a datetime-local field wants, which is local time and no zone.
+ *
+ * Shared by the two fields that are typed as moments, the trend's range and the
+ * apps' notice's end, because both are read back with new Date(), which takes a
+ * zoneless time as local: written in any other zone, the field would show one
+ * time and send another.
+ */
+export function typed(when: Date): string {
+	const pad = (value: number) => String(value).padStart(2, "0");
+
+	return (
+		`${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}` +
+		`T${pad(when.getHours())}:${pad(when.getMinutes())}`
+	);
+}
+
+/**
  * When a bucket was, said at the precision its width deserves.
  *
  * A six-hour bucket labelled to the second claims an exactness it does not

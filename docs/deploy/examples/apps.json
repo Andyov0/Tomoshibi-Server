@@ -1,0 +1,44 @@
+{
+ "mac": [
+  {
+   "version": "0.1.3",
+   "file": "Tomoshibi-0.1.3.dmg",
+   "size": 84213760,
+   "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "notes": {"en": "An older line. Only the highest version in a list is offered.","zh-Hans": "<Simplified Chinese>", "zh-Hant": "<Traditional Chinese>", "ja": "<Japanese>"}
+  },
+  {
+   "version": "0.1.4",
+   "build": 2,
+   "file": "Tomoshibi-0.1.4-2.dmg",
+   "size": 84215808,
+   "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+   "notes": {"en": "Fixes a crash when a screen share ends."}
+  }
+ ],
+ "android": [
+  {
+   "version": "0.1.4",
+   "build": "3",
+   "file": "Tomoshibi-0.1.4-3.apk",
+   "size": 31457280,
+   "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+   "notes": {"en": "Smoother screen sharing."}
+  }
+ ],
+ "windows": [
+  {
+   "version": "0.1.4",
+   "file": "Tomoshibi-Setup-0.1.4.exe",
+   "size": 41943040,
+   "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  }
+ ],
+ "ios": [
+  {
+   "version": "0.1.4",
+   "build": 5,
+   "notes": {"en": "Build 5 is waiting in TestFlight."}
+  }
+ ]
+}

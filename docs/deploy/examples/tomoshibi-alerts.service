@@ -1,0 +1,45 @@
+# /etc/systemd/system/tomoshibi-alerts.service
+#
+# The alert forwarder, dev/watch/hermes-relay.py, installed as
+# /usr/local/bin/tomoshibi-hermes-relay on the machine that already holds a
+# Telegram bot token. It takes text from the control node over a private
+# network and posts it as that bot. The control node never holds the token.
+#
+#   useradd --system --no-create-home --shell /usr/sbin/nologin tomoshibi-alerts
+#   install -o tomoshibi-alerts -m 600 bot.env /etc/tomoshibi-alerts/bot.env
+#   install -o root -m 644 forwarder.env /etc/tomoshibi-alerts/forwarder.env
+#   systemctl daemon-reload && systemctl enable --now tomoshibi-alerts
+#
+# bot.env (the bot's own settings; the script reads these three names):
+#   TELEGRAM_BOT_TOKEN=<bot token from BotFather>
+#   TELEGRAM_HOME_CHANNEL=<chat id the alerts go to>
+#   TELEGRAM_HOME_CHANNEL_THREAD_ID=<optional topic id>
+#
+# forwarder.env (this service's settings):
+#   LISTEN=10.0.0.20          the private address only, never a public one
+#   PORT=49771
+#   ENV_FILE=/etc/tomoshibi-alerts/bot.env
+#   WORD=<the same word as WORD in the control node's watch.env>
+#   CHAT_ID / THREAD_ID       optional overrides of the two channel settings
+#
+# The WORD line makes forwarder.env worth protecting too; tighten it to 640
+# with group tomoshibi-alerts if other users can log in to this machine.
+
+[Unit]
+Description=Tomoshibi alert forwarder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tomoshibi-alerts
+EnvironmentFile=/etc/tomoshibi-alerts/forwarder.env
+ExecStart=/usr/bin/python3 /usr/local/bin/tomoshibi-hermes-relay
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -19,6 +19,7 @@ import (
 
 	"tomoshibi/internal/config"
 	"tomoshibi/internal/limit"
+	"tomoshibi/internal/remote"
 	"tomoshibi/internal/room"
 	"tomoshibi/internal/store"
 	"tomoshibi/internal/testflight"
@@ -112,7 +113,7 @@ func appsApp(t *testing.T, desk *appsDesk) (http.Handler, *store.Store, *http.Co
 func desk(t *testing.T, fake tester, dir string) *appsDesk {
 	t.Helper()
 
-	return &appsDesk{dir: dir, tester: fake, byCaller: generous(), byAccount: generous()}
+	return &appsDesk{dir: dir, tester: fake, byCaller: generous(), byAccount: generous(), remote: remote.At(dir)}
 }
 
 // build is one file to put in a directory, and what its manifest says.

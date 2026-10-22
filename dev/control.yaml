@@ -1,0 +1,71 @@
+# A control node: the client, the joins, and the management pages.
+#
+# Starts no media server of its own. It signs tokens for meetings held on the
+# relays listed below and tells each client which one to dial, so this can live
+# anywhere cheap — the bytes of a call never pass through it.
+
+# Present because the media server's loader reads this document, and unused: no
+# media server is started under this role. The ports are never bound.
+port: 7880
+bind_addresses: ["127.0.0.1"]
+
+rtc:
+  udp_port: 7882
+  tcp_port: 7881
+  use_external_ip: false
+
+# The same pair the relays carry. This is the signing half of it.
+keys:
+  APIreplaceme: replace-this-with-the-output-of-tomoshibi-keygen
+
+# The same instance the relays point at. Without it a meeting cannot be split
+# across relays, and the probe policy below — which sends each client wherever
+# is fastest for them — would do exactly that.
+redis:
+  address: "redis.internal:6379"
+
+logging:
+  level: info
+
+meet:
+  role: control
+  listen: ":8080"
+
+  # Behind a proxy terminating TLS. Cameras need a secure page, so a deployment
+  # anybody else uses has one in front of it.
+  trust_proxy: true
+  # A CDN in front of nginx: the caller is the second entry from the right.
+  proxies: 2
+
+  # How a client is matched to a relay.
+  #
+  #   probe        the client measures every relay and the fastest wins.
+  #                Needs redis, because two people in one meeting can land in
+  #                different places.
+  #   sticky       everybody in a room goes to one relay, chosen by its name.
+  #                Cheapest: media never crosses between machines.
+  #   nearest      by a region header a proxy set, falling back to sticky.
+  #   round_robin  in turn, for levelling load across identical machines.
+  relay_policy: probe
+
+  relays:
+    - name: shanghai
+      url: wss://sh.example.com
+      region: cn-east
+    - name: hongkong
+      url: wss://hk.example.com
+      region: hk
+    - name: tokyo
+      url: wss://jp.example.com
+      region: jp
+
+  database: /var/lib/tomoshibi/meet.db
+  tripcode_key: /var/lib/tomoshibi/tripcode.key
+
+  # Where the code running here can be read. Set to the fork, because a link to
+  # somebody else's repository is not an offer of the source anybody is running.
+  source_url: https://github.com/Andyov0/Tomoshibi
+
+  rooms:
+    opened_by: anyone
+    remember: 720h

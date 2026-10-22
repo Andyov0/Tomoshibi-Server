@@ -1,0 +1,74 @@
+# A relay: media and signalling, nothing else.
+#
+# Deployed on each machine that should be able to hold a call. It serves no
+# client and no join endpoint — the control node does that, and signs the tokens
+# this verifies with the credentials below.
+
+port: 7880
+bind_addresses: ["127.0.0.1"]
+
+rtc:
+  udp_port: 7882
+  tcp_port: 7881
+  # True here, unlike the development file. A relay's whole purpose is being
+  # dialled from elsewhere, and this is where the address it advertises comes
+  # from: left false it hands out one only this machine can reach, and every
+  # connection fails after appearing to succeed.
+  use_external_ip: true
+
+  # How far back a lost video packet can still be resent, in packets. The
+  # default is 500, which at the 4000 to 5000 packets a second of a 1440p screen
+  # share is a tenth of a second, less than the round trip a resend needs from
+  # a sharer behind a tunnel, so a lost packet could not be repaired, every
+  # viewer asked for a fresh keyframe, and the relay's log filled with "cannot
+  # be sequenced". At 4000 those stopped, and a distant viewer went from about
+  # one frame a second to between 13 and 45. The cost is memory: RELAY.md has
+  # the arithmetic.
+  #
+  # This key and not `packet_buffer_size`, which is still accepted and changes
+  # nothing for video: the per-kind default is already set, and the older key
+  # only fills one that is not.
+  packet_buffer_size_video: 4000
+
+  # Which layer of each picture a viewer is sent is decided from the browser's
+  # own transport-wide feedback rather than its receive-side estimate. Left at
+  # the default, a viewer on a line narrower than a full-size share was sent all
+  # of it and saw no frame for a minute, while the estimate swung between
+  # almost nothing and an assumed 100 Mb/s; with this, the same viewer settled
+  # on the 1080p layer.
+  #
+  # It chooses among the layers a sharer already sends and never asks a sharer
+  # to send less. The pacer is left at its default on purpose: neither of the
+  # two the media server will select holds a packet back to smooth a burst, so
+  # there is nothing there to tune.
+  congestion_control:
+    enabled: true
+    use_send_side_bwe: true
+
+# The same pair on every relay and on the control node. This is what lets the
+# control node sign a token that this relay will accept, with no second secret
+# to distribute and nothing to keep in step.
+keys:
+  APIreplaceme: replace-this-with-the-output-of-tomoshibi-keygen
+
+# What lets the relays route between themselves, so a meeting whose
+# participants landed on different relays can still hear itself. Every relay and
+# the control node point at one instance.
+#
+# Without it each relay is an island: a call works only if everybody in it
+# reached the same one, which the sticky policy arranges but the probe policy
+# deliberately does not.
+redis:
+  address: "redis.internal:6379"
+  # username: ""
+  # password: ""
+  # db: 0
+
+logging:
+  level: info
+
+meet:
+  role: relay
+  # The port facing the network for TCP. Signalling arrives here and is
+  # forwarded to the media server on loopback.
+  listen: ":8080"

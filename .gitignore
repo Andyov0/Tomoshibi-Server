@@ -1,0 +1,47 @@
+# The binary, and anything built for another machine. Fifty megabytes of build
+# output has no business in a history: it is reproducible from the source beside
+# it, and the recipe for reproducing it is in the README.
+/tomoshibi
+/meet-live
+/dist/
+
+# And anything built out of dev/, which is where the small tools live. One of
+# them was committed as a forty-one megabyte binary in the root, beside the rule
+# saying not to, because `go build` in a directory writes the binary where you
+# are rather than where the source is.
+/turncheck
+/snicheck
+/udpcheck
+/ascstub
+
+# Built client. The marker file is tracked on purpose: the embed directive needs
+# this directory to exist at compile time, so without it a fresh clone cannot
+# build the server at all. What to serve when nothing has been built lives in
+# placeholder.html, outside this directory, where a build cannot overwrite it.
+/web/dist/*
+!/web/dist/.gitkeep
+
+# Local state. The tripcode key signs the marks people wear, so it belongs
+# nowhere near a repository: committing one would hand every signature it has
+# ever produced to whoever reads the history.
+/dev/*.db
+/dev/*.db.*
+/dev/*.local.yaml
+/dev/tripcode.key
+
+node_modules/
+
+# One package manager, and its lockfile is committed. The others leave files
+# that resolve to a different tree from the same manifest, which is the whole
+# thing a lockfile exists to prevent.
+/web/package-lock.json
+/web/yarn.lock
+/web/bun.lock
+
+# Finder's own bookkeeping, which follows anybody who opens a folder on a Mac.
+.DS_Store
+/roster
+/peekroom
+
+# Worktrees a subagent opened. Not part of the project.
+.claude/

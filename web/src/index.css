@@ -1,0 +1,430 @@
+@import "tailwindcss";
+
+/*
+ * Dark in every theme, on purpose. A room is looked at for an hour at a stretch
+ * and the pictures are the only thing in it that should be bright.
+ *
+ * The neutrals lean warm rather than blue. A blue-grey ground pushes skin tones
+ * towards green, and this interface is a screen full of faces.
+ *
+ * There is one signal colour. Speaking, sharing, unread, copied — all amber, so
+ * at any moment only one thing on screen is saying something and the eye never
+ * has to choose. Red appears twice in the whole application, on leaving and on
+ * errors. Keyboard focus is white rather than a second hue.
+ */
+@theme {
+	--color-bg: oklch(0.165 0.003 68);
+	--color-surface: oklch(0.214 0.002 68);
+	--color-surface-hi: oklch(0.253 0.005 68);
+	--color-border: oklch(0.294 0.005 68);
+
+	--color-fg: oklch(0.965 0.005 78);
+	--color-fg-muted: oklch(0.662 0.011 73);
+
+	/* Named for what it is rather than what it looks like: a studio camera
+	   lights up when it is live, and everything wearing this colour is live in
+	   the same sense. */
+	--color-tally: oklch(0.79 0.157 64);
+	--color-tally-fg: oklch(0.2 0.03 64);
+
+	/* The only place a second signal colour appears, and it earns it by being
+	   read rather than noticed. A connection light says one of three things and
+	   people already know which colour means which — a light that used the amber
+	   above for "well" and for "not well" would be a light nobody could read at a
+	   glance, which is the only way anybody reads one. Matched to the amber's
+	   lightness and chroma so it sits in the same palette rather than beside it. */
+	--color-good: oklch(0.79 0.157 152);
+
+	--color-danger: oklch(0.627 0.185 31);
+	--color-danger-fg: oklch(0.99 0 0);
+
+	--radius-tile: 0.5rem;
+
+	/* One curve for anything that moves into place, one for anything that
+	   leaves. Arrivals decelerate into position; departures need no such
+	   courtesy. */
+	--ease-settle: cubic-bezier(0.2, 0.9, 0.3, 1);
+	--ease-leave: cubic-bezier(0.4, 0, 1, 1);
+}
+
+@layer base {
+	* {
+		border-color: var(--color-border);
+	}
+
+	html,
+	body,
+	#root {
+		height: 100%;
+	}
+
+	body {
+		background-color: var(--color-bg);
+		color: var(--color-fg);
+		-webkit-font-smoothing: antialiased;
+		font-family:
+			ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+			"Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+	}
+
+	/*
+	 * A call is not a document.
+	 *
+	 * Every label on it is furniture — a name under a face, a figure on a
+	 * control — and dragging across furniture selects it, which looks like the
+	 * page came apart. On a touchscreen it is worse than untidy: a long press
+	 * and a text selection are the same gesture, and whichever starts first
+	 * cancels the other, so a selectable label is a menu that will not open.
+	 *
+	 * Written with no specificity at all, so that anything saying it is words
+	 * rather than furniture wins by simply saying so.
+	 */
+	:where(body.call) {
+		-webkit-user-select: none;
+		user-select: none;
+	}
+
+	/*
+	 * What somebody types is theirs to select, and browsers do not all exempt a
+	 * field from an ancestor that refused.
+	 */
+	:where(body.call) :is(input, textarea) {
+		-webkit-user-select: text;
+		user-select: text;
+	}
+
+	/*
+	 * Anything a machine produced is set in a monospace and aligned by digit:
+	 * room names, signatures, timestamps, rates. Anything a person wrote is
+	 * set in the sans. No typeface is bundled — this client is compiled into a
+	 * binary, and a face is a few hundred kilobytes — so the character comes
+	 * from that division rather than from the letterforms.
+	 */
+	.readout {
+		font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+		font-variant-numeric: tabular-nums;
+		letter-spacing: 0.01em;
+
+		/* And is the one thing on a call worth taking away from it. A signature
+		   goes into a configuration file and a room name is read to somebody
+		   over the telephone; both are reached for with a cursor first. */
+		-webkit-user-select: text;
+		user-select: text;
+	}
+
+	/* Instrument silkscreen: small, wide, quiet. */
+	.silk {
+		font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+		font-size: 10px;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+	}
+}
+
+@layer utilities {
+	/*
+	 * A notice about something going live, in the one colour that means
+	 * something is happening. Applied by class rather than by variant, because
+	 * sonner's own variants carry an icon and a palette of their own.
+	 */
+	.is-signal {
+		border-left-color: var(--color-tally);
+	}
+
+	/*
+	 * How a tile arrives. Everything already in the room slides to its new
+	 * place; only the newcomer lifts in, which is what makes it possible to see
+	 * who just joined without being told.
+	 */
+	@keyframes arrive {
+		from {
+			opacity: 0;
+			transform: scale(0.94) translateY(8px);
+		}
+	}
+
+
+	/*
+	 * How something on an otherwise empty screen arrives.
+	 *
+	 * Further and slower than a tile, because there is nothing else moving to
+	 * measure it against: the same eight pixels that read as a lift inside a busy
+	 * grid read as nothing at all on a page holding one card.
+	 *
+	 * The delay is set per element rather than baked in, so a screen with three
+	 * things on it can bring them in one after another. That ordering is the
+	 * whole point — it tells somebody where to look first without anything having
+	 * to be brighter or bigger than the rest.
+	 */
+	@keyframes rise {
+		from {
+			opacity: 0;
+			transform: translateY(14px);
+		}
+	}
+
+	.animate-rise {
+		animation: rise 420ms var(--ease-settle) backwards;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.animate-rise {
+			animation-duration: 1ms;
+		}
+	}
+
+	/*
+	 * How one screen becomes another.
+	 *
+	 * Shorter than anything inside a screen and travelling almost no distance,
+	 * because a whole page sliding about is a page that feels slow the third time
+	 * somebody sees it. What it has to do is say that this is a different place,
+	 * not perform the journey: sign-in to lobby to devices to call is four steps,
+	 * and a transition anybody notices individually is one they will sit through
+	 * four times.
+	 *
+	 * The alternative — a screen simply replaced between two frames — reads as the
+	 * page having reloaded, which is the one thing it must not look like on a
+	 * flow where each step is a decision somebody just made.
+	 */
+	@keyframes page {
+		from {
+			opacity: 0;
+			transform: translateY(6px) scale(0.995);
+		}
+	}
+
+	.animate-page {
+		/*
+		 * Backwards rather than both, which matters for a reason nothing about
+		 * the animation suggests.
+		 *
+		 * `both` keeps the final frame's transform on the element for good, and
+		 * the final frame here is the element's own resting position — so the
+		 * transform is an identity, invisible, and permanent. Any transform at
+		 * all makes the element a containing block for `position: fixed`
+		 * descendants, which stop being positioned against the window and start
+		 * being positioned against, and clipped by, whatever this is inside.
+		 *
+		 * What that looked like was a menu that would not scroll: the server
+		 * sheet was placed in window coordinates, resolved against a page
+		 * wrapper instead, and cut off by its overflow. Nothing about it looked
+		 * like an animation problem.
+		 *
+		 * Backwards gives the same result for the same reason `both` was chosen
+		 * — the from-state applies during any delay — and leaves nothing behind.
+		 */
+		animation: page 260ms var(--ease-settle) backwards;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.animate-page {
+			animation-duration: 1ms;
+		}
+	}
+
+	/*
+	 * The ground behind a dialog, arriving and leaving.
+	 *
+	 * Separate from the panel's own animation because they are doing different
+	 * jobs: the panel says something appeared, and this says everything else
+	 * stopped being where the attention is. Faded rather than moved — a
+	 * backdrop that slides is a backdrop somebody notices, and this one is
+	 * supposed to be felt and not seen.
+	 */
+	@keyframes fade-in {
+		from {
+			opacity: 0;
+		}
+	}
+
+	@keyframes fade-out {
+		to {
+			opacity: 0;
+		}
+	}
+
+	.animate-fade-in {
+		animation: fade-in 180ms var(--ease-settle) both;
+	}
+
+	.animate-fade-out {
+		animation: fade-out 160ms var(--ease-leave) both;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.animate-fade-in,
+		.animate-fade-out {
+			animation-duration: 1ms;
+		}
+	}
+
+	/*
+	 * How a panel leaves.
+	 *
+	 * Faster than it arrived and travelling less far, which is not a stylistic
+	 * preference: something appearing has to be noticed, and something being
+	 * dismissed has already been decided about. A leaving animation that takes
+	 * as long as its entrance feels like the interface arguing.
+	 */
+	@keyframes depart {
+		to {
+			opacity: 0;
+			transform: scale(0.97) translateY(4px);
+		}
+	}
+
+
+	/*
+	 * The tally. A line along the bottom edge of a picture rather than a halo
+	 * around it, on the model of the light that marks the live camera in a
+	 * studio.
+	 *
+	 * It does not animate. Speech is not a state that turns on and off once —
+	 * the server re-ranks speakers whenever the ordering changes, so a pause
+	 * between two sentences flips the flag — and a line that slides open and
+	 * shut on every one of those reads as a flicker rather than as a signal.
+	 * A tally light does not fade in either.
+	 */
+	.tally-line::after {
+		content: "";
+		position: absolute;
+		inset: auto 0 0;
+		height: 2px;
+		background: var(--color-tally);
+		box-shadow: 0 0 14px color-mix(in oklch, var(--color-tally) 55%, transparent);
+		opacity: 0;
+	}
+
+	.tally-line.is-live::after {
+		opacity: 1;
+	}
+}
+
+/*
+ * Arriving and leaving, declared as utilities rather than written as rules.
+ *
+ * They read the same in a stylesheet and they are not the same thing. A variant
+ * — data-[state=open]:, sm:, hover: — is built by Tailwind from a utility it
+ * has been told about, and @utility is how it is told; CSS written by hand into
+ * @layer utilities is passed through unchanged and no variant of it is ever
+ * generated. The menus here are opened and closed by Radix through a data-state
+ * attribute, so every animation they have is a variant, and while these were
+ * plain rules those animations compiled to nothing. The stylesheet contained
+ * animate-arrive and the menus asked for data-[state=open]:animate-arrive, and
+ * nothing in the source says those are different.
+ *
+ * The keyframes stay where they are, beside the argument for what they do.
+ */
+@utility animate-arrive {
+	animation: arrive 320ms var(--ease-settle) backwards;
+
+	@media (prefers-reduced-motion: reduce) {
+		animation-duration: 1ms;
+	}
+}
+
+/*
+ * A reaction leaving the tile it was sent from.
+ *
+ * Up and out rather than a fade in place: what it is saying is "somebody just
+ * did this", and a thing that happened reads as motion. Fading would be
+ * indistinguishable from the picture behind it changing.
+ *
+ * Its own name, and it was not. It was called rise, the name the cards on an
+ * otherwise empty screen already used for their entrance, and both halves of
+ * the collision lost. The class came out as one rule with the cards' 420
+ * milliseconds, so a reaction was gone in under half a second instead of four;
+ * and these keyframes, being outside every layer, beat the cards' own, so every
+ * card on the lobby and the account page lifted in, flew sixty-four pixels up
+ * and faded out, and then snapped back into place. Sampled frame by frame in a
+ * browser, which is the only place either showed: each rule read correctly on
+ * its own.
+ */
+@utility animate-float {
+	animation: float 4000ms var(--ease-settle) forwards;
+
+	@media (prefers-reduced-motion: reduce) {
+		animation: none;
+		opacity: 0;
+	}
+}
+
+@keyframes float {
+	0% {
+		opacity: 0;
+		transform: translateY(6px) scale(0.6);
+	}
+	12% {
+		opacity: 1;
+		transform: translateY(0) scale(1);
+	}
+	70% {
+		opacity: 1;
+	}
+	100% {
+		opacity: 0;
+		transform: translateY(-64px) scale(1);
+	}
+}
+
+@utility animate-depart {
+	animation: depart 180ms var(--ease-settle) both;
+	pointer-events: none;
+
+	@media (prefers-reduced-motion: reduce) {
+		animation-duration: 1ms;
+	}
+}
+
+/*
+ * The column notices fall into, and only where there is room beside the
+ * pictures for one.
+ *
+ * It keeps a width so that text has somewhere to lay itself out; each notice
+ * then shrinks to its own words inside it. Given as a rule rather than as a
+ * style on the element, because below this width the library lays them across
+ * the foot of the screen instead — and a width written inline cannot be asked
+ * to stop applying.
+ *
+ * Outside every layer, like the rule below and for the reason given there: the
+ * library's own rules are injected outside every layer, and a rule inside one
+ * loses to them whatever its specificity. This one sat in the utilities layer
+ * and lost to the library's `width: var(--width)` — 356 pixels, measured — which
+ * the notices' own max-w-72 happened to hide. And one attribute more specific
+ * than the library's rule, because the library's is injected after this
+ * stylesheet and wins a tie on order.
+ */
+@media (min-width: 601px) {
+	[data-sonner-toaster][data-y-position] {
+		width: 18rem;
+	}
+}
+
+/*
+ * Notices clear the controls during a call, at every width.
+ *
+ * Whatever else is along the bottom edge depends on the screen. The screen
+ * before a call keeps the button that gets you in, and Notices.tsx clears that
+ * through the library's own offset. A call keeps its controls in an island down
+ * there, and a notice covering it is a notice over the button somebody is
+ * reaching for — the hang-up button, the microphone — for up to ten seconds.
+ *
+ * This was a custom property, `--mobile-offset-bottom`, set on the toaster from
+ * inside a layer, and it never once applied. Sonner writes every one of its
+ * offsets as an inline style on that same element (assignOffset, applied with
+ * the list's own style), which beats any stylesheet; and its own rules are
+ * injected outside every layer, which beats anything inside one. So a notice on
+ * a phone in a call sat forty pixels up, across the island; and from 601 pixels
+ * up there was no rule at all, so on a tablet held upright a two-line notice in
+ * the right-hand corner covered the device menu and the hang-up button (found
+ * in review, 2026-10-14, at 375 and 768).
+ *
+ * So the position itself rather than the variable, outside any layer, and more
+ * specific than the library's rule for it (body and three attributes against
+ * two attributes). The arithmetic is CLEAR_OF_CONTROLS in routes/Room.tsx: the
+ * island's own offset from the edge, then its height and a gap.
+ */
+body[data-island] [data-sonner-toaster][data-y-position="bottom"] {
+	bottom: calc(max(1.25rem, env(safe-area-inset-bottom) + 0.5rem) + 4rem);
+}

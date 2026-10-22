@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+	<!-- A room of pictures with one of them live. Colours are the interface's own:
+	     the ground, a neutral from its warm ramp, and the single hue it spends. -->
+	<rect width="32" height="32" rx="8" fill="#0f0e0d"/>
+	<rect x="6" y="8" width="9" height="7" rx="2" fill="#55524e"/>
+	<rect x="17" y="8" width="9" height="7" rx="2" fill="#55524e"/>
+	<rect x="6" y="17" width="9" height="7" rx="2" fill="#55524e"/>
+	<rect x="17" y="17" width="9" height="7" rx="2" fill="#ffa23b"/>
+</svg>

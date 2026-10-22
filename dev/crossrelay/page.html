@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>cross-relay</title>
+<body>
+<div id="state">idle</div>
+<script type="module">
+import { Room, RoomEvent } from "./livekit-client.esm.mjs";
+
+const q = new URLSearchParams(location.search);
+const room = new Room({ adaptiveStream: false, dynacast: false });
+window.__room = room;
+window.__events = [];
+
+for (const name of ["Connected", "Disconnected", "ParticipantConnected", "TrackSubscribed", "ConnectionQualityChanged"]) {
+  room.on(RoomEvent[name], (...a) => window.__events.push(name + (a[0]?.identity ? ":" + a[0].identity : "")));
+}
+
+try {
+  await room.connect(q.get("url"), q.get("token"));
+  await room.localParticipant.setCameraEnabled(true);
+  await room.localParticipant.setMicrophoneEnabled(true);
+  document.getElementById("state").textContent = "connected to " + room.engine.client.url;
+} catch (e) {
+  document.getElementById("state").textContent = "FAILED: " + e.message;
+  window.__error = e.message;
+}
+</script>

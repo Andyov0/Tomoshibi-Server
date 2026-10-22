@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>tomoshibi</title>
+<body style="font:16px/1.6 system-ui;max-width:34rem;margin:12vh auto;padding:0 1.5rem">
+<h1>The client is not built</h1>
+<p>The server is running, but no client was compiled into it. Build one:</p>
+<pre style="background:#f4f4f5;padding:1rem;border-radius:.5rem">cd web &amp;&amp; pnpm install &amp;&amp; pnpm run build</pre>
+<p>Then rebuild the server so the result is embedded, or point
+<code>meet.web_root</code> at <code>web/dist</code> to serve it from disk while
+working on it.</p>

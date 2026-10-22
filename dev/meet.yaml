@@ -1,0 +1,121 @@
+# One document describing the whole process: the media server's own tables, plus
+# the `meet` section this server reads. They cannot be unmarshalled together, so
+# the section is lifted out first and the rest is handed over untouched.
+
+# The media server's HTTP listener, kept on loopback. Browsers never reach it
+# directly: signalling arrives at the port below and is forwarded here, so one
+# port faces the network and it is ours.
+port: 7880
+bind_addresses: ["127.0.0.1"]
+
+rtc:
+  # A single UDP port rather than a range. Every track, screen shares included,
+  # is multiplexed onto it, so a firewall needs one hole instead of ten
+  # thousand. This is the one port that must be reachable besides the web one.
+  udp_port: 7882
+  # TCP fallback, for networks that drop UDP outright.
+  tcp_port: 7881
+  # False because everything here is local. Set it on a server with a public
+  # address, or participants will be handed an address only the host can reach.
+  use_external_ip: false
+
+keys:
+  # Development credentials. The media server verifies with these and this
+  # server signs with them, so they are one secret rather than two. Generate a
+  # real pair with `tomoshibi keygen` for anything reachable.
+  APIdevelopment: development-secret-not-for-anything-reachable
+
+logging:
+  level: info
+
+meet:
+  listen: ":8080"
+  database: "meet.db"
+
+  # Served from disk while working on the client, so a rebuild shows up on
+  # reload rather than needing the server recompiled. Unset in a deployment,
+  # where the client inside the binary is used.
+  web_root: "../web/dist"
+
+  # Where the code running here can be read. Shown on the join page, because
+  # this is under the AGPL and offering a program over a network obliges its
+  # operator to offer the source to whoever is using it that way. Point it at a
+  # changed copy if this one has been changed.
+  source_url: "https://github.com/5t-RawBeRry/Tomoshibi"
+
+  rooms:
+    # Who may use a name nobody has used before. `anyone` is what an anonymous
+    # meeting link means; `admins` refuses a fresh name unless the passphrase
+    # sent with the join belongs to somebody under `admins` above. Either way a
+    # name already in use stays open to everybody who has it.
+    #
+    # The starting value only. The management pages change this and cannot edit
+    # a file, so it is kept in the store, adopted from here the first time the
+    # server runs, and read from there afterwards.
+    opened_by: anyone
+
+    # How long a name stays used after the last time somebody joined it. Two
+    # things at once, and they agree: a name was written down on first use and
+    # nothing ever took one away, so the file grew for as long as anybody asked
+    # for names — and a name nobody has spoken in a month is not a room in use.
+    # Under `admins` this is therefore how long a room stays open unattended.
+    # Zero keeps every name for ever, which is what this did before it existed.
+    remember: 720h
+
+  # The download page at /apps, for somebody signed in, and the page an
+  # invitation or meeting link opens in a browser, which offers its holder the
+  # app for their device without an account. Every key is optional, and a
+  # section left out says on the page that the app is not available yet.
+  #
+  #   mac_dir      holds the Mac disk images, the Android packages, the
+  #                Windows installers, and apps.json, which names them in a
+  #                list for each platform:
+  #                {"mac":     [{"version": "1.2.0", "file": "Tomoshibi-1.2.0.dmg",
+  #                              "size": <bytes>, "sha256": "<hex>"}],
+  #                 "android": [{"version": "1.2.0", "file": "Tomoshibi-1.2.0.apk",
+  #                              "size": <bytes>, "sha256": "<hex>"}],
+  #                 "windows": [{"version": "1.2.0", "file": "Tomoshibi-Setup-1.2.0.exe",
+  #                              "size": <bytes>, "sha256": "<hex>"}]}
+  #                Each platform's highest version is offered once its file is
+  #                whole. The key keeps the Mac's name; it is the one directory.
+  #   testflight   an App Store Connect API key that may manage testers, and
+  #                the id of the app's external beta group. A key file that
+  #                cannot be read is refused at startup. public_link is the
+  #                group's TestFlight public link, offered only to somebody
+  #                holding a link who is not signed in (an account is invited
+  #                by address); anything but https://testflight.apple.com/join/
+  #                and a code is refused at startup.
+  #   android_package, android_certificates
+  #                the Android app's application id, and the SHA-256
+  #                fingerprint of each key it is signed with, as
+  #                `keytool -list -v` prints it beside SHA256. Set together,
+  #                they are served without a session at
+  #                /.well-known/assetlinks.json, which is how Android lets the
+  #                app open this deployment's links, invitations among them,
+  #                instead of the browser. Left out, that address is a 404
+  #                and no app is claimed. An id no app can have, a fingerprint
+  #                that is not thirty-two colon-separated bytes, or one of the
+  #                two without the other is refused at startup. Not read on a
+  #                relay, whose address is in no link.
+  #   apple_app_ids
+  #                the iOS and Mac apps as Apple names them, team id and
+  #                bundle id, served without a session at
+  #                /.well-known/apple-app-site-association so that invitation
+  #                and meeting links open in the app instead of Safari. Left
+  #                out, that address is a 404. Anything but TEAMID.bundle is
+  #                refused at startup. Not read on a relay.
+  #
+  # apps:
+  #   mac_dir: /var/lib/tomoshibi/apps
+  #   android_package: app.tomoshibi.android
+  #   android_certificates:
+  #     - "6F:82:DF:57:95:C6:48:D5:0F:8D:35:90:70:44:D5:E2:A9:75:B3:1E:2C:A8:57:B5:93:B6:EB:2C:D3:44:0F:CC"
+  #   apple_app_ids:
+  #     - SM86NB3CPZ.app.tomoshibi.ios
+  #     - SM86NB3CPZ.app.tomoshibi.mac
+  #   testflight:
+  #     key_id: "XXXXXXXXXX"
+  #     issuer: "00000000-0000-0000-0000-000000000000"
+  #     key_file: /etc/tomoshibi/asc-testflight.p8
+  #     group: "00000000-0000-0000-0000-000000000000"
+  #     public_link: https://testflight.apple.com/join/1DFSjfsK

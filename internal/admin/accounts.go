@@ -74,6 +74,10 @@ type accountView struct {
 	// list is short and the page edits it whole.
 	Scopes []string `json:"scopes,omitempty"`
 
+	// Relays are the relays this account has of its own, by name. See
+	// store/own.go for what holding one means.
+	Relays []string `json:"relays,omitempty"`
+
 	// Perms is what is stored: only where this account differs from the
 	// defaults. Effective is every permission and whether the account holds
 	// it, which is what a page draws its checkboxes from — it would otherwise
@@ -84,7 +88,18 @@ type accountView struct {
 	// EmbySpent is what the media server relay has carried on this account's
 	// behalf since this process started. Not kept across a restart.
 	EmbySpent uint64 `json:"embySpent,omitempty"`
+
+	// Devices is what this account has joined from, newest first, one row per
+	// device, for as long as the rooms' histories keep the joins that say so.
+	// Absent where nothing was recorded, which is every account that has not
+	// joined since the joins began keeping it.
+	Devices []store.Seen `json:"devices,omitempty"`
 }
+
+// devicesShown is how many devices an account's row names: enough for a phone,
+// a laptop and an app, which is most people, and few enough that the list of
+// forty accounts the page polls stays small.
+const devicesShown = 5
 
 func (a *API) accounts(_ Session, w http.ResponseWriter, _ *http.Request) {
 	if a.ledger == nil {
@@ -100,6 +115,13 @@ func (a *API) accounts(_ Session, w http.ResponseWriter, _ *http.Request) {
 
 	spent := a.spending()
 
+	// One pass over the joins for the whole list, rather than one per account:
+	// the page asks for every account at once and redraws every half minute.
+	var used map[string][]store.Seen
+	if a.store != nil {
+		used = a.store.Devices(devicesShown)
+	}
+
 	out := make([]accountView, 0, len(list))
 	for _, account := range list {
 		// The avatar is reported as present rather than sent. A list of forty
@@ -108,8 +130,10 @@ func (a *API) accounts(_ Session, w http.ResponseWriter, _ *http.Request) {
 		view := accountView{
 			Name: account.Name, Trip: account.Trip,
 			Avatar: account.Avatar != "", Blocked: account.Blocked, Note: account.Note,
-			Scopes: account.Scopes, Perms: account.Perms, Effective: account.Effective(),
+			Scopes: account.Scopes, Relays: account.Relays,
+			Perms: account.Perms, Effective: account.Effective(),
 			EmbySpent: spent[account.Trip],
+			Devices:   used[account.Trip],
 		}
 
 		if !account.Created.IsZero() {
@@ -208,6 +232,10 @@ func (a *API) changeAccount(session Session, w http.ResponseWriter, r *http.Requ
 		// The whole list, replacing what was there. Absent leaves it alone;
 		// an empty list takes somebody out of every scope.
 		Scopes *[]string `json:"scopes"`
+		// The relays this account has of its own, the whole list, replacing
+		// what was there; empty gives it back the ordinary list. Absent leaves
+		// it alone.
+		Relays *[]string `json:"relays"`
 		// The permissions that were pressed, each laid over what is stored:
 		// a permission not named is left as it is. Words this build does not
 		// know are dropped. See the file comment for why not the whole set.
@@ -254,6 +282,17 @@ func (a *API) changeAccount(session Session, w http.ResponseWriter, r *http.Requ
 		changed = append(changed,
 			"scopes "+strings.Join(account.Scopes, ",")+" -> "+strings.Join(wanted, ","))
 		account.Scopes = wanted
+	}
+
+	// Recorded for the reason a scope is: who gave this person a machine of
+	// their own, and with it took every other one away from them, is a
+	// question somebody will ask after the fact.
+	if body.Relays != nil {
+		wanted := trimmed(*body.Relays)
+
+		changed = append(changed,
+			"relays "+strings.Join(account.Relays, ",")+" -> "+strings.Join(wanted, ","))
+		account.Relays = wanted
 	}
 
 	// The permissions to change, worked out before anything is written, so
@@ -339,7 +378,7 @@ func (a *API) changeAccount(session Session, w http.ResponseWriter, r *http.Requ
 	// of this request, and anything that changed in between, the person's own
 	// new picture among it, would be put back the way it was.
 	rest := body.Name != nil || body.Passphrase != nil || body.Blocked != nil ||
-		body.Note != nil || body.Scopes != nil
+		body.Note != nil || body.Scopes != nil || body.Relays != nil
 
 	if rest || body.Perms == nil {
 		if err := a.ledger.UpdateAccount(was, account); err != nil {
@@ -474,6 +513,10 @@ func failAccount(w http.ResponseWriter, err error) {
 		refuse(w, http.StatusBadRequest, "bad_scope")
 	case errors.Is(err, store.ErrUnknownPermission):
 		refuse(w, http.StatusBadRequest, "unknown_permission")
+	case errors.Is(err, store.ErrAccountNoSuchRelay):
+		refuse(w, http.StatusBadRequest, "no_such_relay")
+	case errors.Is(err, store.ErrAccountRelayReserved):
+		refuse(w, http.StatusBadRequest, "relay_reserved")
 	default:
 		refuse(w, http.StatusInternalServerError, "store_unavailable")
 	}

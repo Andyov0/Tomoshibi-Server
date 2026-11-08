@@ -56,7 +56,7 @@ export function Identity({
 	return (
 		<div
 			className={cn(
-				"overflow-hidden rounded-lg border border-border bg-surface",
+				"overflow-hidden rounded-[14px] border border-border bg-surface",
 				nameOnly ? "grid grid-cols-1" : "grid grid-cols-[1.25fr_1fr]",
 				"transition-[border-color,box-shadow]",
 				"focus-within:border-fg/40 focus-within:ring-2 focus-within:ring-fg/30",
@@ -77,7 +77,8 @@ export function Identity({
 				maxLength={80}
 				className={cn(
 					"h-11 min-w-0 bg-transparent px-3 text-fg text-sm outline-none",
-					"placeholder:text-fg-muted",
+					// Sixteen under a finger, or Safari zooms the page in on it.
+					"placeholder:text-fg-muted pointer-coarse:text-base",
 					fixed && "cursor-default text-fg-muted",
 				)}
 			/>
@@ -93,7 +94,7 @@ export function Identity({
 				<KeyRound
 					className={cn(
 						"pointer-events-none absolute left-3 size-3.5 transition-colors",
-						passphrase ? "text-tally" : "text-fg-muted",
+						passphrase ? "text-tally-ink" : "text-fg-muted",
 					)}
 				/>
 
@@ -107,9 +108,9 @@ export function Identity({
 					maxLength={200}
 					className={cn(
 						"h-11 min-w-0 w-full bg-transparent pl-8.5 text-fg text-sm outline-none",
-						"placeholder:text-fg-muted",
+						"placeholder:text-fg-muted pointer-coarse:text-base",
 						// Room for the eye only while there is one.
-						passphrase ? "pr-9" : "pr-3",
+						passphrase ? "pr-10 pointer-coarse:pr-12" : "pr-3",
 					)}
 				/>
 
@@ -125,14 +126,14 @@ export function Identity({
 						type="button"
 						onClick={() => setShown((was) => !was)}
 						aria-label={shown ? t("Hide passphrase") : t("Show passphrase")}
-						aria-pressed={shown}
 						className={cn(
-							"absolute right-2 grid size-6 place-items-center rounded text-fg-muted",
-							"transition-colors hover:text-fg",
+							// Thirty-two, forty-four under a finger; it was twenty-four.
+							"pressable absolute right-1.5 grid size-8 place-items-center rounded-full text-fg-muted",
+							"hover:bg-wash hover:text-fg pointer-coarse:right-0 pointer-coarse:size-11",
 							"outline-none focus-visible:ring-2 focus-visible:ring-fg/70",
 						)}
 					>
-						{shown ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+						{shown ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
 					</button>
 				)}
 			</div>

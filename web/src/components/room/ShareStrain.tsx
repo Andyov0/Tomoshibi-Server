@@ -45,12 +45,12 @@ export function ShareStrain({
 			aria-live="polite"
 			className={cn(
 				"pointer-events-auto flex w-[min(24rem,100%)] flex-col gap-2.5 rounded-xl border border-border",
-				"bg-surface/95 p-3 shadow-2xl backdrop-blur-md",
+				"bg-surface p-3 shadow-2xl",
 				leaving ? "animate-depart" : "animate-arrive",
 			)}
 		>
 			<div className="flex items-start gap-2.5">
-				<Gauge className="mt-0.5 size-4 shrink-0 text-tally" />
+				<Gauge className="mt-0.5 size-4 shrink-0 text-tally-ink" />
 				<div className="flex min-w-0 flex-col gap-1">
 					<p className="text-[12.5px] text-fg leading-snug">
 						{t("Your connection is sending about {have} Mbps, and this share needs about {need} Mbps, so it stutters.", {

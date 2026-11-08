@@ -7,6 +7,7 @@ import {
 	type TrackPublishOptions,
 } from "livekit-client";
 import { keep, recall } from "@/lib/storage";
+import { MAX_VOLUME } from "./hearing";
 import { LOCAL, musicArrived, musicFactor, musicLeft, subscribeDuck } from "./duck";
 import { type Channel, MUSIC, SHARED, decodedToInt24, onChannel, toInt24 } from "./lossless";
 import { LosslessSender, canSendLossless } from "./lossless-sender";
@@ -451,11 +452,12 @@ export function monitorVolume(): number {
 	// music to everybody but its own speakers.
 	const raw = recall(MONITOR_KEY);
 	const kept = Number(raw);
-	return raw != null && raw !== "" && Number.isFinite(kept) && kept >= 0 && kept <= 1 ? kept : 1;
+	return raw != null && raw !== "" && Number.isFinite(kept) && kept >= 0 && kept <= MAX_VOLUME ? kept : 1;
 }
 
 export function setMonitorVolume(room: Room, volume: number): void {
-	const level = Math.max(0, Math.min(1, volume));
+	// A gain, so up to three times as loud as the file, as anybody else's music may be (hearing.ts).
+	const level = Math.max(0, Math.min(MAX_VOLUME, volume));
 	keep(MONITOR_KEY, level === 1 ? undefined : String(level));
 	const output = outputs.get(room);
 	if (output) output.monitor.gain.value = level * musicFactor(LOCAL);

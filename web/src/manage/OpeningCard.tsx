@@ -62,7 +62,7 @@ export function OpeningCard({
 		<Card title={t("New rooms")} note={t("Who can start one")}>
 			{error && <Failed>{error}</Failed>}
 
-			<div className="flex flex-col gap-3 px-3 py-3 sm:px-4">
+			<div className="flex flex-col gap-3 px-2 py-3 sm:px-3">
 				{/*
 				  * Three rows rather than three segments. The labels are not the
 				  * same length and the difference between them is not a matter of
@@ -109,7 +109,7 @@ export function OpeningCard({
 				    unselected — which is what every option above would look like,
 				    with nothing explaining why. */}
 				{(value?.chosen === "anyone" || value?.chosen === "signed") && (
-					<p className="text-[11.5px] text-tally leading-relaxed">
+					<p className="text-[12.5px] text-tally-ink leading-relaxed">
 						{t(
 							"Set in the configuration file to let anybody start a meeting here — \"signed\" included, since a passphrase is whatever somebody types. Change it there.",
 						)}
@@ -151,34 +151,36 @@ export function Choice({
 			disabled={disabled}
 			onClick={onChoose}
 			className={cn(
-				"group relative flex items-start gap-3 rounded-lg py-2.5 pr-3 pl-3 text-left",
+				"group relative flex items-start gap-3 rounded-[10px] py-2.5 pr-3 pl-3 text-left outline-none",
 				"transition-colors duration-150",
-				"focus-visible:outline-2 focus-visible:outline-fg focus-visible:outline-offset-1",
-				chosen ? "bg-fg/8" : "hover:bg-fg/5",
+				"focus-visible:ring-2 focus-visible:ring-fg/70",
+				chosen ? "bg-surface-hi" : "hover:bg-wash",
 				disabled && "cursor-not-allowed opacity-60 hover:bg-transparent",
 			)}
 		>
 			{/* A ring that fills rather than a tick that appears, so the three of
-			    them read as one question with one answer. */}
+			    them read as one question with one answer. In the foreground, as
+			    the boxes are: the amber is for what is happening, and a setting
+			    somebody chose is not that. */}
 			<span
 				className={cn(
 					"mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border transition-colors duration-150",
-					chosen ? "border-tally" : "border-fg/25 group-hover:border-fg/40",
+					chosen ? "border-fg" : "border-fg/30 group-hover:border-fg/50",
 				)}
 			>
 				<span
 					className={cn(
-						"size-2 rounded-full bg-tally transition-transform duration-150",
+						"size-2 rounded-full bg-fg transition-transform duration-150",
 						chosen ? "scale-100" : "scale-0",
 					)}
 				/>
 			</span>
 
 			<span className="min-w-0">
-				<span className={cn("block text-[13px]", chosen ? "font-medium text-fg" : "text-fg")}>
+				<span className={cn("block text-[14px]", chosen ? "font-medium text-fg" : "text-fg")}>
 					{label}
 				</span>
-				<span className="mt-0.5 block text-[11.5px] text-fg-muted leading-relaxed">
+				<span className="mt-0.5 block text-[12.5px] text-fg-muted leading-relaxed">
 					{describes}
 				</span>
 			</span>
@@ -298,7 +300,7 @@ export function Note({ kind, children }: { kind: "warn" | "quiet"; children: Rea
 				// The one signal colour this interface has. A second hue for
 				// warnings would be a second thing on screen claiming to be the
 				// thing worth looking at.
-				kind === "warn" ? "border-tally text-tally" : "border-border text-fg-muted",
+				kind === "warn" ? "border-tally text-tally-ink" : "border-border text-fg-muted",
 			)}
 		>
 			{children}
@@ -377,7 +379,7 @@ export function JoiningCard({
 		<Card title={t("Joining a room")} note={t("Who can get in")}>
 			{error && <Failed>{error}</Failed>}
 
-			<div className="flex flex-col gap-3 px-3 py-3 sm:px-4">
+			<div className="flex flex-col gap-3 px-2 py-3 sm:px-3">
 				<div
 					role="radiogroup"
 					aria-label={t("Who can join a room that already exists")}
@@ -413,7 +415,7 @@ export function JoiningCard({
 				    file by somebody who meant it, and this says so rather than
 				    drawing a row that appears to be unselected. */}
 				{value?.chosenJoin === "anyone" && (
-					<p className="text-[11.5px] text-tally leading-relaxed">
+					<p className="text-[12.5px] text-tally-ink leading-relaxed">
 						{t(
 							"Set in the configuration file to let in anybody who has a room's name — and a room here is a name, so anybody who guesses one. Change it there.",
 						)}
@@ -424,7 +426,7 @@ export function JoiningCard({
 				    setting cannot lock the deployment out of itself, and somebody
 				    who picks it should be told that rather than discovering it. */}
 				{value && value.chosenJoin !== value.joinedBy && (
-					<p className="text-[11.5px] text-tally leading-relaxed">
+					<p className="text-[12.5px] text-tally-ink leading-relaxed">
 						{t(
 							"Set to {chosen}, running as {effect}: nothing could satisfy the stricter one, so it would have shut everybody out including you.",
 							{ chosen: value.chosenJoin, effect: value.joinedBy },

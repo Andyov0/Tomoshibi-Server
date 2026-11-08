@@ -35,6 +35,11 @@ export type { Opening };
 export type Arriving = {
 	/** The room an invitation names, if one was presented and was good. */
 	invitation?: string;
+	/**
+	 * Whether that invitation is the one this tab kept from an earlier visit,
+	 * rather than one the address carries now.
+	 */
+	invitationKept?: boolean;
 	/** The room the address names, empty when it names none. */
 	address: string;
 	/** The room this tab was last in, empty when it was in none. */
@@ -73,8 +78,21 @@ export function doorway(arriving: Arriving): Landing {
 	 * room. The link in hand names where they mean to be; an invitation to the
 	 * same room is the shorter way in, and to any other room it is a stale
 	 * scrap of a different day.
+	 *
+	 * And the same for a plain address. This was written for a meeting link
+	 * alone, so a tab that had been let into one room on an invitation, and
+	 * was then pointed at another by its address, was taken back to the first
+	 * and had its address rewritten to say so: the person pressed Join for the
+	 * room they meant and was put in the one they had left (the health check
+	 * of 2026-10-29). An invitation the address carries is the link in hand
+	 * and still wins over whatever room the address also names; the one the
+	 * tab kept wins only for the room it is for.
 	 */
-	const elsewhere = Boolean(arriving.meeting && arriving.address && arriving.invitation !== arriving.address);
+	const elsewhere = Boolean(
+		arriving.address &&
+			arriving.invitation !== arriving.address &&
+			(arriving.meeting || arriving.invitationKept),
+	);
 
 	/*
 	 * And back into the call where this tab was in that room a moment ago,

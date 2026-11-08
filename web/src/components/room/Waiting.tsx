@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { useT } from "@/hooks/useT";
 import { Refused } from "@/live/api";
 import { type Arrangement, HOST_NOT_COMING_AFTER, arranged, askEvery, whenSaid } from "@/live/meeting";
+import { hush } from "@/live/progress";
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -76,6 +77,10 @@ export function Waiting({
 	onStart: () => void;
 }) {
 	const t = useT();
+
+	// No bar along the top while waiting here (live/progress.ts): the page
+	// asks every so often whether the meeting has begun, and says itself that it is waiting.
+	useEffect(() => hush(), []);
 
 	const [meeting, setMeeting] = useState<Arrangement>();
 	const [gone, setGone] = useState<"ended" | "cancelled" | "not-coming">();

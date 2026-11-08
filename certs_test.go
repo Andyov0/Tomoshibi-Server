@@ -163,3 +163,66 @@ func TestACertificateThatDoesNotLoadIsRefusedAtStartup(t *testing.T) {
 			"listener that comes up and refuses every handshake for reasons nothing says")
 	}
 }
+
+// A silent relay hands its certificate only to a handshake that names what the
+// certificate answers for. A handshake that names nothing used to receive the
+// deployment's wildcard, which names the deployment.
+func TestASilentRelayDoesNotHandItsCertificateToAHandshakeNamingNothing(t *testing.T) {
+	dir := t.TempDir()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	write := func(template x509.Certificate) *keypair {
+		t.Helper()
+
+		der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		marshalled, _ := x509.MarshalECPrivateKey(key)
+		certPath, keyPath := dir+"/"+template.Subject.CommonName+".pem", dir+"/"+template.Subject.CommonName+".key"
+
+		_ = os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
+		_ = os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: marshalled}), 0o600)
+
+		pair, err := newKeypair(certPath, keyPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return pair
+	}
+
+	wildcard := write(x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "wildcard"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		DNSNames: []string{"*.relay.example.invalid"},
+	})
+
+	for name, want := range map[string]bool{
+		"":                            false,
+		"tokyo.relay.example.invalid": true,
+		"relay.example.invalid":       false,
+		"meet.example.invalid":        false,
+	} {
+		got, err := wildcard.named(&tls.ClientHelloInfo{ServerName: name})
+		if served := err == nil && got != nil; served != want {
+			t.Errorf("a handshake naming %q was served %v, want %v", name, served, want)
+		}
+	}
+
+	// A relay dialled by address has no name to be asked for.
+	address := write(x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "address"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IPAddresses: []net.IP{net.ParseIP("203.0.113.31")},
+	})
+
+	if got, err := address.named(&tls.ClientHelloInfo{}); err != nil || got == nil {
+		t.Errorf("a relay holding a certificate for its address refused a handshake naming nothing: %v", err)
+	}
+}

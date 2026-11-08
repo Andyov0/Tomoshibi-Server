@@ -2,8 +2,11 @@ package store
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
+
+	"tomoshibi/internal/room"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -109,7 +112,7 @@ type Arrival struct {
 // is no evidence of anything.
 type Client struct {
 	// Kind is "web" for a browser, the platform of one of the apps ("iphone",
-	// "ipad", "mac", "android", "windows"), "app" for an app too old to say
+	// "ipad", "mac", "android", "windows", "linux"), "app" for an app too old to say
 	// which, or "other".
 	Kind string `json:"kind"`
 	// App is the app's version, for an app that says it.
@@ -373,4 +376,110 @@ func forgetArrivals(tx *bolt.Tx, room string) error {
 	}
 
 	return nil
+}
+
+// Seen is one thing somebody has joined from, the last time they used it, and
+// the room they used it for then.
+type Seen struct {
+	Client Client    `json:"client"`
+	At     time.Time `json:"at"`
+	Room   string    `json:"room"`
+}
+
+// Devices reads what each signature has joined from, newest first, at most
+// perTrip of them each.
+//
+// Read from the joins rather than kept beside the accounts, because the joins
+// are already where it is written down and they are the only record of it:
+// a second copy would be one more thing to keep in step, and would go on
+// naming a phone for a person after the history that said so had been swept.
+// It answers for as long as the rooms' histories do, which is the window the
+// page says it covers.
+//
+// One row per device rather than per join. Somebody who joins from the same
+// phone every day is one phone, and what an operator helping them asks is
+// which things they use, not how often. A device is its kind, its browser or
+// its model, and its system's name — not its version, so an app that updated
+// itself is still the one phone, read with the version it has now.
+//
+// Guests are left out. A guest's signature is drawn from nothing and is new in
+// every tab, so a list of what it joined from is a list about nobody.
+func (s *Store) Devices(perTrip int) map[string][]Seen {
+	if perTrip <= 0 {
+		perTrip = 5
+	}
+
+	found := map[string][]Seen{}
+
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(arrivals)
+		if bucket == nil {
+			return nil
+		}
+
+		return bucket.ForEach(func(key, raw []byte) error {
+			var arrival Arrival
+			if err := json.Unmarshal(raw, &arrival); err != nil || arrival.Client == nil {
+				return nil
+			}
+
+			parts := strings.SplitN(string(key), "\x00", 3)
+			if len(parts) != 3 {
+				return nil
+			}
+
+			mark, ok := room.SignatureOf(parts[2])
+			if !ok || !mark.Proven {
+				return nil
+			}
+
+			seen := found[mark.Trip]
+			same := -1
+			for i := range seen {
+				if sameDevice(seen[i].Client, *arrival.Client) {
+					same = i
+					break
+				}
+			}
+
+			switch {
+			case same < 0:
+				seen = append(seen, Seen{Client: *arrival.Client, At: arrival.At, Room: parts[0]})
+			case arrival.At.After(seen[same].At):
+				seen[same] = Seen{Client: *arrival.Client, At: arrival.At, Room: parts[0]}
+			}
+
+			found[mark.Trip] = seen
+
+			return nil
+		})
+	})
+
+	for trip, seen := range found {
+		sort.Slice(seen, func(i, j int) bool { return seen[i].At.After(seen[j].At) })
+		if len(seen) > perTrip {
+			seen = seen[:perTrip]
+		}
+
+		found[trip] = seen
+	}
+
+	return found
+}
+
+// sameDevice says whether two joins came from the same thing, as far as a
+// person reading the page would count it: the same kind, the same browser
+// (whatever its version), the same model, on the same system (whatever its
+// version).
+func sameDevice(a, b Client) bool {
+	family := func(text string) string {
+		if at := strings.LastIndexByte(text, ' '); at > 0 && strings.IndexAny(text[at+1:], "0123456789") == 0 {
+			return text[:at]
+		}
+
+		return text
+	}
+
+	return a.Kind == b.Kind && family(a.Browser) == family(b.Browser) &&
+		a.Device == b.Device && family(a.System) == family(b.System)
 }

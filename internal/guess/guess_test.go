@@ -210,3 +210,40 @@ func TestNoLimiterLetsEverythingThrough(t *testing.T) {
 	attempt.Failed()
 	attempt.Settled()
 }
+
+// One host on IPv6 holds a /64, and counting each address in it as a caller
+// would hand it eighteen quintillion allowances.
+func TestAnIPv6SubscriberIsOneCaller(t *testing.T) {
+	limit := New()
+
+	for i := 0; i < PerAddress; i++ {
+		limit.Failed("2001:db8:1:2::" + strconv.FormatInt(int64(i+1), 16))
+	}
+
+	if limit.Allow("2001:db8:1:2:ffff::9") {
+		t.Error("another address in the same /64 was a fresh caller")
+	}
+
+	if !limit.Allow("2001:db8:1:3::1") {
+		t.Error("the next /64 along was refused, so the whole range is one caller")
+	}
+}
+
+// A door can be sized for what arrives at it.
+func TestABudgetCanBeSizedForItsDoor(t *testing.T) {
+	limit := NewWith(PerAddress, Join)
+
+	for i := 0; i < Join-1; i++ {
+		limit.Failed("10.1." + strconv.Itoa(i/250) + "." + strconv.Itoa(i%250))
+	}
+
+	if !limit.Allow("192.0.2.1") {
+		t.Errorf("a door sized for %d refused a fresh caller after %d", Join, Join-1)
+	}
+
+	limit.Failed("192.0.2.2")
+
+	if limit.Allow("192.0.2.3") {
+		t.Errorf("a door sized for %d let a fresh caller through after %d", Join, Join)
+	}
+}

@@ -49,6 +49,19 @@ const A_MOMENT = 3000;
  */
 const AT_MOST = 10_000;
 
+/**
+ * How long a leave is held before it is said, in case it is a reload.
+ *
+ * A reload keeps the identity (README, on identities), and the server sees the
+ * old connection go and a new one with the same identity arrive. Everybody
+ * else was told "Alex left" and "Alex joined" for it, which is exactly what a
+ * reload is promised not to look like (the health check of 2026-10-29). The
+ * way back in is a page load, two requests and a connection, a second or two
+ * on an ordinary network; five gives a slow one room. A leave that is a leave
+ * is said that much later, which costs nothing: it is news, not an alarm.
+ */
+export const BACK_WITHIN = 5000;
+
 
 /**
  * Watch a room and report the handful of things worth reporting.
@@ -59,12 +72,32 @@ const AT_MOST = 10_000;
 export function watch(room: Room): () => void {
 	const named = (participant: Participant) => participant.name || participant.identity;
 
+	// Leaves not yet said, by identity, so that the same identity coming back
+	// within BACK_WITHIN is a reload and neither half of it is said.
+	const leaving = new Map<string, ReturnType<typeof setTimeout>>();
+
 	const onJoin = (participant: Participant) => {
+		const back = leaving.get(participant.identity);
+		if (back !== undefined) {
+			clearTimeout(back);
+			leaving.delete(participant.identity);
+			return;
+		}
+
 		raised(toast(t("{name} joined", { name: named(participant) }), { duration: BRIEFLY, ...followed }));
 	};
 
 	const onLeave = (participant: Participant) => {
-		raised(toast(t("{name} left", { name: named(participant) }), { duration: BRIEFLY, ...followed }));
+		const name = named(participant);
+
+		clearTimeout(leaving.get(participant.identity));
+		leaving.set(
+			participant.identity,
+			setTimeout(() => {
+				leaving.delete(participant.identity);
+				raised(toast(t("{name} left", { name }), { duration: BRIEFLY, ...followed }));
+			}, BACK_WITHIN),
+		);
 	};
 
 	const onPublished = (publication: { source: Track.Source; trackName: string }, participant: Participant) => {
@@ -90,6 +123,11 @@ export function watch(room: Room): () => void {
 		room.off(RoomEvent.ParticipantConnected, onJoin);
 		room.off(RoomEvent.ParticipantDisconnected, onLeave);
 		room.off(RoomEvent.TrackPublished, onPublished);
+
+		// Whoever was still to be said to have left is not said after this
+		// page has left the call itself.
+		for (const timer of leaving.values()) clearTimeout(timer);
+		leaving.clear();
 	};
 }
 
@@ -231,6 +269,30 @@ export function actionFailed(reason: string): void {
  */
 export function actionDone(said: string): void {
 	raised(toast.success(said, { duration: AT_MOST, ...followed }));
+}
+
+/**
+ * A volume taken past as loud as it was sent: up to three times, which can harm
+ * somebody's hearing, and they are told so as they cross (the owner asked for
+ * the warning with the loudness, 2026-11-05). Each time a slider goes over one,
+ * not once for good: the second person at the same computer has not read it.
+ * One at a time, under one id, so dragging back and forth over the line does
+ * not stack them.
+ *
+ * `echo` for somebody else's sound in the call, which above one is played
+ * through Web Audio and out of the browser's echo cancelling (live/boost.ts):
+ * on speakers the person turned up can hear themselves come back.
+ */
+export function louderThanSent(echo: boolean): void {
+	raised(
+		toast.warning(t("Above 100% can harm your hearing"), {
+			id: "louder-than-sent",
+			description: echo ? t("On speakers they may hear themselves back; headphones avoid it.") : undefined,
+			duration: AT_MOST,
+			closeButton: true,
+			...followed,
+		}),
+	);
 }
 
 /**

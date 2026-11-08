@@ -68,6 +68,11 @@ type remoteAnswer struct {
 	Off     []string                     `json:"off"`
 	Params  map[string]float64           `json:"params"`
 	Phrases map[string]map[string]string `json:"phrases"`
+	// SignInNotice is the sign-in page's notice, for apps from the release
+	// that shows it. Last, where its name puts it, and left out where there is
+	// none, so that the revision every app already holds is the same until one
+	// is published.
+	SignInNotice *remote.Notice `json:"signInNotice,omitempty"`
 }
 
 // remoteView is the answer with its revision at the front.
@@ -169,6 +174,9 @@ func tell(settings remote.Settings, client *store.Client, now time.Time) remoteA
 	// Over is the same as never published. An app that still has an ended
 	// notice cached drops it at this answer, and one that was offline past
 	// the end has the end itself to go by.
+	if settings.SignInNotice.Showing(now) {
+		answer.SignInNotice = settings.SignInNotice
+	}
 	if settings.Notice.Showing(now) {
 		answer.Notice = settings.Notice
 	}

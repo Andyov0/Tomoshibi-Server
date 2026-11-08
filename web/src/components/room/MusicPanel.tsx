@@ -1,7 +1,9 @@
 import { SoundRow } from "@/components/room/SoundPanel";
+import { VolumeRange } from "@/components/room/VolumeRange";
 import { Button } from "@/components/ui/button";
 import { useRoster } from "@/hooks/useRoomState";
 import { rememberedDucking, setDucking, subscribeDuck } from "@/live/duck";
+import { MAX_VOLUME } from "@/live/hearing";
 import { useT } from "@/hooks/useT";
 import { rememberMusicQuality, rememberedMusicQuality } from "@/live/preferences";
 import { cn } from "@/lib/utils";
@@ -173,17 +175,23 @@ export function MusicPanel({
 		<aside
 			className={cn(
 				"absolute z-20 flex flex-col overflow-hidden border border-border",
-				"bg-surface/95 shadow-2xl backdrop-blur-md",
+				"bg-surface shadow-2xl",
 				leaving ? "animate-depart" : "animate-arrive",
 				"inset-x-0 bottom-0 h-[70%] rounded-t-2xl",
 				"pb-[calc(env(safe-area-inset-bottom)+3.5rem)] sm:pb-0",
 				"sm:inset-x-auto sm:right-3 sm:bottom-3 sm:h-[min(34rem,calc(100%-5.5rem))] sm:w-80 sm:rounded-xl",
 			)}
 		>
-			<header className="flex items-center justify-between border-border border-b px-3 py-2">
-				<strong className="font-semibold text-[12.5px]">{t("Music")}</strong>
-				<Button variant="ghost" size="icon" className="size-6" aria-label={t("Close music")} onClick={onClose}>
-					<X className="size-3.5" />
+			<header className="flex items-center justify-between border-border border-b py-1.5 pr-1.5 pl-4">
+				<strong className="font-semibold text-[14px]">{t("Music")}</strong>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="size-8 rounded-full text-fg-muted hover:text-fg pointer-coarse:size-11"
+					aria-label={t("Close music")}
+					onClick={onClose}
+				>
+					<X />
 				</Button>
 			</header>
 
@@ -296,17 +304,17 @@ function DeskTab({
 						{mine ? (
 							<label className="flex items-center gap-2 px-2 text-[11px] text-fg-muted">
 								<span className="shrink-0">{t("In your speakers")}</span>
-								<input
-									type="range"
-									min={0}
-									max={1}
-									step={0.05}
+								<VolumeRange
 									value={speakers}
-									aria-label={t("Music volume in your speakers")}
-									onChange={(event) => setMonitorVolume(room, event.target.valueAsNumber)}
+									max={MAX_VOLUME}
+									echo={false}
+									label={t("Music volume in your speakers")}
+									onChange={(volume) => setMonitorVolume(room, volume)}
 									className="w-full cursor-pointer accent-fg"
 								/>
-								<span className="readout w-9 shrink-0 text-right tabular-nums">{`${Math.round(speakers * 100)}%`}</span>
+								<span className={cn("readout w-9 shrink-0 text-right tabular-nums", speakers > 1 && "text-tally-ink")}>
+									{`${Math.round(speakers * 100)}%`}
+								</span>
 							</label>
 						) : (
 							<SoundRow identity={desk.holder} sound="music" name={t("Music")} />
@@ -585,7 +593,7 @@ function SearchTab({ room, libraries, onAdd }: { room: Room; libraries: Library[
 			</div>
 
 			<div className="flex flex-1 flex-col overflow-y-auto p-1.5">
-				{problem && <p className="px-2 py-2 text-[12px] text-danger">{problem}</p>}
+				{problem && <p className="px-2 py-2 text-[12px] text-danger-ink">{problem}</p>}
 				{results === undefined ? (
 					<p className="px-3 py-8 text-center text-fg-muted text-xs">{t("Search for a song to play into the call.")}</p>
 				) : results.length === 0 ? (
@@ -654,7 +662,7 @@ function PlaylistTab({ room, onAdd }: { room: Room; onAdd: (songs: Song[]) => vo
 			</form>
 
 			<div className="flex flex-1 flex-col overflow-y-auto p-1.5">
-				{problem && <p className="px-2 py-2 text-[12px] text-danger">{problem}</p>}
+				{problem && <p className="px-2 py-2 text-[12px] text-danger-ink">{problem}</p>}
 				{found ? (
 					<>
 						<div className="flex items-center gap-2 px-2 py-1.5">

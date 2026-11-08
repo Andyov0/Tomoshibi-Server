@@ -104,9 +104,10 @@ After a fleet upgrade, read one relay's start:
 `journalctl -u tomoshibi-relay -n 40 -o cat | grep 'how each viewer'` still
 shows `send side bwe` true and `video nack window` 4000.
 
-**Re-enrolment** (`REPLACE=1`) also installs the control node's current
-binary, but rewrites `relay.yaml` and loses hand edits; it is for rebuilt
-machines ([chapter 5](relays.md#maintenance)).
+**Re-enrolment** (a token minted with **Takes over the relay already called
+this**) also installs the control node's current binary, but rewrites
+`relay.yaml` and loses hand edits; it is for rebuilt machines
+([chapter 5](relays.md#maintenance)).
 
 ## Monitoring and alerts
 
@@ -295,11 +296,14 @@ What the server says, and what it means:
 | Sign-in answers 401 after editing `meet.admins` | The file is read on first start only. | `dev/roster` ([chapter 4](control-node.md#locked-out)). |
 | Nobody's passphrase works any more, administrators included | The tripcode key was lost or replaced (a missing one is silently recreated). | Restore `tripcode.key` from backup. |
 | The control node will not start: `no relays are listed under meet.relays` | The file's list is empty. | Keep at least one entry in the file. |
-| `/install` answers 503 `no_enrolment` | No `meet.enrol.secret` or `domain`. | Configure enrolment, restart. |
-| The install stops at "the control node refused this machine" | Wrong secret (403 `wrong_secret`), the prefix is taken (409 `relay_exists`), a bad prefix or address (400), too many attempts (429), or the control node cannot read the certificate (500 `no_certificate`). | The control node's log says which. |
+| `/install` answers 503 `no_enrolment` | No `meet.enrol.domain`. | Configure enrolment, restart. |
+| The install stops before it starts | The token was given as an argument, or none was given. | Run the command as printed and paste the token at the prompt. |
+| The install says the token was not accepted | It was used, withdrawn, expired (403 `wrong_secret`), minted for another prefix (`wrong_prefix`) or another source address (`wrong_source`). | Mint another on the relays page. |
+| The install stops at "the control node refused this machine" | The prefix is taken and the token does not take it over (409 `relay_exists`), a bad prefix or a non-public address (400), too many attempts (429), or the control node cannot read the certificate (500 `no_certificate`) or hash its binary (503 `no_binary`). | The control node's audit log says which, with the source address. |
+| The install says the binary is not the one the control node is serving | Something between the machine and the control node answered the download: a caching proxy, a cut transfer. | Fetch again without the proxy. |
 | The install stops at "the certificate came back empty" | The control node has no certificate to hand out. | `meet.enrol.cert_file` / `key_file`, readable by the service. |
 | The installed binary does not execute | Architecture differs from the control node's. | `meet.enrol.binary`, or install by hand. |
-| A relay enrolled under the wrong address | The address was worked out through a proxy, or the machine has several. | Re-run with `ADDRESS=<ipv4>` and `REPLACE=1`, or fix the DNS record. |
+| A relay enrolled under the wrong address | The address was worked out through a proxy, or the machine has several. | Re-run with `ADDRESS=<ipv4>` and a takeover token, or fix the DNS record. |
 | A relay shows unreachable on the pages and carries calls fine | The control node's own path to it. | Ask from elsewhere. A relay's state from one vantage point is a suspicion. |
 | A relay is reachable and its media is not, only from the control node | The same. Reported, and the relay stays in service. | `udpcheck` from another machine. |
 | A mainland relay stops answering after a while | It answered an HTTP probe and its domain was taken off the air. | `meet.silent: true`. |

@@ -10,26 +10,30 @@ import (
 	"tomoshibi/internal/admin"
 	"tomoshibi/internal/config"
 	"tomoshibi/internal/guess"
+	"tomoshibi/internal/room"
+	"tomoshibi/internal/store"
 )
 
 /*
- * A passphrase is checked at three doors and there is one budget between them.
+ * A passphrase is checked at several doors, and each is bounded on its own.
  *
  * The management sign-in was held to ten guesses a minute with a ceiling on the
  * whole endpoint. The join was held to ten a second with no ceiling at all —
  * and the join checks the same secret, against every administrator at once, and
- * says what it found: a room nobody has used opens, a reserved relay refuses,
- * and the host endpoint answers "admin". So did the account sign-in, which
- * accepts an administrator's name and passphrase and returns a session that
- * moderates every room for thirty days.
+ * says what it found. So every door is bounded.
  *
- * Sixty times the rate through doors nobody had counted as doors. A dictionary
- * that takes years at the sign-in took an afternoon at the join, and nothing in
- * the audit log would have shown it: the join does not write failures down,
- * because until now it had no notion of a failed guess.
+ * They were one shared budget, and that turned out to be the fault the other
+ * way round. Every passphrase join that was not an administrator's counted as a
+ * failure, and the join is where everybody with a passphrase arrives — the field
+ * is filled from local storage on every visit — so a meeting starting on the
+ * hour spent the ceiling by itself, and with it shut the management sign-in,
+ * the account sign-in and the enrolment. Nor did it take a meeting: any page
+ * could make its visitors' browsers post wrong passphrases to the join.
  *
- * These tests are about the budget being shared, not about its size. A limit on
- * one door and not the others is not three limits; it is none.
+ * So these tests hold three things. Guessing is still bounded at the join. The
+ * ordinary traffic of the join — a browser's own passphrase again, an account's
+ * passphrase, no passphrase — spends nothing. And neither a spent join nor a
+ * page on another site can shut any other door.
  */
 
 // A deployment with a management side, which is where the budget lives.
@@ -101,32 +105,119 @@ func TestTheRightPassphraseAtTheJoinSpendsNothing(t *testing.T) {
 	}
 }
 
-// The budget is one budget. Spending it at the join must close the account
-// sign-in too, or an attacker simply moves to whichever door is still open.
-func TestTheAccountSignInSharesTheJoinsBudget(t *testing.T) {
+// A browser bringing its own passphrase back is not guessing, however often
+// it comes, and neither is somebody typing their account's.
+func TestAPassphraseThisBrowserHasUsedIsNotAGuess(t *testing.T) {
+	_, mux := mountWithAdmin(t, []config.Admin{administrator()})
+
+	first := ask(mux, join("standup", "my own passphrase"))
+	if first.Code != http.StatusOK {
+		t.Fatalf("the first join answered %d", first.Code)
+	}
+
+	var remembered *http.Cookie
+	for _, cookie := range first.Result().Cookies() {
+		if cookie.Name == knownCookie {
+			remembered = cookie
+		}
+	}
+
+	if remembered == nil || !remembered.HttpOnly || remembered.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("the join left no HttpOnly, SameSite=Strict note of the passphrase: %+v", remembered)
+	}
+
+	for i := 0; i < guess.Join*2; i++ {
+		request := join("standup", "my own passphrase")
+		request.AddCookie(remembered)
+
+		if code := ask(mux, request).Code; code != http.StatusOK {
+			t.Fatalf("a browser's own passphrase was refused on its %d-th return: %d", i+2, code)
+		}
+	}
+
+	// And the note is for that passphrase only: carrying it does not make a
+	// different one free, or it would be a way around the budget.
+	for i := 0; i < guess.PerAddress; i++ {
+		request := join("standup", "a guess")
+		request.AddCookie(remembered)
+		ask(mux, request)
+	}
+
+	request := join("standup", "another guess")
+	request.AddCookie(remembered)
+
+	if code := ask(mux, request).Code; code != http.StatusTooManyRequests {
+		t.Errorf("guesses carrying another passphrase's note were not charged: %d", code)
+	}
+}
+
+func TestAnAccountsPassphraseAtTheJoinSpendsNothing(t *testing.T) {
+	app, mux := mountWithAdmin(t, []config.Admin{administrator()})
+
+	if err := app.store.AddAccount(store.Account{Name: "ada", Trip: room.Trip(tripKey, "ada's passphrase")}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < guess.Join*2; i++ {
+		if code := ask(mux, join("standup", "ada's passphrase")).Code; code != http.StatusOK {
+			t.Fatalf("an account's own passphrase was refused on join %d: %d", i+1, code)
+		}
+	}
+}
+
+// A page on another site cannot spend anything, because it is not answered.
+func TestAPageOnAnotherSiteCannotSpendTheJoinsBudget(t *testing.T) {
+	_, mux := mountWithAdmin(t, []config.Admin{administrator()})
+
+	for i := 0; i < guess.Join*2; i++ {
+		request := join("standup", "a guess posted by somebody else's page")
+		request.Header.Set("Sec-Fetch-Site", "cross-site")
+
+		if code := ask(mux, request).Code; code != http.StatusForbidden {
+			t.Fatalf("a join posted from another site answered %d, want 403", code)
+		}
+	}
+
+	if code := ask(mux, join("standup", "a stranger's first passphrase")).Code; code != http.StatusOK {
+		t.Errorf("after a page elsewhere posted %d guesses, a real join answered %d", guess.Join*2, code)
+	}
+}
+
+// Spending the join's budget closes the join and nothing else.
+func TestASpentJoinLeavesTheOtherDoorsOpen(t *testing.T) {
 	_, mux := mountWithAdmin(t, []config.Admin{administrator()})
 
 	for i := 0; i < guess.PerAddress; i++ {
 		ask(mux, join("standup", "wrong"))
 	}
 
-	recorder := ask(mux, signIn("adam", "wrong"))
+	if code := ask(mux, join("standup", "wrong")).Code; code != http.StatusTooManyRequests {
+		t.Fatalf("the join's budget was not spent, so this test proves nothing: %d", code)
+	}
 
-	if recorder.Code != http.StatusTooManyRequests {
-		t.Errorf("the account sign-in answered %d after the join's budget was spent, want 429", recorder.Code)
+	if code := ask(mux, signIn("adam", "wrong")).Code; code == http.StatusTooManyRequests {
+		t.Error("the account sign-in was shut by guesses at the join")
+	}
+
+	// And joining without a passphrase is untouched by any of it.
+	if code := ask(mux, join("standup", "")).Code; code != http.StatusOK {
+		t.Errorf("an open room was shut by guesses at the join: %d", code)
 	}
 }
 
-// And the other way round, because a shared budget that only fills from one
-// side is two budgets with extra steps.
-func TestTheJoinSharesTheAccountSignInsBudget(t *testing.T) {
+// And the other way round.
+func TestASpentSignInLeavesTheJoinOpen(t *testing.T) {
 	_, mux := mountWithAdmin(t, []config.Admin{administrator()})
 
 	for i := 0; i < guess.PerAddress; i++ {
 		ask(mux, signIn("adam", "wrong"))
 	}
 
-	if code := ask(mux, join("standup", "wrong")).Code; code != http.StatusTooManyRequests {
-		t.Errorf("the join answered %d after the sign-in's budget was spent, want 429", code)
+	if code := ask(mux, signIn("adam", "wrong")).Code; code != http.StatusTooManyRequests {
+		t.Fatalf("the sign-in's budget was not spent, so this test proves nothing: %d", code)
+	}
+
+	if code := ask(mux, join("standup", "wrong")).Code; code == http.StatusTooManyRequests {
+		t.Error("the join was shut by guesses at the account sign-in")
 	}
 }

@@ -35,6 +35,9 @@ const updatingApp = "Tomoshibi/0.1.0.1 (Android; Android 16; samsung SM-F956B)"
 // updatingIPhone is the user agent the iOS app sends (core/protocol/src/api/agent.rs).
 const updatingIPhone = "Tomoshibi/0.1.0.8 (iPhone; iOS 27.0.1; iPhone17,1)"
 
+// updatingLinux is the user agent the Linux app sends (linux/src/app/client.rs).
+const updatingLinux = "Tomoshibi/0.1.7 (Linux; Ubuntu 24.04.4 LTS; LENOVO 21K5 x86_64)"
+
 const browserAgent = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Mobile Safari/537.36"
 
 func updateOf(t *testing.T, recorder *httptest.ResponseRecorder) updateView {
@@ -147,6 +150,8 @@ func TestEachPlatformsUpdateStreamsAndResumes(t *testing.T) {
 		{"mac", ".dmg", "application/x-apple-diskimage", "Mac"},
 		{"android", ".apk", "application/vnd.android.package-archive", "Android"},
 		{"windows", ".exe", "application/vnd.microsoft.portable-executable", "Windows"},
+		{"linux-x86_64", "-x86_64.AppImage", "application/vnd.appimage", "Linux x86-64"},
+		{"linux-aarch64", "-aarch64.AppImage", "application/vnd.appimage", "Linux ARM64"},
 	} {
 		t.Run(one.section, func(t *testing.T) {
 			var logged bytes.Buffer
@@ -209,8 +214,10 @@ func TestAnUpdateThatCannotBeGivenSaysNoBuild(t *testing.T) {
 		"/api/apps/latest/windows":      "a platform with no list",
 		"/api/apps/latest/ios":          "a platform with no list",
 		"/api/apps/latest/ios/file":     "an app installed elsewhere",
-		"/api/apps/latest/linux":        "a platform there is no app for",
-		"/api/apps/latest/linux/file":   "a platform there is no app for",
+		"/api/apps/latest/linux":        "the Linux app asks for its processor's list",
+		"/api/apps/latest/linux/file":   "the Linux app asks for its processor's list",
+		"/api/apps/latest/linux-x86_64": "a platform with no list",
+		"/api/apps/latest/riscv64":      "a platform there is no app for",
 	} {
 		got := appsGet(mux, path, nil, "User-Agent", updatingApp)
 		if got.Code != http.StatusNotFound || refusalOf(t, got) != reasonNoBuild {
@@ -688,5 +695,166 @@ func TestABuildWrittenWronglyIsNoneAndIsSaid(t *testing.T) {
 		if strings.Contains(logged.String(), said) {
 			t.Errorf("a build of %q, which is fine or not there, was said to be wrong:\n%s", typed, logged.String())
 		}
+	}
+}
+
+/*
+The release key's signature (updates.go, sigOf). This server neither makes it
+nor checks it, so what would go wrong here would go wrong unseen: the signature
+not reaching the apps, or reaching them changed, which an app built with the
+key reads as a build nobody signed, so that it is offered nothing, ever; the
+name the build is shelved under, which the signature covers, not reaching them
+either; or a signature typed wrongly taking the build away from every app,
+those that never read it included.
+*/
+
+// A signature as the release tooling writes one: base64, with the "+", "/"
+// and "=" an encoder could be tempted to escape.
+const lineSig = "gtYFh/fEXgiFaEuDn9yRjGDTTlsLsSKgP3eM82GZA+1uOr3LAwuqcSdq9vwPxsvNL7iPvjFXbiC0IPrZToH7DA=="
+
+// withSig is a line as lineOf types it, with a sig typed as given.
+func withSig(line, typed string) string {
+	return strings.TrimSuffix(line, "}") + `, "sig": ` + typed + "}"
+}
+
+func TestAnUpdateCarriesItsLinesSignatureUntouched(t *testing.T) {
+	dir := appsDirectory(t, map[string][]build{
+		"mac":     {{version: "0.1.2", file: "Tomoshibi-0.1.2.dmg", contents: dmg}},
+		"windows": {{version: "0.1.2", file: "Tomoshibi-Setup-0.1.2.exe", contents: exe}},
+	})
+	rewrite(t, dir, "mac", "["+withSig(lineOf("0.1.2", "Tomoshibi-0.1.2.dmg", dmg, `"4"`), `"`+lineSig+`"`)+"]")
+
+	mux, _, _ := appsApp(t, desk(t, nil, dir))
+
+	// Every Mac, told whichever version it is told: the line's signature is
+	// the line's, and an app that does not read it reads past it.
+	for _, agent := range []string{updatingOldMac, updatingNewMac, updatingMac014, updatingMac0142} {
+		got := appsGet(mux, "/api/apps/latest/mac", nil, "User-Agent", agent)
+		if got.Code != http.StatusOK {
+			t.Fatalf("%q was answered %d %s", agent, got.Code, got.Body.String())
+		}
+
+		if view := updateOf(t, got); view.Sig != lineSig || view.File != "Tomoshibi-0.1.2.dmg" {
+			t.Errorf("%q was told sig %q and file %q; want the line's own, untouched", agent, view.Sig, view.File)
+		}
+
+		if !strings.Contains(got.Body.String(), `"sig":"`+lineSig+`"`) {
+			t.Errorf("the signature was written differently from the line's: %s", got.Body.String())
+		}
+	}
+
+	// A line with no signature is answered as before signatures: nothing
+	// said of one, and the file's name beside the rest.
+	got := appsGet(mux, "/api/apps/latest/windows", nil, "User-Agent", updatingApp)
+	fields := fieldsOf(t, got)
+	if value, said := fields["sig"]; said {
+		t.Errorf("a line with no signature was told one: %s", value)
+	}
+	if view := updateOf(t, got); view.File != "Tomoshibi-Setup-0.1.2.exe" || view.Version != "0.1.2" {
+		t.Errorf("told %+v", view)
+	}
+
+	// And the build itself is handed over as it was.
+	if file := appsGet(mux, "/api/apps/latest/mac/file", nil, "User-Agent", updatingMac014); file.Code != http.StatusOK ||
+		!bytes.Equal(file.Body.Bytes(), dmg) {
+		t.Errorf("the signed Mac build answered %d with %d bytes", file.Code, file.Body.Len())
+	}
+}
+
+func TestASignatureTypedWronglyIsDroppedAndCostsNoBuild(t *testing.T) {
+	const said = "sig is not text"
+
+	for name, typed := range map[string]string{
+		"a number":   `7`,
+		"true":       `true`,
+		"an object":  `{"sig": "x"}`,
+		"a list":     `["` + lineSig + `"]`,
+		"a null":     `null`,
+		"an empty":   `""`,
+		"a good one": `"` + lineSig + `"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logged bytes.Buffer
+			was := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+			t.Cleanup(func() { slog.SetDefault(was) })
+
+			dir := appsDirectory(t, map[string][]build{
+				"mac": {{version: "0.1.2", file: "Tomoshibi-0.1.2.dmg", contents: dmg}},
+			})
+			rewrite(t, dir, "mac", "["+withSig(lineOf("0.1.2", "Tomoshibi-0.1.2.dmg", dmg, `"2"`), typed)+"]")
+			mux, _, cookie := appsApp(t, desk(t, nil, dir))
+
+			got := appsGet(mux, "/api/apps/latest/mac", nil, "User-Agent", updatingMac014)
+			if got.Code != http.StatusOK || updateOf(t, got).Version != "0.1.2.2" {
+				t.Fatalf("a sig of %s took the build away: %d %s", typed, got.Code, got.Body.String())
+			}
+
+			if page := offered(t, appsGet(mux, "/api/apps", cookie)).Mac; !page.Available {
+				t.Errorf("a sig of %s took the Mac build off the page: %+v", typed, page)
+			}
+
+			wrong := typed != `null` && typed != `""` && !strings.HasPrefix(typed, `"`)
+			sig, told := fieldsOf(t, got)["sig"]
+			switch {
+			case wrong && told:
+				t.Errorf("a sig of %s was passed on as %s", typed, sig)
+			case wrong && !strings.Contains(logged.String(), said):
+				t.Errorf("a sig of %s was dropped without a word:\n%s", typed, logged.String())
+			case !wrong && strings.Contains(logged.String(), said):
+				t.Errorf("a sig of %s, which is fine, was said to be wrong:\n%s", typed, logged.String())
+			case typed == `"`+lineSig+`"` && string(sig) != typed:
+				t.Errorf("a good sig was passed on as %s", sig)
+			}
+		})
+	}
+}
+
+// The iOS app is told no signature and no file, whatever its line says:
+// TestFlight installs it, and nothing it is told is a build to download.
+func TestTheIOSAppIsToldNoSignatureOrFile(t *testing.T) {
+	dir := appsDirectory(t, map[string][]build{
+		"mac": {{version: "0.1.2", file: "Tomoshibi-0.1.2.dmg", contents: dmg}},
+	})
+	rewrite(t, dir, "ios", "["+withSig(lineOf("0.1.2", "Tomoshibi-0.1.2.dmg", dmg, `"4"`), `"`+lineSig+`"`)+"]")
+	mux, _, _ := appsApp(t, desk(t, nil, dir))
+
+	got := appsGet(mux, "/api/apps/latest/ios", nil, "User-Agent", updatingIPhone)
+	if got.Code != http.StatusOK || updateOf(t, got).Version != "0.1.2.4" {
+		t.Fatalf("answered %d %s", got.Code, got.Body.String())
+	}
+
+	for _, field := range []string{"sig", "file", "size", "sha256"} {
+		if value, said := fieldsOf(t, got)[field]; said {
+			t.Errorf("the iOS app was told a %s of %s", field, value)
+		}
+	}
+}
+
+// The Linux app asks for its processor's list and is told that list's build,
+// with the list's name as the platform: the app reads the answer only when the
+// platform is the one it asked for, and the release key signed the build for
+// that name (the native repository's core/protocol/src/api/updates.rs).
+func TestTheLinuxAppIsToldItsProcessorsBuild(t *testing.T) {
+	dir := appsDirectory(t, map[string][]build{
+		"linux-x86_64":  {{version: "0.1.7.2", file: "Tomoshibi-0.1.7.2-x86_64.AppImage", contents: []byte("x86-64 image")}},
+		"linux-aarch64": {{version: "0.1.7", file: "Tomoshibi-0.1.7-aarch64.AppImage", contents: []byte("arm image")}},
+	})
+	mux, _, _ := appsApp(t, desk(t, nil, dir))
+
+	for section, want := range map[string]string{"linux-x86_64": "0.1.7.2", "linux-aarch64": "0.1.7"} {
+		got := appsGet(mux, "/api/apps/latest/"+section, nil, "User-Agent", updatingLinux)
+		if got.Code != http.StatusOK {
+			t.Fatalf("%s answered %d", section, got.Code)
+		}
+
+		view := updateOf(t, got)
+		if view.Platform != section || view.Version != want {
+			t.Errorf("%s is told %q %q, want %q %q", section, view.Platform, view.Version, section, want)
+		}
+	}
+
+	if got := appsGet(mux, "/api/apps/latest/linux-x86_64", nil, "User-Agent", browserAgent); got.Code != http.StatusForbidden {
+		t.Errorf("a browser asking for the Linux update answered %d, want 403", got.Code)
 	}
 }

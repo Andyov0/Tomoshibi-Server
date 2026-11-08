@@ -233,7 +233,7 @@ and the opening policy, and it is the only place any of that exists. **Back it
 up.** Copies are taken daily beside it; see **Watching it**.
 
 Upgrading a fleet: the control node distributes the binary it is itself running,
-so it goes first, and each relay is then re-enrolled with `REPLACE=1`. Restarting
+so it goes first, and each relay's binary is then replaced (`dev/watch/update-relay.sh`). Restarting
 a relay ends the calls it is holding. Restarting the control node does not end
 any call — it stops anybody new joining for as long as it is down.
 
@@ -434,9 +434,15 @@ and its next join without ending a call it is already in.
 
 Accounts and administrators are separate lists, and an administrator's
 credentials work at the account sign-in as well — the same passphrase, the same
-signature. Everything that tries a passphrase, at any of those doors, spends
-from one budget: ten a minute per address with a ceiling on the endpoint. A
-limit on one door and not the others is not three limits.
+signature. Everything that tries a passphrase is bounded: ten wrong ones a
+minute per address (an IPv6 /64 counts as one address), and a ceiling on each
+door. Each door has its own budget — the management sign-in, the account
+sign-in, the join and the enrolment — because one shared budget meant that a
+busy hour at the join, or a page elsewhere posting guesses through its
+visitors' browsers, shut every other door. The join charges only real guesses:
+a passphrase this browser has joined with before (remembered in an HttpOnly
+cookie) and an account's passphrase cost nothing, and a join posted from
+another site is refused.
 
 ## Scopes
 
@@ -592,7 +598,10 @@ a name nobody recognises achieves nothing.
 next join so that reloading a tab keeps the same one, which is why a refresh does
 not look like somebody leaving and a stranger arriving. The display name travels
 with the request rather than being set after connecting, so it is there in the
-first roster update and nobody can rename themselves to somebody else mid-call.
+first roster update. A participant can still rename themselves mid-call, because
+the media server grants a name change with the same permission as the raised
+hand; the room marks anybody whose name reads the same as one somebody else
+proved under another signature, ignoring invisible characters, width and case.
 
 **How loud everybody is is one person's own decision.** A sound panel lists what
 can be heard rather than who can be seen — sound is rendered outside the stage on
@@ -749,7 +758,7 @@ fleet work, and none of them had been written down anywhere:
 | `probe_port` | **Relays only.** Where this machine answers STUN, so a browser can time one round trip rather than three. Zero is off. Not 3478, which is scanned continuously. |
 | `web_root` | Serve the client from a directory instead of from inside the binary. |
 | `token_ttl` | How long a join token is good for. |
-| `join_rate`, `join_burst` | How often anybody may ask to join. Separate from the budget that bounds passphrase guesses, which is fixed and shared between the join, the account sign-in and the management sign-in. |
+| `join_rate`, `join_burst` | How often anybody may ask to join. Separate from the budgets that bound passphrase guesses, which are fixed, one per door (join, account sign-in, management sign-in, enrolment). |
 | `link_mbits` | What a relay's network link is thought to carry. Drives the bandwidth bars, the "busy" mark and the trend plot's axis, none of which can be measured from here. A gigabit if unset. |
 | `rooms.remember` | How long a name is remembered after nobody has used it. |
 
@@ -765,7 +774,7 @@ endpoints do not exist and relays are added by hand.
 
 | | |
 | --- | --- |
-| `secret` | What a machine must present to enrol. It travels in the operator's own command. |
+| `secret` | The long-lived enrolment secret, no longer accepted unless `accept_secret` is set. Machines enrol with one-time tokens minted on the relays page. |
 | `domain` | New relays become `<prefix>.<domain>`. |
 | `public_url` | Where a relay reaches this node. |
 | `listen_port`, `udp_port`, `tcp_port` | The ports every relay in the deployment uses, so nobody has to remember. |

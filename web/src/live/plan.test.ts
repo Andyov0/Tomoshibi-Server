@@ -322,6 +322,16 @@ describe("planClose", () => {
 	it("plans nothing for an unmeasured container", () => {
 		expect(planClose({ width: 0, height: 0 }, "them", ["me"]).size).toBe(0);
 	});
+
+	// The person looking comes first in the roster and so is drawn first: a
+	// card the plan does not say is over the picture was drawn beneath it, and
+	// nobody in a call of two could see themselves.
+	it("says the card is laid over the picture, and the picture is not", () => {
+		const plan = planClose(PHONE, "them", ["me"]);
+
+		expect(plan.get("me")?.over).toBe(true);
+		expect(plan.get("them")?.over).toBeFalsy();
+	});
 });
 
 /*

@@ -101,19 +101,19 @@ export function HostPanel({
 		<aside
 			className={cn(
 				"pointer-events-auto flex w-72 flex-col gap-2 rounded-xl border border-border p-3",
-				"bg-surface/95 shadow-2xl backdrop-blur",
+				"bg-surface shadow-2xl",
 				"origin-top-right animate-arrive",
 			)}
 		>
 			<header className="flex items-center gap-2">
-				<Crown className="size-3.5 text-tally" />
+				<Crown className="size-3.5 text-tally-ink" />
 				<h2 className="font-medium text-[13px]">{t("Running this room")}</h2>
 
 				<button
 					type="button"
 					onClick={onClose}
 					aria-label={t("Close")}
-					className="ml-auto rounded-md p-1 text-fg-muted hover:bg-surface-hi hover:text-fg"
+					className="pressable -my-1 -mr-1 ml-auto grid size-8 place-items-center rounded-full text-fg-muted hover:bg-wash hover:text-fg pointer-coarse:size-11"
 				>
 					<X className="size-3.5" />
 				</button>
@@ -152,7 +152,7 @@ export function HostPanel({
 					{busy === "invite" ? (
 						<Loader2 className="size-3.5 animate-spin" />
 					) : copied ? (
-						<Check className="size-3.5 text-tally" />
+						<Check className="size-3.5 text-tally-ink" />
 					) : (
 						<Link2 className="size-3.5" />
 					)}
@@ -287,7 +287,7 @@ export function HostPanel({
 								onClick={() => act(one.identity, () => turnOut(room, one))}
 								aria-label={t("Remove from room")}
 								title={t("Remove from room")}
-								className="rounded p-1 text-fg-muted hover:bg-surface-hi hover:text-danger disabled:opacity-30"
+								className="rounded p-1 text-fg-muted hover:bg-surface-hi hover:text-danger-ink disabled:opacity-30"
 							>
 								<UserMinus className="size-3.5" />
 							</button>
@@ -392,15 +392,21 @@ export function Hosting({ room, standing }: { room: Room; standing: Standing }) 
 				type="button"
 				onClick={() => setOpen((was) => !was)}
 				aria-label={t("Running this room")}
-				aria-pressed={open}
+				aria-expanded={open}
 				className={cn(
-					"flex items-center gap-1.5 rounded-full bg-surface-hi/90 px-2.5 py-1.5 shadow backdrop-blur",
-					"text-xs transition-colors hover:bg-surface-hi",
-					open && "text-tally",
+					// The controls' material and the connection reading's height,
+					// the two pills in the top corners being one kind of thing; a
+					// finger's reach from the pseudo-element around it.
+					"pressable glass relative flex h-8 items-center gap-1.5 rounded-full border px-3 outline-none",
+					"before:absolute before:-inset-1.5 before:hidden pointer-coarse:before:block",
+					"text-xs hover:bg-surface-hi focus-visible:ring-2 focus-visible:ring-fg/70",
+					// Held down while its panel is open, as the island's buttons
+					// are; the amber is for somebody at the door, below.
+					open && "bg-surface-hi",
 					// Coloured rather than only counted: the number is four pixels
 					// tall and the colour is the thing seen out of the corner of an
 					// eye.
-					!open && waiting > 0 && "text-tally",
+					!open && waiting > 0 && "text-tally-ink",
 				)}
 			>
 				<Crown className="size-3.5" />
@@ -452,7 +458,7 @@ function HandOver({ guest, busy, onHandOver }: { guest: boolean; busy: boolean; 
 			title={guest ? why : t("Make host")}
 			className={cn(
 				"rounded p-1 text-fg-muted transition-colors disabled:opacity-30",
-				guest ? "cursor-not-allowed opacity-30" : "hover:bg-surface-hi hover:text-tally",
+				guest ? "cursor-not-allowed opacity-30" : "hover:bg-surface-hi hover:text-tally-ink",
 			)}
 		>
 			<Crown className="size-3.5" />

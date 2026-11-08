@@ -1,10 +1,14 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-		<meta name="color-scheme" content="dark" />
+		<!-- Day or night as the system says, before the stylesheet has
+		     arrived. There is no call in this document to hold the night. -->
+		<meta name="color-scheme" content="light dark" />
+		<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f2f2f7" />
+		<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f0e0d" />
 		<meta name="robots" content="noindex, nofollow" />
 		<title>Tomoshibi · Account</title>
 	</head>

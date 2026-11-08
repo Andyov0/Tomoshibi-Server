@@ -106,6 +106,24 @@ type reach struct {
 // coming back. A relay that is answering should be offered again at once.
 const withdrawAfter = 2
 
+// How many sweeps in a row most of the fleet may fail before that is believed.
+//
+// Four, which is two minutes. The rule below puts most of the fleet failing at
+// once down to this machine's own line, and the outages it was written for last
+// twenty to forty seconds, so one or two sweeps. Without a limit it never let
+// go: on 2026-11-08 nine relays in mainland China died together at three
+// minutes past midnight, two others went with them, and eleven of twenty not
+// answering froze every reading for an hour and seven minutes — the dead ones
+// offered as answering the whole time, and the two that had died for a reason
+// of their own, a route through the dead ones, offered with them.
+//
+// The cost of believing too early is small, which is what makes a short limit
+// safe. A sweep believed while this line really is out withdraws relays that
+// are fine; keep() and pick() already fall back to the whole list when nothing
+// is left, so nobody loses the ability to hold a call, and the first sweep that
+// answers puts them back.
+const blindFor = 4
+
 func newReach(check Check) *reach {
 	return &reach{
 		check: check, down: map[string]bool{},
@@ -206,19 +224,38 @@ func (r *reach) look(ctx context.Context, list []store.Relay) {
 	}
 
 	found := make([]finding, 0, len(list))
-	answered := 0
 
 	for _, relay := range list {
 		asking, cancel := context.WithTimeout(ctx, reachWithin)
 		ok, took, detail := r.check(asking, relay.URL)
 		cancel()
 
-		if ok {
-			answered++
-		}
-
 		found = append(found, finding{relay, ok, took, detail})
 	}
+
+	// Counted among the relays that were answering when the sweep began, and
+	// not among all of them.
+	//
+	// A relay already withdrawn says nothing about this machine's line by
+	// failing again: it failed last time too. Counted with the rest, a fleet
+	// where half the machines had genuinely died read as blind on every sweep
+	// for as long as they stayed dead, and since the readings are kept while it
+	// does, the dead ones were never withdrawn either. What the rule is asking
+	// is whether the relays that were fine a moment ago all stopped at once.
+	was, answered := 0, 0
+
+	r.mu.RLock()
+	for _, one := range found {
+		if r.down[one.relay.URL] {
+			continue
+		}
+
+		was++
+		if one.ok {
+			answered++
+		}
+	}
+	r.mu.RUnlock()
 
 	// A sweep in which nothing answered measured this machine, not the fleet.
 	//
@@ -253,30 +290,44 @@ func (r *reach) look(ctx context.Context, list []store.Relay) {
 	//
 	// Three or more, because with two a single machine going away is half of
 	// them and is the ordinary case rather than a sign.
-	if len(found) >= 3 && answered*2 < len(found) {
+	//
+	// For blindFor sweeps, and then what they say is believed: see blindFor.
+	if was >= 3 && answered*2 < was {
 		r.mu.Lock()
 		r.blind++
 		blind := r.blind
 		r.mu.Unlock()
 
-		if blind == 1 {
+		switch {
+		case blind == 1:
 			slog.Warn("most of the fleet did not answer this sweep, so the readings are being "+
 				"kept as they were: these relays share no path but this machine's own, and "+
 				"most of them failing at once is a statement about this end",
-				"relays", len(found), "answered", answered)
+				"relays", was, "answered", answered)
+		case blind == blindFor+1:
+			slog.Warn("most of the fleet has not answered for several sweeps, which is longer "+
+				"than this machine's own line has ever been out, so the readings are being "+
+				"believed: the relays that are not answering will stop being offered",
+				"relays", was, "answered", answered,
+				"for", (time.Duration(blindFor) * reachEvery).String())
 		}
 
-		return
-	}
+		if blind <= blindFor {
+			return
+		}
+	} else {
+		r.mu.Lock()
+		blind := r.blind
+		r.blind = 0
+		r.mu.Unlock()
 
-	r.mu.Lock()
-	blind := r.blind
-	r.blind = 0
-	r.mu.Unlock()
-
-	if blind > 0 {
-		slog.Info("relays are answering again after this machine could reach none of them",
-			"sweeps", blind, "for", (time.Duration(blind) * reachEvery).String())
+		// Not said after the readings were believed. The relays that stopped
+		// were withdrawn and the rest kept answering, which is not this machine
+		// coming back; the warning above already said what happened.
+		if blind > 0 && blind <= blindFor {
+			slog.Info("relays are answering again after this machine could reach none of them",
+				"sweeps", blind, "for", (time.Duration(blind) * reachEvery).String())
+		}
 	}
 
 	for _, one := range found {
@@ -409,9 +460,107 @@ func (a *App) watching() {
 	}
 }
 
-// lookAround asks every relay worth a reading once: see relays.watched for which.
+// lookAround asks every relay worth a reading once: see relays.watched for which,
+// and relays.resting for the ones asked on the side.
 func (a *App) lookAround(ctx context.Context) {
 	a.reach.look(ctx, a.relays.watched())
+	a.reach.glance(ctx, a.relays.resting())
+}
+
+// How many relays out of service are asked at once.
+//
+// Enough that a handful of dead machines cost one timeout rather than one each:
+// nine relays that had died answered nothing for four seconds apiece, and asked
+// one after another that is longer than the half minute between sweeps.
+const glanceAtOnce = 8
+
+// glance asks each relay out of service once, side by side, and keeps what it
+// finds for the list clients are shown.
+//
+// A relay out of service is shown, greyed, rather than left out (relays.offered),
+// so that a machine taken down for the evening does not look deleted to whoever
+// used it yesterday — and it is shown only while it answers, for the reason
+// every relay is: one that has gone is not a machine anybody can come back to.
+// That second half had nothing to go on. Relays out of service were not looked
+// at, so each kept whatever it had been found to be when it was taken out: two
+// that were switched off after being disabled went on being shown, greyed and
+// "answering", for days after they had died, and seven that were disabled
+// after being found dead would never have been shown again had they come back.
+//
+// Asked apart from the sweep, and never counted towards it. What the sweep
+// decides from its count is whether this machine's own line is out, and a
+// machine somebody took out of service because it is gone would be a failure
+// in every count for as long as it stays listed. Not asked at all while that
+// sweep is reading as this machine's outage, since a reading taken then says
+// nothing about the relay.
+func (r *reach) glance(ctx context.Context, list []store.Relay) {
+	if r == nil || len(list) == 0 {
+		return
+	}
+
+	r.mu.RLock()
+	blind := r.blind
+	r.mu.RUnlock()
+
+	if blind > 0 && blind <= blindFor {
+		return
+	}
+
+	type finding struct {
+		ok   bool
+		took time.Duration
+	}
+
+	found := make([]finding, len(list))
+	slots := make(chan struct{}, glanceAtOnce)
+
+	var wait sync.WaitGroup
+	for i, relay := range list {
+		wait.Add(1)
+
+		go func() {
+			defer wait.Done()
+
+			slots <- struct{}{}
+			defer func() { <-slots }()
+
+			asking, cancel := context.WithTimeout(ctx, reachWithin)
+			ok, took, _ := r.check(asking, relay.URL)
+			cancel()
+
+			found[i] = finding{ok, took}
+		}()
+	}
+	wait.Wait()
+
+	for i, relay := range list {
+		r.mu.Lock()
+		was := r.down[relay.URL]
+
+		if found[i].ok {
+			r.missed[relay.URL] = 0
+			r.down[relay.URL] = false
+			r.took[relay.URL] = found[i].took
+		} else {
+			r.missed[relay.URL]++
+			r.down[relay.URL] = r.missed[relay.URL] >= withdrawAfter
+		}
+
+		now := r.down[relay.URL]
+		r.mu.Unlock()
+
+		// Info rather than a warning: nobody is sent to these, so nothing is
+		// lost by either, and an operator who disabled a machine because it was
+		// going away does not need to be warned that it went.
+		switch {
+		case now && !was:
+			slog.Info("a relay out of service stopped answering and is no longer shown",
+				"relay", relay.Name)
+		case !now && was:
+			slog.Info("a relay out of service is answering again and is shown, greyed",
+				"relay", relay.Name)
+		}
+	}
 }
 
 // forwardedLocally reports whether an address this node was given points back at

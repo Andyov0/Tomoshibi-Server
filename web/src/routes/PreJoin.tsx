@@ -197,7 +197,13 @@ export function Page({ children }: { children: ReactNode }) {
 	const t = useT();
 
 	return (
-		<main className="flex min-h-full flex-col gap-6 p-5 sm:p-6">
+		// The foot is room for the licence, which is placed in it rather than
+		// after it: relative here, so that a screen taller than the window
+		// carries the licence down with it. It was placed against the window
+		// instead, and once the join screen's controls grew to a finger's
+		// size a 320 by 640 phone's join screen ran past the window's foot
+		// and the licence sat on the Join button.
+		<main className="relative flex min-h-full flex-col gap-6 p-5 pb-8 sm:p-6 sm:pb-8">
 			<header className="flex items-center justify-between gap-4">
 				<div className="flex items-center gap-2">
 					{/*
@@ -223,9 +229,11 @@ export function Page({ children }: { children: ReactNode }) {
 					 */}
 					<a
 						href="/account"
+						// The corner's one shape, as on the lobby's.
 						className={cn(
-							"flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5",
-							"text-[12px] text-fg-muted transition-colors hover:bg-surface-hi hover:text-fg",
+							"pressable flex h-8 items-center gap-1.5 rounded-[10px] border border-border px-2.5 outline-none",
+							"text-[12.5px] text-fg-muted hover:bg-wash hover:text-fg active:bg-wash-press",
+							"focus-visible:ring-2 focus-visible:ring-fg/70 pointer-coarse:h-11 pointer-coarse:min-w-11 pointer-coarse:justify-center pointer-coarse:px-3",
 						)}
 					>
 						<UserRound className="size-3.5" />
@@ -278,7 +286,7 @@ function Source() {
 			href={source}
 			target="_blank"
 			rel="noreferrer"
-			className="absolute inset-x-0 bottom-3 text-center text-[11px] text-fg-muted/60 transition-colors hover:text-fg-muted"
+			className="absolute inset-x-0 bottom-3 text-center text-[11px] text-fg-muted transition-colors hover:text-fg"
 		>
 			{/* Not translated, and not an oversight. It is the name of the licence
 			    this is under, which is the same string in every language, and the
@@ -575,24 +583,25 @@ function Form({ room, onRoomChange, onJoin, guest = false, invitation, as, onBac
 						 * the same place, so this screen is a rehearsal of the room
 						 * rather than a different room.
 						 */}
-						<div className="-translate-x-1/2 absolute bottom-3 left-1/2 flex items-center gap-1.5 rounded-full border border-border bg-surface/90 p-1.5 shadow-2xl backdrop-blur-md">
+						<div className="-translate-x-1/2 glass absolute bottom-3 left-1/2 flex items-center gap-1.5 rounded-full border p-1.5">
+							{/* The call's own switches, at the call's size and drawn
+							    as the call draws them: off is the foreground, not
+							    red. Red here and grey in the call made one switch
+							    look like two a screen apart, and these were thirty-
+							    six pixels on the screen most often met on a phone. */}
 							<Button
-								variant={devices.microphone ? "secondary" : "danger"}
+								variant={devices.microphone ? "secondary" : "off"}
 								size="round"
-								className="size-9"
 								aria-label={devices.microphone ? t("Mute microphone") : t("Unmute microphone")}
-								aria-pressed={devices.microphone}
 								onClick={() => setDevices((held) => ({ ...held, microphone: !held.microphone }))}
 							>
 								{devices.microphone ? <Mic /> : <MicOff />}
 							</Button>
 
 							<Button
-								variant={devices.camera ? "secondary" : "danger"}
+								variant={devices.camera ? "secondary" : "off"}
 								size="round"
-								className="size-9"
 								aria-label={devices.camera ? t("Turn camera off") : t("Turn camera on")}
-								aria-pressed={devices.camera}
 								onClick={() => setDevices((held) => ({ ...held, camera: !held.camera }))}
 							>
 								{devices.camera ? <Video /> : <VideoOff />}
@@ -603,12 +612,10 @@ function Form({ room, onRoomChange, onJoin, guest = false, invitation, as, onBac
 							    somebody presses and reads an apology from. */}
 							{blurPossible() && (
 								<Button
-									variant={blurring ? "secondary" : "ghost"}
+									variant={blurring ? "default" : "secondary"}
 									size="round"
-									className="size-9"
 									disabled={!devices.camera || blurLoading}
 									aria-label={blurring ? t("Show my background") : t("Blur my background")}
-									aria-pressed={blurring}
 									onClick={() => void toggleBlur()}
 								>
 									{blurLoading ? <Loader2 className="animate-spin" /> : <Sparkles />}
@@ -678,8 +685,9 @@ function Form({ room, onRoomChange, onJoin, guest = false, invitation, as, onBac
 								type="button"
 								onClick={onBack}
 								className={cn(
-									"flex w-fit items-center gap-1.5 rounded-md px-1.5 py-1 -ml-1.5",
-									"text-[12px] text-fg-muted transition-colors hover:bg-surface-hi hover:text-fg",
+									"pressable -ml-2 flex h-8 w-fit items-center gap-1.5 rounded-[10px] px-2 outline-none",
+									"text-[13px] text-fg-muted hover:bg-wash hover:text-fg active:bg-wash-press",
+									"focus-visible:ring-2 focus-visible:ring-fg/70 pointer-coarse:h-11",
 								)}
 							>
 								<ArrowLeft className="size-3.5" />

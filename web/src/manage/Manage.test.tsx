@@ -19,15 +19,17 @@ import { LEAVING_MS } from "./swap";
  * by watching the document change rather than looking at it now and then.
  */
 
-const { whoami, now, runtime } = vi.hoisted(() => ({
+const { whoami, now, runtime, rooms, lockouts } = vi.hoisted(() => ({
 	whoami: vi.fn(),
 	now: vi.fn(),
 	runtime: vi.fn(),
+	rooms: vi.fn(),
+	lockouts: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
 	SignedOut: class SignedOut extends Error {},
-	api: { whoami, now, runtime, signOut: vi.fn() },
+	api: { whoami, now, runtime, rooms, lockouts, signOut: vi.fn() },
 }));
 
 // Each panel as its name and nothing else: what is under test is the column
@@ -38,7 +40,7 @@ vi.mock("./AccountsPanel", () => ({ AccountsPanel: () => "accounts panel" }));
 vi.mock("./RelaysPanel", () => ({ RelaysPanel: () => "relays panel" }));
 vi.mock("./AppsPanel", () => ({ AppsPanel: () => "apps panel" }));
 vi.mock("./AdminsPanel", () => ({ AdminsPanel: () => "admins panel" }));
-vi.mock("./RuntimePanel", () => ({ RuntimePanel: () => "runtime panel" }));
+vi.mock("./LogPanel", () => ({ LogPanel: () => "log panel" }));
 
 /** Every panel the column ever held, and the most it held at once. */
 function watching() {
@@ -74,7 +76,9 @@ beforeEach(() => {
 	window.location.hash = "";
 	whoami.mockResolvedValue({ trip: "abcdefghij", name: "kit", can: ["moderate"] });
 	now.mockReturnValue(new Promise(() => {}));
+	rooms.mockReturnValue(new Promise(() => {}));
 	runtime.mockResolvedValue({ meet: {}, rtc: {}, credentials: { key: "" }, codecs: [] });
+	lockouts.mockResolvedValue({ lockouts: [], failures: 10, windowSeconds: 300, forSeconds: 1800 });
 });
 
 afterEach(() => {
@@ -139,5 +143,52 @@ describe("moving between panels", () => {
 
 		expect(before.isConnected, "the panel was drawn again from nothing").toBe(true);
 		expect(screen.queryByText("relays panel")).toBeNull();
+	});
+});
+
+/*
+ * A lockout is noticed from whatever panel is open: the accounts entry, on
+ * the rail and along the bottom, carries how many are in force, and nothing
+ * while none are.
+ */
+describe("the count of sign-in lockouts", () => {
+	const lockout = (key: string, minutes: number) => ({
+		key,
+		address: `203.0.113.${key}`,
+		first: new Date().toISOString(),
+		last: new Date().toISOString(),
+		since: new Date().toISOString(),
+		until: new Date(Date.now() + minutes * 60_000).toISOString(),
+		failures: 11,
+		doors: ["account"],
+	});
+
+	it("is on both accounts entries while lockouts are in force", async () => {
+		lockouts.mockResolvedValue({
+			lockouts: [lockout("1", 20), lockout("2", 5), lockout("3", -1)],
+			failures: 10,
+			windowSeconds: 300,
+			forSeconds: 1800,
+		});
+
+		render(<Manage />);
+		await screen.findByText("now panel");
+
+		await waitFor(() => {
+			const entries = screen.getAllByRole("button", { name: "Accounts" });
+			expect(entries).toHaveLength(2);
+			// Two, because the third has already ended.
+			for (const entry of entries) expect(entry.textContent).toContain("2");
+		});
+	});
+
+	it("is not there while nobody is shut out", async () => {
+		render(<Manage />);
+		await screen.findByText("now panel");
+		await waitFor(() => expect(lockouts).toHaveBeenCalled());
+
+		for (const entry of screen.getAllByRole("button", { name: "Accounts" })) {
+			expect(entry.textContent).toBe("Accounts");
+		}
 	});
 });

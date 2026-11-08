@@ -209,19 +209,34 @@ func rewrite(t *testing.T, dir, section, typed string) {
 
 // walked is a platform as the tests below walk it: the list it is under, the
 // address it is downloaded from, what its files end in, what the browser is
-// to be told, and where the page's answer says it.
+// to be told, where the page's answer says it, and what the saved file's name
+// ends in where that is not the suffix.
 type walked struct {
 	section, path, suffix, contentType string
 	view                               func(appsView) buildView
+	saved                              string
+}
+
+// savedAs is what a platform's saved file ends in.
+func (w walked) savedAs() string {
+	if w.saved != "" {
+		return w.saved
+	}
+
+	return w.suffix
 }
 
 var platforms = []walked{
 	{"mac", "/api/apps/mac", ".dmg", "application/x-apple-diskimage",
-		func(v appsView) buildView { return v.Mac }},
+		func(v appsView) buildView { return v.Mac }, ""},
 	{"android", "/api/apps/android", ".apk", "application/vnd.android.package-archive",
-		func(v appsView) buildView { return v.Android }},
+		func(v appsView) buildView { return v.Android }, ""},
 	{"windows", "/api/apps/windows", ".exe", "application/vnd.microsoft.portable-executable",
-		func(v appsView) buildView { return v.Windows }},
+		func(v appsView) buildView { return v.Windows }, ""},
+	{"linux-x86_64", "/api/apps/linux-x86_64", "-x86_64.AppImage", "application/vnd.appimage",
+		func(v appsView) buildView { return v.Linux.X64 }, ""},
+	{"linux-aarch64", "/api/apps/linux-aarch64", "-aarch64.AppImage", "application/vnd.appimage",
+		func(v appsView) buildView { return v.Linux.Arm }, ""},
 }
 
 // othersThan is every platform that is not this one.
@@ -240,7 +255,8 @@ func othersThan(one walked) []walked {
 // contentsOf is something shaped like each platform's build, a different size
 // for each, so that one handed over in place of another is told apart.
 func contentsOf(section string) []byte {
-	return map[string][]byte{"mac": dmg, "android": apk, "windows": exe}[section]
+	return map[string][]byte{"mac": dmg, "android": apk, "windows": exe, "linux-x86_64": appimageX64,
+		"linux-aarch64": appimageArm}[section]
 }
 
 func appsGet(mux http.Handler, path string, cookie *http.Cookie, header ...string) *httptest.ResponseRecorder {
@@ -316,6 +332,10 @@ var dmg = bytes.Repeat([]byte("a disk image, or something shaped like one. "), 2
 var apk = bytes.Repeat([]byte("an Android package, or near enough. "), 1500)
 
 var exe = bytes.Repeat([]byte("MZ, and then a Windows installer, more or less. "), 1200)
+
+var appimageX64 = bytes.Repeat([]byte("ELF, a runtime, and a squashfs for x86-64 PCs. "), 1100)
+
+var appimageArm = bytes.Repeat([]byte("ELF, a runtime, and a squashfs for ARM64 machines. "), 1000)
 
 func TestNobodySignedOutReachesAnyOfTheApps(t *testing.T) {
 	fake := &fakeTester{inGroup: map[string]bool{}}
@@ -511,7 +531,7 @@ func TestEachBuildStreamsUnderItsVersion(t *testing.T) {
 			}
 
 			want := map[string]string{
-				"Content-Disposition":    `attachment; filename="Tomoshibi-0.1.0.6` + one.suffix + `"`,
+				"Content-Disposition":    `attachment; filename="Tomoshibi-0.1.0.6` + one.savedAs() + `"`,
 				"Content-Type":           one.contentType,
 				"Content-Length":         fmt.Sprint(len(body)),
 				"Accept-Ranges":          "bytes",
@@ -541,7 +561,8 @@ func TestEachBuildStreamsUnderItsVersion(t *testing.T) {
 			// One line for the whole file and none for the piece of it, so
 			// that the log counts downloads rather than the reconnections of
 			// one.
-			line := "handed over the " + map[string]string{"mac": "Mac", "android": "Android", "windows": "Windows"}[one.section] + " app"
+			line := "handed over the " + map[string]string{"mac": "Mac", "android": "Android", "windows": "Windows",
+				"linux-x86_64": "Linux x86-64", "linux-aarch64": "Linux ARM64"}[one.section] + " app"
 			if got := strings.Count(logged.String(), line); got != 1 {
 				t.Errorf("the log says %q %d times for one whole download and one piece:\n%s",
 					line, got, logged.String())
@@ -1022,5 +1043,45 @@ func stamp(t *testing.T, path string) {
 	later := info.ModTime().Add(2e9)
 	if err := os.Chtimes(path, later, later); err != nil {
 		t.Fatal(err)
+	}
+}
+
+/*
+The Linux app is two builds, an AppImage for each processor, and each list
+takes only a file named for its own: an image is the machine code of one
+processor, and an ARM image handed to an x86-64 PC, which is what a line pasted
+into the wrong list would do, is put in the app's place by the app and never
+starts. The signature would refuse it in an app built with the release key; this
+keeps it off the page and out of the update check for everybody.
+*/
+func TestALinuxImageIsOfferedOnlyForItsOwnProcessor(t *testing.T) {
+	dir := appsDirectory(t, map[string][]build{
+		// The ARM image, pasted into the x86-64 list.
+		"linux-x86_64":  {{version: "0.1.7", file: "Tomoshibi-0.1.7-aarch64.AppImage", contents: appimageArm}},
+		"linux-aarch64": {{version: "0.1.7", file: "Tomoshibi-0.1.7-aarch64.AppImage", contents: appimageArm}},
+	})
+	mux, _, cookie := appsApp(t, desk(t, nil, dir))
+
+	view := offered(t, appsGet(mux, "/api/apps", cookie))
+	if view.Linux.X64.Available {
+		t.Errorf("the x86-64 list offers an ARM image: %+v", view.Linux.X64)
+	}
+	if !view.Linux.Arm.Available || view.Linux.Arm.Version != "0.1.7" {
+		t.Errorf("the ARM image in its own list is not offered: %+v", view.Linux.Arm)
+	}
+
+	if got := appsGet(mux, "/api/apps/linux-x86_64", cookie); got.Code != http.StatusNotFound {
+		t.Errorf("the x86-64 download answered %d with an ARM image in its list", got.Code)
+	}
+	if got := appsGet(mux, "/api/apps/latest/linux-x86_64", nil, "User-Agent", updatingLinux); got.Code != http.StatusNotFound {
+		t.Errorf("the x86-64 update answered %d with an ARM image in its list", got.Code)
+	}
+
+	got := appsGet(mux, "/api/apps/linux-aarch64", cookie)
+	if !bytes.Equal(got.Body.Bytes(), appimageArm) {
+		t.Errorf("the ARM download handed over %d bytes that are not the image", got.Body.Len())
+	}
+	if saved := got.Header().Get("Content-Disposition"); saved != `attachment; filename="Tomoshibi-0.1.7-aarch64.AppImage"` {
+		t.Errorf("the ARM image is saved as %q", saved)
 	}
 }

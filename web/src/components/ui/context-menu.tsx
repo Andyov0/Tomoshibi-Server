@@ -29,7 +29,7 @@ export function ContextMenuContent({
 					// No taller than the window has room for, for the reason the dropdown
 					// gives: clipped, the items past the edge could not be pressed.
 					"z-50 max-h-(--radix-context-menu-content-available-height) min-w-52 overflow-y-auto overflow-x-hidden",
-					"rounded-lg border border-border bg-surface p-1 shadow-lg",
+					"rounded-xl border border-border bg-surface p-1 shadow-lg",
 					// This application's own motion, not a plugin's. The classes
 					// that used to be here — animate-in, fade-in-0 — belong to
 					// tailwindcss-animate, which is not in the manifest and never
@@ -49,7 +49,7 @@ export function ContextMenuContent({
 export function ContextMenuLabel({ className, ...props }: React.ComponentProps<typeof Primitive.Label>) {
 	return (
 		<Primitive.Label
-			className={cn("truncate px-2 py-1.5 font-medium text-fg-muted text-xs", className)}
+			className={cn("truncate px-2.5 pt-2 pb-1 font-medium text-fg-muted text-xs", className)}
 			{...props}
 		/>
 	);
@@ -66,9 +66,12 @@ export function ContextMenuItem({ className, ...props }: React.ComponentProps<ty
 	return (
 		<Primitive.Item
 			className={cn(
-				"relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none",
-				"focus:bg-surface-hi data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
-				"[&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-fg-muted",
+				"relative flex min-h-8 cursor-default select-none items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm outline-none",
+				// What a long press opens is pressed with the same finger; see
+				// the dropdown's rows.
+				"pointer-coarse:min-h-11",
+				"transition-colors focus:bg-surface-hi data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
+				"[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-muted",
 				className,
 			)}
 			{...props}

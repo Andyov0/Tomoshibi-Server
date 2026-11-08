@@ -43,7 +43,8 @@ describe("the way to the apps", () => {
 		["a Mac", AGENTS.mac, 0, "Get the Mac app"],
 		["Windows", AGENTS.windows, 0, "Get the apps"],
 		["an Android phone", AGENTS.android, 5, "Get the Android app"],
-		["an agent it cannot place", AGENTS.linux, 0, "Get the apps"],
+		["Linux", AGENTS.linux, 0, "Get the Linux app"],
+		["an agent it cannot place", "curl/8.7.1", 0, "Get the apps"],
 	] as const)("is named for %s", (_, userAgent, touch, label) => {
 		on(userAgent, touch);
 		render(<GetTheApp />);

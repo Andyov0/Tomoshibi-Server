@@ -51,7 +51,7 @@ export function Linked({ text }: { text: string }) {
 						// business reaching back through `window.opener`.
 						rel="noopener noreferrer"
 						onClick={(event) => event.stopPropagation()}
-						className="text-tally underline decoration-tally/40 underline-offset-2 hover:decoration-tally"
+						className="text-tally-ink underline decoration-tally-ink/40 underline-offset-2 hover:decoration-tally-ink"
 					>
 						{piece.href}
 					</a>

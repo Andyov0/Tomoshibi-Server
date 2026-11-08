@@ -1,8 +1,10 @@
 import { render } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { Point } from "./api";
-import { Trend, series } from "./Trend";
+import { INK, Trend, rateAxisWidth, series } from "./Trend";
 
 /*
  * What these guard is a chart that draws and lies.
@@ -68,4 +70,36 @@ describe("what the plot is handed", () => {
 it("draws without a canvas rather than throwing", () => {
 	expect(() => render(<Trend points={[bucket("2026-08-19T10:00:00Z", 1, 2)]} />)).not.toThrow();
 	expect(() => render(<Trend points={[]} />)).not.toThrow();
+});
+
+/*
+ * The canvas cannot read the stylesheet, so the chart's colours are written
+ * out twice, and the copy fell behind once: the day's muted text was raised
+ * to three quarters in index.css and stayed at three fifths here, which left
+ * the axis and the incoming line at three and a third to one on white.
+ */
+it("draws its quiet ink by day in the stylesheet's own muted", () => {
+	const css = readFileSync(join(import.meta.dirname, "..", "index.css"), "utf8");
+	const day = /prefers-color-scheme: light\)\s*\{\s*:root:not\(\[data-appearance="night"\]\)\s*\{([\s\S]*?)\n\t\t\}/.exec(css)?.[1] ?? "";
+	const muted = /--color-fg-muted:\s*rgb\((\d+) (\d+) (\d+) \/ ([\d.]+)\)/.exec(day);
+
+	expect(muted, "no day muted in index.css").toBeTruthy();
+	expect(INK.day.text).toBe(`rgba(${muted?.[1]}, ${muted?.[2]}, ${muted?.[3]}, ${muted?.[4]})`);
+});
+
+/*
+ * The rate axis was forty-six pixels wide whatever it said, and the link's
+ * own scale, a gigabit, is labelled "500.0 Mbps" and "1.00 Gbps": both were
+ * drawn with their first characters outside the canvas. A monospace face is
+ * about six-tenths of an em, so at ten pixels a label needs six pixels a
+ * character and the axis its gap beside them.
+ */
+it("leaves the rate axis room for the longest label on it", () => {
+	const labels = ["", "500.0 Mbps", "1.00 Gbps"];
+
+	expect(rateAxisWidth(labels)).toBeGreaterThanOrEqual(10 * 6 + 5);
+	expect(rateAxisWidth(["", "10.00 Gbps", "20.00 Gbps"])).toBeGreaterThanOrEqual(10 * 6 + 5);
+	// And no narrower than it was before uPlot has said what it will draw.
+	expect(rateAxisWidth(null)).toBe(46);
+	expect(rateAxisWidth(["", "5 bps"])).toBe(46);
 });

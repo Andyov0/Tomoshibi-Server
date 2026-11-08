@@ -111,6 +111,16 @@ export interface Spot {
 	y: number;
 	width: number;
 	height: number;
+	/**
+	 * Laid over another picture rather than beside it, as the card in a call
+	 * of two is over the person filling the screen.
+	 *
+	 * Said by the plan because only the plan knows that two spots overlap. The
+	 * pictures are drawn in the roster's order, which puts the person looking
+	 * first, and with nothing to lift it their own card was drawn underneath
+	 * the picture it sits on: in every call of two nobody could see themselves.
+	 */
+	over?: boolean;
 }
 
 /**
@@ -300,6 +310,7 @@ export function planClose(container: Size, filling: string, cards: string[], isl
 			y: top,
 			width,
 			height,
+			over: true,
 		});
 	});
 

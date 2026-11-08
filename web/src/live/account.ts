@@ -1,4 +1,6 @@
 import { keepForTab, recallForTab } from "@/lib/storage";
+import { lockedUntil } from "./lockout";
+import { reasonOf } from "./turnstile";
 /**
  * Who is signed in, from the front page's point of view.
  *
@@ -49,16 +51,42 @@ export async function me(): Promise<Me | undefined> {
 	}
 }
 
-/** Sign in, or say that the pair does not go together. */
-export async function signIn(name: string, passphrase: string): Promise<Me> {
+/**
+ * A refused sign-in. The message is the server's code, and until is the end of
+ * the sign-in lockout where the refusal named one.
+ */
+export class SignInRefused extends Error {
+	readonly until: string | undefined;
+
+	constructor(reason: string, until?: string) {
+		super(reason);
+		this.until = until;
+	}
+}
+
+/**
+ * Sign in, or say why not.
+ *
+ * The error is a SignInRefused whose message is the server's code, so that a
+ * page can tell a human check that did not pass from a pair that does not go
+ * together, and "not_yours" where the refusal carried none; and which carries
+ * a lockout's end where there is one. The end is read from a copy of the body
+ * (lockedUntil) before the code is read from the body itself, which can be
+ * read once. `turnstile` is the human check's token where the deployment asks
+ * for one, and is left out of the body where it does not.
+ */
+export async function signIn(name: string, passphrase: string, turnstile = ""): Promise<Me> {
 	const response = await fetch("/api/account/session", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		credentials: "same-origin",
-		body: JSON.stringify({ name, passphrase }),
+		body: JSON.stringify(turnstile ? { name, passphrase, turnstile } : { name, passphrase }),
 	});
 
-	if (!response.ok) throw new Error("not_yours");
+	if (!response.ok) {
+		const until = await lockedUntil(response);
+		throw new SignInRefused((await reasonOf(response)) ?? "not_yours", until);
+	}
 
 	return (await response.json()) as Me;
 }
@@ -92,6 +120,14 @@ export function keepInvite(token: string): void {
 		// A tab that will not keep it can still use it: the join that follows
 		// reads this and then asks the server, and only a reload needs the copy.
 	}
+}
+
+/**
+ * Whether the invite is in the address now, which is a link somebody just
+ * opened, rather than the copy this tab kept from an earlier one.
+ */
+export function inviteCarried(): boolean {
+	return Boolean(new URLSearchParams(window.location.search).get("invite"));
 }
 
 export function inviteToken(): string {

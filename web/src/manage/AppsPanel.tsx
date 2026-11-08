@@ -3,13 +3,16 @@ import { useT } from "@/hooks/useT";
 import { cn } from "@/lib/utils";
 import { LOCALE_NAMES, type Locale, type Phrase } from "@/live/i18n";
 import { actionFailed } from "@/live/notices";
-import { ChevronDown, ChevronUp, Loader2, Plus, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { AppWindow, ChevronDown, ChevronUp, Computer, Loader2, Monitor, Plus, Smartphone, Trash2 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { type AppNotice, type AppSwitch, api } from "./api";
+import { type AppNotice, type AppSwitch, api, type NoticeSlot } from "./api";
+import { Tick } from "./Boxes";
+import { Group, Row, Section, quietIcon } from "./Grouped";
 import { Note } from "./OpeningCard";
 import { usePoll } from "./poll";
 import { Card, Empty, Failed, Waiting } from "./Shell";
-import { moment, typed } from "./units";
+import { moment, size, typed } from "./units";
 
 /**
  * What the apps are told between their releases: the lobby's notice and which
@@ -38,14 +41,21 @@ export function AppsPanel({
 	canSettings: boolean;
 	onSignedOut: () => void;
 }) {
+	const t = useT();
+
 	return (
-		<div className="mx-auto flex max-w-4xl flex-col gap-3 sm:gap-4">
-			<div className="animate-rise">
-				<NoticeCard canSettings={canSettings} onSignedOut={onSignedOut} />
-			</div>
-			<div className="animate-rise" style={{ animationDelay: "70ms" }}>
-				<SwitchesCard canSettings={canSettings} onSignedOut={onSignedOut} />
-			</div>
+		<div className="mx-auto flex max-w-[56rem] flex-col gap-7">
+			<header className="flex flex-col gap-1 px-1">
+				<h1 className="font-semibold text-[22px] leading-tight tracking-[-0.01em]">{t("Apps")}</h1>
+				<p className="max-w-[64ch] text-[13.5px] text-fg-muted">
+					{t("Which version each app is handed, and what the apps are told between releases: a notice in their lobby and features turned off.")}
+				</p>
+			</header>
+
+			<Versions onSignedOut={onSignedOut} />
+			<NoticeCard kind="signin" canSettings={canSettings} onSignedOut={onSignedOut} />
+			<NoticeCard kind="lobby" canSettings={canSettings} onSignedOut={onSignedOut} />
+			<SwitchesCard canSettings={canSettings} onSignedOut={onSignedOut} />
 		</div>
 	);
 }
@@ -98,12 +108,23 @@ function characters(text: string): number {
  * for; republishing the same words to somebody who already read them is the
  * smaller cost.
  */
-function NoticeCard({ canSettings, onSignedOut }: { canSettings: boolean; onSignedOut: () => void }) {
+/*
+ * One card for each notice, the same form for both: the sign-in page's, for
+ * people not signed in, first, as the sign-in comes first; then the lobby's,
+ * for people signed in. They were one until the owner saw the lobby's on the
+ * sign-in page and asked for them to be set apart.
+ */
+function NoticeCard({
+	kind,
+	canSettings,
+	onSignedOut,
+}: { kind: NoticeSlot; canSettings: boolean; onSignedOut: () => void }) {
 	const t = useT();
 
 	// Twice a minute. A notice changes when somebody presses publish, usually
 	// on this page, and the press reads it back at once.
-	const { value, error, refresh } = usePoll(api.notice, { every: 30_000, onSignedOut });
+	const read = useCallback(() => api.notice(kind), [kind]);
+	const { value, error, refresh } = usePoll(read, { every: 30_000, onSignedOut });
 
 	const failure = useRef(error);
 	if (error) failure.current = error;
@@ -164,7 +185,7 @@ function NoticeCard({ canSettings, onSignedOut }: { canSettings: boolean; onSign
 		setBusy("publish");
 
 		try {
-			await api.publishNotice(notice);
+			await api.publishNotice(kind, notice);
 			filled.current = { id: notice.id, form };
 			await refresh();
 		} catch (err) {
@@ -172,20 +193,20 @@ function NoticeCard({ canSettings, onSignedOut }: { canSettings: boolean; onSign
 		} finally {
 			setBusy(undefined);
 		}
-	}, [form, level, refresh, said, until, words]);
+	}, [form, kind, level, refresh, said, until, words]);
 
 	const takeDown = useCallback(async () => {
 		setBusy("down");
 
 		try {
-			await api.takeDownNotice();
+			await api.takeDownNotice(kind);
 			await refresh();
 		} catch (err) {
 			actionFailed(err instanceof Error ? err.message : String(err));
 		} finally {
 			setBusy(undefined);
 		}
-	}, [refresh]);
+	}, [kind, refresh]);
 
 	// The notice on screen kept while it leaves, which by then the reading no
 	// longer holds.
@@ -195,7 +216,14 @@ function NoticeCard({ canSettings, onSignedOut }: { canSettings: boolean; onSign
 	const offer = useLingering(canSettings && value?.notice != null);
 
 	return (
-		<Card title={t("Lobby notice")} note={t("Shown in the apps' lobby, signed in or not, until its end or until it is taken down")}>
+		<Card
+			title={kind === "lobby" ? t("Lobby notice") : t("Sign-in page notice")}
+			note={
+				kind === "lobby"
+					? t("For people signed in: shown at the top of the lobby, until its end or until it is taken down")
+					: t("For people not signed in: shown at the top of the sign-in page, until its end or until it is taken down")
+			}
+		>
 			<Said show={error !== undefined}>
 				<Failed>{failure.current}</Failed>
 			</Said>
@@ -212,11 +240,11 @@ function NoticeCard({ canSettings, onSignedOut }: { canSettings: boolean; onSign
 				<Empty>{t("No notice is being shown.")}</Empty>
 			</Said>
 
-			<div className="flex flex-col gap-3 border-border border-t px-3 py-3 sm:px-4">
+			<div className="flex flex-col gap-4 border-border border-t px-4 py-4">
 				<div className="grid gap-3 sm:grid-cols-2">
 					{LANGUAGES.map((one) => (
 						<label key={one} className="flex flex-col gap-1">
-							<span className="text-fg-muted text-[11px]">{LOCALE_NAMES[one]}</span>
+							<span className="text-[12.5px] text-fg-muted">{LOCALE_NAMES[one]}</span>
 							<textarea
 								value={words[one]}
 								lang={one}
@@ -234,11 +262,11 @@ function NoticeCard({ canSettings, onSignedOut }: { canSettings: boolean; onSign
 									setWords((held) => ({ ...held, [one]: next }));
 								}}
 								className={cn(
-									"w-full resize-y rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-sm leading-relaxed",
-									"outline-none focus-visible:ring-2 focus-visible:ring-fg/40 disabled:opacity-50",
+									"w-full resize-y rounded-[10px] border border-border bg-bg px-3 py-2 text-[14px] leading-relaxed",
+									"outline-none focus-visible:border-fg/40 focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50 pointer-coarse:text-base",
 								)}
 							/>
-							<span className="readout self-end text-[10.5px] text-fg-muted/70 tabular-nums">
+							<span className="self-end text-[11.5px] text-fg-muted tabular-nums">
 								{characters(words[one])}/{NOTICE_LENGTH}
 							</span>
 						</label>
@@ -247,7 +275,7 @@ function NoticeCard({ canSettings, onSignedOut }: { canSettings: boolean; onSign
 
 				<div className="flex flex-wrap items-end gap-x-5 gap-y-3">
 					<div className="flex flex-col gap-1">
-						<span className="text-fg-muted text-[11px]">{t("Level")}</span>
+						<span className="text-[12.5px] text-fg-muted">{t("Level")}</span>
 						<Pair
 							label={t("Level")}
 							chosen={level === "warning" ? 1 : 0}
@@ -258,17 +286,17 @@ function NoticeCard({ canSettings, onSignedOut }: { canSettings: boolean; onSign
 					</div>
 
 					<label className="flex flex-col gap-1">
-						<span className="text-fg-muted text-[11px]">{t("Until")}</span>
+						<span className="text-[12.5px] text-fg-muted">{t("Until")}</span>
 						<input
 							type="datetime-local"
 							value={until}
 							disabled={locked}
 							onChange={(event) => setUntil(event.target.value)}
-							className="readout h-8 rounded-md border border-border bg-surface-hi px-2 text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-fg/40 disabled:opacity-50"
+							className="h-9 rounded-[10px] border border-border bg-bg px-3 text-[13.5px] outline-none focus-visible:border-fg/40 focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50 pointer-coarse:h-11 pointer-coarse:text-base"
 						/>
 					</label>
 
-					<p className="pb-1.5 text-fg-muted/70 text-[10.5px]">{t("Left empty, it shows until it is taken down.")}</p>
+					<p className="pb-2 text-[12px] text-fg-muted">{t("Left empty, it shows until it is taken down.")}</p>
 				</div>
 
 				<Said show={ended}>
@@ -281,29 +309,27 @@ function NoticeCard({ canSettings, onSignedOut }: { canSettings: boolean; onSign
 
 				{canSettings ? (
 					<div className="flex flex-wrap items-center gap-2">
-						<button
-							type="button"
+						<Button
+							variant="primary"
+							size="sm"
 							disabled={locked || said.length === 0 || ended}
 							onClick={() => void publish()}
-							className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] hover:bg-surface-hi disabled:opacity-40"
 						>
 							<Spinning show={busy === "publish"} />
 							{t("Publish")}
-						</button>
+						</Button>
 
 						{offer.mounted && (
-							<button
-								type="button"
+							<Button
+								variant="secondary"
+								size="sm"
 								disabled={locked}
 								onClick={() => void takeDown()}
-								className={cn(
-									"flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] hover:bg-surface-hi hover:text-danger disabled:opacity-40",
-									offer.leaving ? "animate-fade-out" : "animate-fade-in",
-								)}
+								className={cn("text-danger-ink", offer.leaving ? "animate-fade-out" : "animate-fade-in")}
 							>
 								<Spinning show={busy === "down"} />
 								{t("Take down")}
-							</button>
+							</Button>
 						)}
 					</div>
 				) : (
@@ -321,23 +347,26 @@ function Current({ notice, showing }: { notice: AppNotice; showing: boolean }) {
 	return (
 		// Keyed by the notice, so that one notice replaced by another arrives
 		// rather than having its words change underneath somebody reading them.
-		<div key={notice.id} className="flex animate-fade-in flex-col gap-2 px-3 py-3 sm:px-4">
-			<div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+		<div key={notice.id} className="flex animate-fade-in flex-col gap-2.5 px-4 py-4">
+			<div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+				{/* Lit while the apps are showing it, which is the notice being
+				    live in the sense the amber means; grey once it has ended. */}
+				<span className={cn("size-2 rounded-full", showing ? "bg-tally" : "bg-fg-muted/50")} aria-hidden />
+				<span className={cn("text-[13.5px]", showing ? "text-fg" : "text-fg-muted")}>
+					{showing ? t("This is being shown now.") : t("This has ended, and is no longer shown.")}
+				</span>
 				<span
 					className={cn(
-						"rounded px-1.5 py-0.5 font-medium text-[10.5px] uppercase tracking-[0.08em]",
-						notice.level === "warning" ? "bg-tally/15 text-tally" : "bg-fg/8 text-fg-muted",
+						"rounded-full px-2 py-px text-[11.5px]",
+						notice.level === "warning" ? "bg-tally/15 text-tally-ink" : "bg-surface-hi text-fg-muted",
 					)}
 				>
 					{t(notice.level === "warning" ? "Warning" : "Normal")}
 				</span>
-				<span className={cn("text-[12px]", showing ? "text-fg" : "text-fg-muted")}>
-					{showing ? t("The apps are showing this now.") : t("This has ended, and the apps no longer show it.")}
-				</span>
-				<span className="readout ml-auto text-[11px] text-fg-muted">{notice.id}</span>
+				<span className="readout ml-auto text-[11.5px] text-fg-muted">{notice.id}</span>
 			</div>
 
-			<p className="text-fg-muted text-[11.5px]">
+			<p className="text-[12.5px] text-fg-muted">
 				{notice.until
 					? t("Until {time}", { time: moment(notice.until, 3600) })
 					: t("Until it is taken down")}
@@ -346,8 +375,8 @@ function Current({ notice, showing }: { notice: AppNotice; showing: boolean }) {
 			<dl className="grid gap-x-4 gap-y-1 sm:grid-cols-[minmax(6rem,auto)_1fr]">
 				{LANGUAGES.filter((one) => notice.text[one]).map((one) => (
 					<div key={one} className="contents">
-						<dt className="text-fg-muted text-[11px] sm:pt-0.5">{LOCALE_NAMES[one]}</dt>
-						<dd lang={one} className="whitespace-pre-wrap text-[13px] leading-relaxed">
+						<dt className="text-[12.5px] text-fg-muted sm:pt-0.5">{LOCALE_NAMES[one]}</dt>
+						<dd lang={one} className="whitespace-pre-wrap text-[14px] leading-relaxed">
 							{notice.text[one]}
 						</dd>
 					</div>
@@ -382,6 +411,7 @@ const PLATFORMS = [
 	{ key: "ipad", name: "iPad" },
 	{ key: "android", name: "Android" },
 	{ key: "windows", name: "Windows" },
+	{ key: "linux", name: "Linux" },
 ] as const;
 
 /** What a rule's from and below may be, as internal/remote holds them to. */
@@ -597,15 +627,10 @@ function SwitchesCard({ canSettings, onSignedOut }: { canSettings: boolean; onSi
 			note={t("Features turned off in the apps, by platform and version")}
 			actions={
 				canSettings && (
-					<button
-						type="button"
-						onClick={add}
-						disabled={locked || rows === undefined}
-						className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi disabled:opacity-40"
-					>
-						<Plus className="size-3.5" />
+					<Button variant="secondary" size="sm" onClick={add} disabled={locked || rows === undefined}>
+						<Plus />
 						{t("Add a rule")}
-					</button>
+					</Button>
 				)
 			}
 		>
@@ -641,7 +666,7 @@ function SwitchesCard({ canSettings, onSignedOut }: { canSettings: boolean; onSi
 				})}
 			</div>
 
-			<div className="flex flex-col gap-3 border-border border-t px-3 py-3 sm:px-4">
+			<div className="flex flex-col gap-3 border-border border-t px-4 py-4">
 				<Said show={unread > 0}>
 					<Note kind="warn">
 						{t("Some switches in the file could not be read and are not shown here. Saving replaces them with this list.")}
@@ -660,24 +685,14 @@ function SwitchesCard({ canSettings, onSignedOut }: { canSettings: boolean; onSi
 
 				{canSettings ? (
 					<div className="flex flex-wrap items-center gap-2">
-						<button
-							type="button"
-							disabled={locked || !dirty || invalid}
-							onClick={() => void save()}
-							className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] hover:bg-surface-hi disabled:opacity-40"
-						>
+						<Button variant="primary" size="sm" disabled={locked || !dirty || invalid} onClick={() => void save()}>
 							<Spinning show={saving} />
 							{t("Save")}
-						</button>
+						</Button>
 
-						<button
-							type="button"
-							disabled={locked || !dirty}
-							onClick={discard}
-							className="rounded-md border border-border px-2.5 py-1.5 text-[12px] hover:bg-surface-hi disabled:opacity-40"
-						>
+						<Button variant="ghost" size="sm" disabled={locked || !dirty} onClick={discard}>
 							{t("Discard changes")}
-						</button>
+						</Button>
 					</div>
 				) : (
 					<Note kind="quiet">{t("You can view this but not change it.")}</Note>
@@ -729,14 +744,14 @@ function SwitchRow({
 	const nothing = from !== "" && below !== "" && !fromBad && !belowBad && !newer(below, from);
 
 	const field = cn(
-		"readout h-8 w-full rounded-md border border-border bg-surface-hi px-2 text-[12px] outline-none",
-		"focus-visible:ring-2 focus-visible:ring-fg/40 disabled:opacity-50",
+		"readout h-9 w-full rounded-[10px] border border-border bg-bg px-3 text-[13px] outline-none",
+		"focus-visible:border-fg/40 focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50 pointer-coarse:h-11 pointer-coarse:text-base",
 	);
 
 	return (
 		<div
 			className={cn(
-				"flex flex-col gap-2.5 border-border border-t px-3 py-3 first:border-t-0 sm:px-4",
+				"flex flex-col gap-3 border-border border-t px-4 py-4 first:border-t-0",
 				leaving ? "pointer-events-none animate-depart" : "animate-arrive",
 			)}
 		>
@@ -747,7 +762,7 @@ function SwitchRow({
 					aria-label={t("Feature")}
 					onChange={(event) => onChange({ feature: event.target.value })}
 					className={cn(
-						"rounded-md border border-border bg-surface-hi px-2 py-1 text-[12.5px] text-fg",
+						"h-9 rounded-[10px] border border-border bg-bg px-2.5 font-medium text-[14px] text-fg pointer-coarse:h-11",
 						"outline-none transition-colors hover:border-fg/20",
 						"focus-visible:ring-2 focus-visible:ring-fg/40 disabled:opacity-40",
 					)}
@@ -776,54 +791,56 @@ function SwitchRow({
 						disabled={disabled || first}
 						onClick={() => onMove(-1)}
 						aria-label={t("Move up")}
-						className="rounded-md border border-border p-1 text-fg-muted hover:bg-surface-hi disabled:opacity-30"
+						className={quietIcon}
 					>
-						<ChevronUp className="size-3.5" />
+						<ChevronUp />
 					</button>
 					<button
 						type="button"
 						disabled={disabled || last}
 						onClick={() => onMove(1)}
 						aria-label={t("Move down")}
-						className="rounded-md border border-border p-1 text-fg-muted hover:bg-surface-hi disabled:opacity-30"
+						className={quietIcon}
 					>
-						<ChevronDown className="size-3.5" />
+						<ChevronDown />
 					</button>
 					<button
 						type="button"
 						disabled={disabled}
 						onClick={onRemove}
 						aria-label={t("Remove rule")}
-						className="rounded-md border border-border p-1 text-fg-muted hover:bg-surface-hi hover:text-danger disabled:opacity-30"
+						className={cn(quietIcon, "hover:text-danger-ink")}
 					>
-						<Trash2 className="size-3.5" />
+						<Trash2 />
 					</button>
 				</span>
 			</div>
 
-			<div role="group" aria-label={t("Platforms")} className="flex flex-wrap items-center gap-x-3.5 gap-y-1.5">
+			<div role="group" aria-label={t("Platforms")} className="flex flex-wrap items-center gap-x-5 gap-y-1">
 				{PLATFORMS.map((one) => (
-					<label key={one.key} className={cn("flex items-center gap-1.5 text-[12px]", disabled && "opacity-60")}>
-						<input
-							type="checkbox"
+					<label
+						key={one.key}
+						className={cn("flex min-h-8 items-center gap-2.5 text-[13.5px] pointer-coarse:min-h-11", disabled ? "opacity-60" : "cursor-pointer")}
+					>
+						<Tick
+							label={one.name}
 							checked={ticked.has(one.key)}
 							disabled={disabled}
-							onChange={(event) => {
+							onChange={(on) => {
 								const next = new Set(ticked);
-								if (event.target.checked) next.add(one.key);
+								if (on) next.add(one.key);
 								else next.delete(one.key);
 								onChange({ platforms: PLATFORMS.map((p) => p.key).filter((key) => next.has(key)) });
 							}}
-							className="size-3.5 shrink-0 accent-tally"
 						/>
 						{one.name}
 					</label>
 				))}
 			</div>
 
-			<div className="grid grid-cols-2 gap-2 sm:grid-cols-[9rem_9rem_1fr]">
+			<div className="grid grid-cols-2 gap-3 sm:grid-cols-[9rem_9rem_1fr]">
 				<label className="flex flex-col gap-1">
-					<span className="text-fg-muted text-[11px]">{t("From version")}</span>
+					<span className="text-[12.5px] text-fg-muted">{t("From version")}</span>
 					<input
 						value={rule.from ?? ""}
 						disabled={disabled}
@@ -837,7 +854,7 @@ function SwitchRow({
 				</label>
 
 				<label className="flex flex-col gap-1">
-					<span className="text-fg-muted text-[11px]">{t("Below version")}</span>
+					<span className="text-[12.5px] text-fg-muted">{t("Below version")}</span>
 					<input
 						value={rule.below ?? ""}
 						disabled={disabled}
@@ -849,7 +866,7 @@ function SwitchRow({
 				</label>
 
 				<label className="col-span-2 flex flex-col gap-1 sm:col-span-1">
-					<span className="text-fg-muted text-[11px]">{t("Note")}</span>
+					<span className="text-[12.5px] text-fg-muted">{t("Note")}</span>
 					<input
 						value={rule.note ?? ""}
 						disabled={disabled}
@@ -891,7 +908,7 @@ function Pair({
 	onChoose: (at: 0 | 1) => void;
 }) {
 	return (
-		<div role="radiogroup" aria-label={label} className="inline-flex rounded-md border border-border p-0.5">
+		<div role="radiogroup" aria-label={label} className="inline-flex gap-0.5 rounded-[10px] bg-surface-hi p-0.5">
 			{choices.map((choice, at) => (
 				<button
 					key={choice}
@@ -901,8 +918,11 @@ function Pair({
 					disabled={disabled}
 					onClick={() => onChoose(at as 0 | 1)}
 					className={cn(
-						"rounded px-2.5 py-0.5 text-[12px] transition-colors duration-150",
-						chosen === at ? "bg-fg/10 font-medium text-fg" : "text-fg-muted hover:text-fg",
+						"pressable h-7 rounded-[8px] px-3 text-[13px] outline-none pointer-coarse:h-9",
+						"focus-visible:ring-2 focus-visible:ring-fg/70",
+						chosen === at
+							? "bg-surface-hi-press font-medium text-fg day:bg-surface day:shadow-[0_1px_2px_rgb(0_0_0/0.12)]"
+							: "text-fg-muted hover:text-fg",
 						disabled && "cursor-not-allowed opacity-60",
 					)}
 				>
@@ -920,7 +940,7 @@ function Spinning({ show }: { show: boolean }) {
 
 	return (
 		<span className={cn("inline-flex", leaving ? "animate-fade-out" : "animate-fade-in")}>
-			<Loader2 className="size-3.5 animate-spin" />
+			<Loader2 className="size-4 animate-spin" />
 		</span>
 	);
 }
@@ -931,4 +951,68 @@ function Said({ show, children }: { show: boolean; children: ReactNode }) {
 	if (!mounted) return null;
 
 	return <div className={cn(leaving ? "animate-fade-out" : "animate-fade-in")}>{children}</div>;
+}
+
+/** The platforms in the order the download page lists them, with what each is called. */
+const SHELVES: { key: string; name: Phrase; Icon: typeof Smartphone; note?: Phrase }[] = [
+	{ key: "mac", name: "Mac app", Icon: AppWindow },
+	{ key: "windows", name: "Windows app", Icon: Monitor },
+	{ key: "android", name: "Android app", Icon: Smartphone },
+	{ key: "linux-x86_64", name: "Linux app (x86-64)", Icon: Computer },
+	{ key: "linux-aarch64", name: "Linux app (ARM64)", Icon: Computer },
+	{ key: "ios", name: "iPhone app", Icon: Smartphone, note: "Installed through TestFlight, so this is what it is told is newest." },
+];
+
+/**
+ * Which version of each app is being handed out.
+ *
+ * The question asked first about the apps and the one this page could not
+ * answer: it said what the apps are told between releases and not which
+ * release they are on. Read from the same manifest and the same checks the
+ * download page uses, so a build whose file is still being copied in is shown
+ * as not offered rather than as the current version.
+ */
+function Versions({ onSignedOut }: { onSignedOut: () => void }) {
+	const t = useT();
+
+	// Rarely: a build is copied in by hand, a few times a month.
+	const { value, error } = usePoll(api.apps, { every: 60_000, onSignedOut });
+
+	const by = new Map((value?.platforms ?? []).map((one) => [one.platform, one]));
+
+	return (
+		<Section
+			title={t("Versions handed out")}
+			note={value && !value.configured ? t("This deployment has no apps directory (meet.apps.mac_dir), so there is nowhere to keep this.") : undefined}
+		>
+			{error && <Failed>{error}</Failed>}
+			<Group>
+				{value === undefined && <span className="block h-24" aria-hidden />}
+				{value?.configured &&
+					SHELVES.map((shelf) => {
+						const one = by.get(shelf.key);
+
+						return (
+							<Row key={shelf.key} inset={48}>
+								<div className="flex items-center gap-3.5 px-4 py-3">
+									<shelf.Icon className="size-[18px] shrink-0 text-fg-muted" />
+									<div className="flex min-w-0 flex-1 flex-col">
+										<span className="text-[14px]">{t(shelf.name)}</span>
+										{shelf.note && <span className="text-[12px] text-fg-muted">{t(shelf.note)}</span>}
+									</div>
+									{one?.available ? (
+										<span className="flex flex-col items-end">
+											<span className="readout text-[14px]">{one.version}</span>
+											{one.size ? <span className="text-[12px] text-fg-muted tabular-nums">{size(one.size)}</span> : null}
+										</span>
+									) : (
+										<span className="text-[13px] text-fg-muted">{t("Not offered")}</span>
+									)}
+								</div>
+							</Row>
+						);
+					})}
+			</Group>
+		</Section>
+	);
 }

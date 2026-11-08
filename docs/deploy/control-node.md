@@ -38,7 +38,6 @@ install -d -m 0750 -g tomoshibi-certs /etc/tomoshibi/certs
 
 ```bash
 tomoshibi keygen            # the API key pair, shared with every relay
-openssl rand -hex 32        # an enrolment secret
 ```
 
 `keygen` prints a `keys:` block ready to paste. The pair is one secret, not
@@ -63,12 +62,14 @@ Start from [control.yaml](examples/control.yaml) and save it as
   with an empty list refuses to start (`no relays are listed under
   meet.relays`), even though after the first start the store, not the file,
   holds the real list. Give it the first relay you are about to enrol, named
-  with the prefix you will enrol it with; the enrolment then asks whether to
-  take that entry over (answer `y`, or pass `REPLACE=1`), and keeps its
+  with the prefix you will enrol it with, and mint its token with **Takes
+  over the relay already called this** ticked; the enrolment keeps its
   settings.
-- **`meet.enrol`**: secret, `domain`, `public_url`, ports, `probe_port`, the
+- **`meet.enrol`**: `domain`, `public_url`, ports, `probe_port`, the
   wildcard's `cert_file` and `key_file`, `redis_addr`, and the Cloudflare
-  token and zone. Without a secret and a domain, relays are added by hand.
+  token and zone. Without a domain, relays are added by hand. Machines enrol
+  with one-time tokens minted on the relays page; there is no enrolment
+  secret to generate.
 - **`meet.rooms`**: who may open a new room and who may enter one. For a
   deployment on the open internet, `opened_by: accounts` or `admins`, and
   `joined_by: invited` (the default).
@@ -193,7 +194,8 @@ passphrase** (`name#passphrase` in the passphrase field works too). Where no
 administrator exists, `/admin` does not exist at all.
 
 Every passphrase tried anywhere (the join screen, the account sign-in, the
-management sign-in) spends from one budget per address. Administrators'
+management sign-in) is bounded per address and per door, each door with its
+own budget so that one cannot shut another. Administrators'
 actions, and every enrolment attempt, are written to the service log as audit
 entries.
 
@@ -235,7 +237,7 @@ itself and keeps seven. Off-machine backups are yours. What to back up:
 | --- | --- | --- |
 | The store's daily copies | `/var/lib/tomoshibi/meet.db.*` | Administrators, accounts, relays and their settings exist nowhere else. The file holds three of a relay's many fields and is read on first start only. |
 | **The tripcode key** | `/var/lib/tomoshibi/tripcode.key` | **Not copied by the server.** Lost or replaced, every signature changes: no administrator, account or host passphrase works, and nothing says why. A missing file is silently replaced with a new one. Keep it somewhere the store's copies are not: one file derives the signatures and the other holds them. |
-| The configuration | `/etc/tomoshibi/control.yaml` | Holds the API secret and the enrolment secret. |
+| The configuration | `/etc/tomoshibi/control.yaml` | Holds the API secret and the Cloudflare token. |
 | Certificates and the App Store Connect key | `/etc/tomoshibi/certs/`, the `.p8` | Reissuable, but tedious. |
 | The apps directory | `/var/lib/tomoshibi/apps/` | Builds, `apps.json`, `remote.json`. Rebuildable from your release artifacts. |
 | The watchdog credential | `/etc/tomoshibi/watch.env` | |

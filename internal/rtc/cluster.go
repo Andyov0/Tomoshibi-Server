@@ -19,6 +19,7 @@ package rtc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -394,4 +395,50 @@ func (c *Cluster) Close(ctx context.Context, room string) error {
 // all, but a load average belongs to one machine and has to be asked of it.
 func (c *Cluster) Relays() []string {
 	return c.relays()
+}
+
+// Serving is when the certificate a relay presents runs out, read from a TLS
+// handshake and nothing more.
+//
+// For the relays the control node watches without sending anything: the ones
+// dialled by bare address, which hold a certificate for that address renewed
+// on the machine itself. They were sent the wildcard and its private key every
+// hour, refused it every hour under the never-narrow rule, and reported what
+// they held instead; the key need not travel for the date to come back.
+//
+// Verified as any client would verify it, so a certificate that no longer
+// verifies is an error rather than a date, which is the more useful thing to
+// hear about one.
+func (c *Cluster) Serving(ctx context.Context, relay string) (time.Time, error) {
+	address, err := hostPort(relay)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	raw, err := c.dial.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer raw.Close()
+
+	conn := tls.Client(raw, &tls.Config{ServerName: host})
+	if err := conn.HandshakeContext(ctx); err != nil {
+		return time.Time{}, err
+	}
+	defer conn.Close()
+
+	chain := conn.ConnectionState().PeerCertificates
+	if len(chain) == 0 {
+		return time.Time{}, fmt.Errorf("relay %s presented no certificate", relay)
+	}
+
+	return chain[0].NotAfter, nil
 }

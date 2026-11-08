@@ -232,3 +232,25 @@ describe("Audible and what has been decided about hearing people", () => {
 		expect(publication.setEnabled).not.toHaveBeenCalled();
 	});
 });
+
+/*
+ * Above as sent, the library is never told: it writes what it keeps for a
+ * source onto every element a new track of that source is attached to, and an
+ * element throws on more than one -- inside the loop that hands the page's
+ * elements out (speakers.ts), which would have left everybody after that
+ * person unheard. What is above one is the booster's, on the track.
+ */
+describe("somebody turned up past as sent", () => {
+	it("is never asked of the library above one", () => {
+		const room = new Room();
+		speaking(room);
+		setVolume(IDENTITY, "voice", 2.5);
+
+		render(<Audible room={room} />);
+
+		const participant = room.remoteParticipants.get(IDENTITY) as unknown as { setVolume: ReturnType<typeof vi.fn> };
+		const asked = participant.setVolume.mock.calls.map((call) => call[0] as number);
+		expect(asked.length).toBeGreaterThan(0);
+		expect(Math.max(...asked)).toBe(1);
+	});
+});

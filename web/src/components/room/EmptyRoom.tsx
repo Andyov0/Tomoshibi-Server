@@ -91,7 +91,7 @@ export function EmptyRoom({ room, host }: { room: Room; host: boolean }) {
 				{minting ? (
 					<Loader2 className="size-4 animate-spin" />
 				) : copied ? (
-					<Check className="size-4 text-tally" />
+					<Check className="size-4 text-tally-ink" />
 				) : linkWorks ? (
 					<Copy className="size-4" />
 				) : (

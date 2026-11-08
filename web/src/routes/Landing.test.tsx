@@ -203,6 +203,27 @@ describe("on a computer", () => {
 		expect(screen.getByRole("link", { name: "Download for Windows" })).toBeDefined();
 	});
 
+	it("on Linux offers a download for each processor with the link, and downloads and asks nothing by itself", async () => {
+		browsing("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36");
+		const image = { available: true, version: "0.1.7", size: 47_185_920 };
+		open({ device: "linux", offered: { ...OFFERED, linux: { x86_64: image, aarch64: image } } });
+
+		await waitOut();
+		expect(launch).not.toHaveBeenCalled();
+		expect(download).not.toHaveBeenCalled();
+
+		expect(screen.getByRole("heading", { name: "Get the Linux app" })).toBeDefined();
+		const takes = screen.getAllByRole("link", { name: /Download for Linux/ });
+		expect(takes.map((one) => [one.textContent, one.getAttribute("href")])).toEqual([
+			["Download for Linux (x86-64)", "/api/apps/linux-x86_64?invite=T0k3n"],
+			["Download for Linux (ARM64)", "/api/apps/linux-aarch64?invite=T0k3n"],
+		]);
+		expect(document.body.textContent).toContain("Allow the AppImage to run as a program");
+
+		fireEvent.click(screen.getByRole("button", { name: "Open Tomoshibi" }));
+		expect(launch).toHaveBeenCalledWith(`tomoshibi://${window.location.host}/?invite=T0k3n#/standup`);
+	});
+
 	it("on Windows without a build says the app is coming, and asks nothing of an app that is not there", () => {
 		browsing(CHROME_ON_WINDOWS);
 		open({ device: "windows", offered: { ...OFFERED, windows: { available: false } } });

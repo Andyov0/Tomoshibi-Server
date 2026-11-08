@@ -5,6 +5,7 @@ import type { Said } from "@/live/chat";
 import { cn } from "@/lib/utils";
 import { ArrowUp, MessageSquareOff, X } from "lucide-react";
 import { Linked } from "./Linked";
+import { usePanel } from "@/hooks/usePanel";
 import { useEffect, useRef, useState } from "react";
 
 /**
@@ -21,6 +22,7 @@ export function ChatPanel({
 	onSay,
 	sending,
 	offline,
+	leaving = false,
 	onClose,
 }: {
 	said: Said[];
@@ -29,9 +31,12 @@ export function ChatPanel({
 	sending?: boolean;
 	/** The connection is down, so nothing can leave. */
 	offline?: boolean;
+	/** On its way out; see useLingering. */
+	leaving?: boolean;
 	onClose: () => void;
 }) {
 	const t = useT();
+	const panel = usePanel(onClose);
 	const [draft, setDraft] = useState("");
 	const field = useRef<HTMLTextAreaElement>(null);
 	const log = useRef<HTMLDivElement>(null);
@@ -57,27 +62,43 @@ export function ChatPanel({
 
 	return (
 		<aside
+			ref={panel}
+			aria-label={t("Messages")}
 			className={cn(
 				"absolute z-20 flex flex-col overflow-hidden border border-border",
-				"bg-surface/95 shadow-2xl backdrop-blur-md",
+				// Opaque: what is in it is what people wrote, and words over a
+				// moving picture change contrast while they are being read. The
+				// blurred material is for the controls that float, not for this.
+				"bg-surface shadow-2xl",
+				leaving ? "max-sm:animate-sheet-leave sm:animate-depart" : "max-sm:animate-sheet sm:animate-arrive",
+				"sm:origin-bottom-right",
 				// A sheet up the bottom edge while narrow. As a card it is
 				// sixteen and a half rems wide, which is two thirds of a phone,
 				// and it is anchored lower than the controls — so it covers them.
 				// Nothing about it is wrong on a laptop; it was never asked this.
-				"inset-x-0 bottom-0 h-[55%] rounded-t-2xl",
+				"inset-x-0 bottom-0 h-[55%] rounded-t-[22px] border-x-0 border-b-0",
 				// Room for the controls, which float over this sheet's bottom
 				// edge rather than beside it. Without this, the box somebody types in
 				// sits underneath them.
 				"pb-[calc(env(safe-area-inset-bottom)+3.5rem)] sm:pb-0",
 				// A card again once there is room beside the pictures.
-				"sm:inset-x-auto sm:right-3 sm:bottom-3 sm:h-auto sm:w-66 sm:rounded-xl sm:pb-0",
+				"sm:inset-x-auto sm:right-3 sm:bottom-3 sm:h-auto sm:w-72 sm:rounded-[22px] sm:border-x sm:border-b sm:pb-0",
 				"sm:max-h-[min(26rem,calc(100%-5.5rem))]",
 			)}
 		>
-			<header className="flex items-center justify-between border-border border-b px-3 py-2">
-				<strong className="font-semibold text-[12.5px]">{t("Messages")}</strong>
-				<Button variant="ghost" size="icon" className="size-6" aria-label={t("Close messages")} onClick={onClose}>
-					<X className="size-3.5" />
+			<header className="flex items-center justify-between border-border border-b py-1.5 pr-1.5 pl-4">
+				<strong className="font-semibold text-[14px]">{t("Messages")}</strong>
+				{/* Thirty-two for a cursor, forty-four for a finger. It was twenty-
+				    four, with a fourteen-pixel cross in it, in the corner of a
+				    sheet that a phone can close no other way. */}
+				<Button
+					variant="ghost"
+					size="icon"
+					className="size-8 rounded-full text-fg-muted hover:text-fg pointer-coarse:size-11"
+					aria-label={t("Close messages")}
+					onClick={onClose}
+				>
+					<X />
 				</Button>
 			</header>
 
@@ -93,18 +114,18 @@ export function ChatPanel({
 						return (
 							<div key={one.id} className={cn("flex flex-col gap-0.5", run && "-mt-2")}>
 								{!run && (
-									<span className="flex items-baseline gap-1.5 font-medium text-[11.5px]">
+									<span className="flex items-baseline gap-1.5 font-medium text-[12px]">
 										{/* Through the same phrase the tile uses. It was written out
 										    in English here, the one place in the call that
 										    never changed language. */}
 										{one.mine ? t("{name} (you)", { name: one.name }) : one.name}
-										<span className="readout text-[9.5px] text-fg-muted">{clock(one.at)}</span>
+										<span className="readout text-[10.5px] text-fg-muted">{clock(one.at)}</span>
 									</span>
 								)}
 								{/* Somebody's words, so they are theirs to take away. A
 								    call is furniture and is not selectable for it; this
 								    is the one thing in one that is prose. */}
-								<span className="select-text break-words text-[12.5px] leading-normal">
+								<span className="select-text break-words text-[13.5px] leading-normal">
 									<Linked text={one.body} />
 								</span>
 							</div>
@@ -113,7 +134,10 @@ export function ChatPanel({
 				</div>
 			)}
 
-			<div className="m-3 flex items-end gap-2 rounded-lg border border-border bg-white/2 px-2.5 py-1.5">
+			{/* A well rather than an outline: the raised grey that every field
+			    inside a surface wears, which is visible in either appearance.
+			    The faint white wash it had was nothing at all on a white panel. */}
+			<div className="m-3 flex items-end gap-2 rounded-xl bg-surface-hi py-1.5 pr-1.5 pl-3 focus-within:ring-2 focus-within:ring-fg/25">
 				<textarea
 					ref={field}
 					rows={1}
@@ -136,19 +160,24 @@ export function ChatPanel({
 						}
 					}}
 					className={cn(
-						"flex-1 resize-none bg-transparent py-1 text-[12.5px] text-fg outline-none",
+						"flex-1 resize-none bg-transparent py-1 text-[13.5px] text-fg outline-none",
+						// Sixteen where a finger types it. Safari on a phone zooms
+						// the whole page in on a field set any smaller, and leaves
+						// the call zoomed after the message is sent.
+						"pointer-coarse:py-2.5 pointer-coarse:text-base",
 						"placeholder:text-fg-muted",
 					)}
 				/>
 
 				<Button
+					variant="primary"
 					size="icon"
-					className="size-6 shrink-0 rounded-md"
+					className="size-7 shrink-0 rounded-full pointer-coarse:size-11 [&_svg]:size-3.5 pointer-coarse:[&_svg]:size-4"
 					aria-label={t("Send")}
 					disabled={!draft.trim() || sending || offline}
 					onClick={send}
 				>
-					<ArrowUp className="size-3" />
+					<ArrowUp className="stroke-[2.5]" />
 				</Button>
 			</div>
 		</aside>
@@ -168,8 +197,8 @@ function Empty() {
 
 	return (
 		<div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-8 text-center">
-			<MessageSquareOff className="size-6 text-border" />
-			<p className="max-w-[24ch] text-[11.5px] text-fg-muted leading-relaxed">
+			<MessageSquareOff className="size-6 text-fg-muted/60" />
+			<p className="max-w-[24ch] text-[12.5px] text-fg-muted leading-relaxed">
 				{t("Messages disappear when the call ends.")}
 			</p>
 		</div>

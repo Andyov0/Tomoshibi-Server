@@ -199,7 +199,7 @@ func (a *App) arrange(w http.ResponseWriter, r *http.Request) {
 		}
 
 		mark := room.Signature{Trip: account.Trip, Proven: true, Account: true}
-		if relay.AdminOnly && !a.administrating(r, mark) {
+		if !a.mayHoldOn(r, mark, relay) {
 			fail(w, http.StatusForbidden, reasonRelayNotAllowed)
 			return
 		}
@@ -426,14 +426,25 @@ func (a *App) beginArranged(name string, grant room.Grant) {
 		return
 	}
 
+	now := time.Now().UTC()
+
+	// Nothing to begin, and so nothing to say, unless this person arranged a
+	// meeting here. Every verified join comes through this, and the warning
+	// below used to be said before anybody had asked whether a meeting was
+	// arranged at all: every signed-in guest joining a room somebody else
+	// opened was logged as a meeting failing to begin, in rooms that never had
+	// one (the health check of 2026-10-29). Begin would have said there was
+	// no such meeting, quietly, a few lines later.
+	if meeting, arranged := a.store.ArrangedFor(name, now); !arranged || meeting.Host != mark.Trip {
+		return
+	}
+
 	if host := a.store.HostOf(name); host != "" && host != mark.Trip {
 		slog.Warn("an arranged meeting's name answers to somebody else, so the meeting does not begin",
 			"room", name)
 
 		return
 	}
-
-	now := time.Now().UTC()
 
 	minted, err := store.NewInviteToken()
 	if err != nil {

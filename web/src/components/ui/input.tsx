@@ -13,7 +13,11 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
 		<input
 			ref={ref}
 			className={cn(
-				"h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm text-fg",
+				// The button's height beside it, the shared small radius, and
+				// sixteen pixels under a finger, where Safari zooms the whole
+				// page in on a field set any smaller.
+				"h-9 w-full rounded-[10px] border border-border bg-surface px-3 text-sm text-fg",
+				"pointer-coarse:h-11 pointer-coarse:text-base",
 				"placeholder:text-fg-muted outline-none transition-colors",
 				"focus-visible:border-fg/40 focus-visible:ring-2 focus-visible:ring-fg/30",
 				"disabled:cursor-not-allowed disabled:opacity-50",

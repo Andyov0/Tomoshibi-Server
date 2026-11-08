@@ -180,6 +180,31 @@ describe("impersonating", () => {
 	it("says nothing when nobody else is called that", () => {
 		expect(impersonating(unsigned, [unsigned, other])).toBe(false);
 	});
+
+	// Typing any passphrase at all made somebody proven, and being proven was
+	// enough to wear a name somebody else had proven without a word said.
+	it("marks somebody who proved a different signature under a proven name", () => {
+		const another = { name: "Alice", identity: `t${"z".repeat(10)}-${HEX}` };
+
+		expect(impersonating(another, [signed, another])).toBe(true);
+		expect(impersonating(signed, [signed, another])).toBe(true);
+	});
+
+	it("does not mark one person in two tabs", () => {
+		const again = { name: "Alice", identity: `t${TRIP}-${"0".repeat(32)}` };
+		const signedIn = { name: "Alice", identity: `a${TRIP}-${"1".repeat(32)}` };
+
+		expect(impersonating(again, [signed, again, signedIn])).toBe(false);
+		expect(impersonating(signedIn, [signed, again, signedIn])).toBe(false);
+	});
+
+	it("sees through invisible characters, width and case", () => {
+		for (const disguise of ["Ali\u200Bce", "Alice\uFEFF", "Ａｌｉｃｅ", "alice", " Alice  ", "A\u00ADlice", "Ali\u2060ce"]) {
+			const wearing = { name: disguise, identity: `gaaaaaaaaaa-${HEX}` };
+
+			expect(impersonating(wearing, [signed, wearing]), JSON.stringify(disguise)).toBe(true);
+		}
+	});
 });
 
 /*

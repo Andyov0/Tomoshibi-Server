@@ -2,7 +2,7 @@
 
 [Back to the guide](../../DEPLOY.md)
 
-The native apps (Mac, Windows, Android, iPhone and iPad) are built outside
+The native apps (Mac, Windows, Linux, Android, iPhone and iPad) are built outside
 this repository. What the server does for them:
 
 | Address | For | Needs |
@@ -10,9 +10,9 @@ this repository. What the server does for them:
 | `/apps` | The download page | an account, signed in |
 | the page an invitation or meeting link opens | Offers the app for the visitor's device before the meeting | a valid `?invite=` or `?meeting=` link |
 | `GET /api/apps` | What the page shows | an account, or a valid link |
-| `GET /api/apps/mac`, `/android`, `/windows` | The newest build itself, resumable | an account, or a valid link |
+| `GET /api/apps/mac`, `/android`, `/windows`, `/linux-x86_64`, `/linux-aarch64` | The newest build itself, resumable | an account, or a valid link |
 | `POST /api/apps/ios/invite` | Ask Apple to send a TestFlight invitation to an address | an account |
-| `GET /api/apps/latest/{mac,android,windows,ios}` | An app asking for its newest version | the apps' user agent |
+| `GET /api/apps/latest/{mac,android,windows,linux-x86_64,linux-aarch64,ios}` | An app asking for its newest version | the apps' user agent |
 | `GET /api/apps/latest/{platform}/file` | The update itself, resumable | the apps' user agent |
 | `GET /api/apps/remote` | Phrases, feature switches, numbers and a notice for the apps | the apps' user agent; see [below](#remote-configuration-remotejson) |
 | `/.well-known/assetlinks.json` | Lets the Android app open this deployment's links | `meet.apps.android_*` |
@@ -30,9 +30,9 @@ meet:
 ```
 
 One directory holds the Mac disk images, the Android packages, the Windows
-installers, the manifest `apps.json` that names them, and `remote.json`. The
-key is called `mac_dir` after the first platform it held; renaming it would
-silently empty every deployment's download page.
+installers, the Linux AppImages, the manifest `apps.json` that names them, and
+`remote.json`. The key is called `mac_dir` after the first platform it held;
+renaming it would silently empty every deployment's download page.
 
 - Both files are read **on every request**. Publishing a build is copying a
   file in and rewriting the manifest; nothing restarts.
@@ -43,7 +43,7 @@ silently empty every deployment's download page.
   as root, give them back to the service (`chown -R --reference=/var/lib/tomoshibi
   /var/lib/tomoshibi/apps`).
 - A directory the server cannot read is warned about at startup and leaves
-  the Mac, Android and Windows sections saying "not available yet".
+  the Mac, Android, Windows and Linux sections saying "not available yet".
 
 ## `apps.json`
 
@@ -51,26 +51,29 @@ A list per platform. Example: [apps.json](examples/apps.json).
 
 ```json
 {"mac":     [{"version": "0.1.4", "build": 2, "file": "Tomoshibi-0.1.4-2.dmg",
-              "size": 84215808, "sha256": "<64 hex digits>",
+              "size": 84215808, "sha256": "<64 hex digits>", "sig": "<base64>",
               "notes": {"en": "...", "zh-Hans": "...", "zh-Hant": "...", "ja": "..."}}],
  "android": [{"version": "0.1.4", "file": "Tomoshibi-0.1.4.apk", "size": 31457280, "sha256": "..."}],
  "windows": [{"version": "0.1.4", "file": "Tomoshibi-Setup-0.1.4.exe", "size": 41943040, "sha256": "..."}],
+ "linux-x86_64":  [{"version": "0.1.7", "file": "Tomoshibi-0.1.7-x86_64.AppImage", "size": 47185920, "sha256": "...", "sig": "..."}],
+ "linux-aarch64": [{"version": "0.1.7", "file": "Tomoshibi-0.1.7-aarch64.AppImage", "size": 45088768, "sha256": "...", "sig": "..."}],
  "ios":     [{"version": "0.1.4", "build": "5", "notes": {"en": "..."}}]}
 ```
 
 | Field | Platforms | Rule |
 | --- | --- | --- |
 | `version` | all | Required. Starts with a digit; then digits, letters, `.`, `+`, `-`; at most 32 characters. Compared part by part, numerically where both parts are numbers. |
-| `file` | mac, android, windows | A file name in the directory itself: no path, not starting with `.`, ending in `.dmg`, `.apk` or `.exe` respectively. |
-| `size` | mac, android, windows | The file's size in bytes, as a number. |
-| `sha256` | mac, android, windows | 64 hexadecimal digits (upper case is accepted and read as lower). |
+| `file` | mac, android, windows, linux-x86_64, linux-aarch64 | A file name in the directory itself: no path, not starting with `.`, ending in `.dmg`, `.apk`, `.exe`, `-x86_64.AppImage` or `-aarch64.AppImage` respectively (compared in lower case). |
+| `size` | every list but ios | The file's size in bytes, as a number. |
+| `sha256` | every list but ios | 64 hexadecimal digits (upper case is accepted and read as lower). |
 | `notes` | all, optional | What changed, by language tag (`en`, `zh-Hans`, `zh-Hant`, `ja`, ...), at most 2000 characters each. A note written wrongly costs that note, never the build. |
 | `build` | all, optional | The build number (on Apple platforms its `CFBundleVersion`): digits only, at most nine, as a number or a string. Anything else is logged and read as none. |
+| `sig` | every list but ios; optional to the server | The release key's signature of the line, base64 (see [Signed updates](#signed-updates)). Passed to the apps untouched; one that is not a string is logged and dropped, never costing the build. |
 
 **The iOS list** has only `version`, `build` and `notes`. TestFlight installs
 the iOS app, so the list only tells the app which version is newest there and
-what changed; a `file`, `size` or `sha256` written there is ignored, and its
-`/file` address always answers `no_build`.
+what changed; a `file`, `size`, `sha256` or `sig` written there is ignored, and
+its `/file` address always answers `no_build`.
 
 How a platform's build is chosen:
 
@@ -112,10 +115,59 @@ alone. The size, hash and file are the same build for everybody.
 - **The update endpoints**: no account, because an app used as a guest has
   no session. They answer only a user agent beginning `Tomoshibi/`, which the
   apps send as `Tomoshibi/<version> (<Platform>; <system>; <model>)` with
-  Platform one of `Mac`, `iPhone`, `iPad`, `Android`, `Windows`. That is no
+  Platform one of `Mac`, `iPhone`, `iPad`, `Android`, `Windows`, `Linux`. That is no
   secret; it stops the address working as a download link pasted into a
   chat, which opens in a browser (`403 not_the_app`). The app checks size and
-  hash again after downloading, and installs nothing that does not match.
+  hash again after downloading, and installs nothing that does not match;
+  an app built with a release key also offers and installs nothing whose line
+  the key did not sign ([Signed updates](#signed-updates)).
+
+### Signed updates
+
+The size and hash an app is told come from the same server as the file, so on
+their own they only prove the file is the one the server meant. A server, or a
+builds directory, that somebody else could write to would describe their own
+file just as faithfully, and neither the Windows installer nor the Linux
+AppImage is code-signed. So each Mac, Android, Windows and Linux line carries
+`sig`: an Ed25519 signature by the
+deployment's **release key**, which is kept off every server and used where the
+builds are made. The apps carry the key's public half (built into their core
+as `TOMOSHIBI_UPDATE_KEY`), and a release build for a real deployment cannot be
+made without it.
+
+What is signed is exactly these six lines, each ending in a newline:
+
+```text
+tomoshibi-update-v1
+platform=<mac|android|windows|linux-x86_64|linux-aarch64>
+version=<the version as offered: "version", plus "." and the build when "build" is above 1>
+file=<the line's "file">
+size=<the line's "size", in decimal>
+sha256=<the line's "sha256", lower case>
+```
+
+The version is the one the update check tells every app from 0.1.4 on
+(`0.1.4.2` for `"version": "0.1.4", "build": 2`), so the build is covered
+through it; the notes are not signed and can be edited afterwards. A file name
+must be letters, digits, `.`, `_`, `+` and `-` only, so that no value can carry
+a newline into the lines.
+
+The server does not check the signature and holds no key: `GET
+/api/apps/latest/{platform}` passes the line's `sig` on untouched, with its
+`file`, and leaves both out where the line has none (and always for iOS). An
+app from before signatures ignores them; an app built with a key refuses, as a
+failed check, a newest line that is unsigned or signed for anything else, and
+re-checks the signature against the downloaded bytes before installing. So:
+
+- **Sign before shelving.** A build put on the shelf with an unsigned line,
+  or a line edited after signing (anything but `notes`), is an update no keyed
+  app will take. Renaming the file, or changing `build`, needs a new signature.
+- **Order of rollout:** a server that passes `sig` on, then the lines signed,
+  then apps built with the key. Apps built with the key and pointed at a server
+  that drops `sig` are offered nothing.
+- **Keep the private key.** Losing it means keyed apps can only be updated by
+  hand-installing a build with a new key; leaking it means making a new one and
+  shipping apps built with it.
 
 ### Publishing a build
 
@@ -126,7 +178,10 @@ The order that never hands anybody a broken file:
 2. Check its SHA-256 and size on the server against the values from where it
    was built.
 3. Write the new manifest beside the old one (`.apps.json.part`), with the
-   line for the new build.
+   line for the new build, signed with the release key where the build was
+   made, against the file there ([Signed updates](#signed-updates)). Check
+   every file line's signature with the public key before moving it into
+   place.
 4. Keep the old manifest (`cp -a apps.json apps.json.before-<date>`).
 5. Move the build to its real name, then move the new manifest over
    `apps.json`. A rename is atomic, so a request reads either the old manifest
@@ -136,9 +191,11 @@ The order that never hands anybody a broken file:
 
    ```bash
    curl -s -A 'Tomoshibi/0.1.4 (Mac; check)' https://meet.example.com/api/apps/latest/mac
-   # {"platform":"mac","version":"0.1.5","size":...,"sha256":"...","notes":{...}}
+   # {"platform":"mac","version":"0.1.5","size":...,"sha256":"...","notes":{...},"file":"...","sig":"..."}
    curl -s -o /dev/null -w '%{http_code}\n' -A 'Mozilla/5.0' https://meet.example.com/api/apps/latest/mac
    # 403
+   curl -s -A 'Tomoshibi/0.1.7 (Linux; check; x86_64)' https://meet.example.com/api/apps/latest/linux-x86_64
+   curl -s -A 'Tomoshibi/0.1.7 (Linux; check; aarch64)' https://meet.example.com/api/apps/latest/linux-aarch64
    ```
 
 Builds downloaded from the server log `handed over the Mac app ...` with the
@@ -151,7 +208,76 @@ The Windows build is an `.exe` installer holding both x64 and ARM64, which
 installs for the person running it without administrator rights. It is not
 code-signed (the owner decided against buying a certificate, 2026-10-21), so
 Windows shows "Windows protected your PC" until somebody presses past it; the
-pages warn about this before it appears.
+pages warn about this before it appears. An update the app installs itself is
+run silently, with nothing from Windows in the way, which is why its line's
+release-key signature ([Signed updates](#signed-updates)) is what the app
+trusts it by.
+
+### Linux
+
+The Linux build is an AppImage, and there are two: one for x86-64 PCs in the
+`linux-x86_64` list and one for ARM64 ones in `linux-aarch64`, because an
+AppImage holds one processor's machine code where every other platform's file
+holds all of its own. The app asks for the list of the processor it was built
+for, and the list's name is the `platform` its line is signed for, so a line
+moved to the other list fails its signature in the app; each list also takes
+only a file whose name ends in its own processor's suffix, so a line pasted
+into the wrong one is offered to nobody. A browser saves it as
+`Tomoshibi-<version>-x86_64.AppImage` (or `-aarch64`), told its type is
+`application/vnd.appimage`.
+
+The download page offers both builds side by side, x86-64 first as the usual
+one, because a browser cannot be relied on to say which processor it runs on.
+It says, before the download, that the file has to be allowed to run as a
+program; a browser saves it without that permission. The Linux app signs in
+like the other apps and, like them, is not asked for the human check unless
+`meet.turnstile.exempt_native_apps` is set to `false`. In `remote.json`,
+`linux` names both processors' apps.
+
+A server from before the Linux app answers `no_build` for both lists and
+offers no Linux download, which is what the app and the page expect of it.
+
+#### One command
+
+For somebody who does not know which processor they have, the download page
+and the invitation page also give one line to paste into a terminal:
+
+```bash
+curl -fsSL https://meet.example.com/linux.sh | sh
+```
+
+`/linux.sh` is served by this server without a sign-in (internal/app/linux.sh,
+with the deployment's address written in from the request, as the pages see
+it; a host that does not look like one is refused rather than written into a
+script somebody runs). It answers `no_build` where there are no shelves. The
+script, which never runs sudo and touches nothing outside the person's home
+folder:
+
+1. stops unless this is Linux, not root, and has a desktop: a graphical
+   session, or one installed for somebody who came in over SSH (session files in
+   `/usr/share/xsessions` or `/usr/share/wayland-sessions`, or a display
+   manager). `--force` installs anyway;
+2. picks `linux-x86_64` or `linux-aarch64` from `uname -m`, refuses other
+   processors, a 32-bit system, musl and a C library older than 2.39, each in a
+   sentence of its own;
+3. asks `latest/linux-<processor>` as `Tomoshibi/installer-<n> (...)`, downloads
+   the file, and installs it only if its size and SHA-256 match the line;
+4. puts it at `~/.local/share/tomoshibi/Tomoshibi.AppImage`, a launcher at
+   `~/.local/bin/tomoshibi`, and the desktop entry, icons and `tomoshibi://`
+   handler the app writes itself (taken from the image), naming the image the
+   way the app looks for it, so its first start does not ask to be added;
+5. says how to install FUSE 3 for the distribution where it is missing.
+
+Run again, it updates in place or says it is up to date; `--uninstall`
+removes what it put there and keeps the settings. Its messages follow the
+terminal's language (English, Chinese, Japanese).
+
+To check it on a deployment, read it first, then try it on a desktop:
+
+```bash
+curl -fsSL https://meet.example.com/linux.sh | head -30
+curl -fsSL https://meet.example.com/linux.sh | sh -s -- --help
+```
 
 ## TestFlight invitations
 
@@ -296,7 +422,7 @@ every request. Example: [remote.json](examples/remote.json).
 | --- | --- |
 | `feature` | One of `screen-share`, `background-blur`, `watch-together`, `music` (the jukebox), `app-updates` (the apps offering their own next version). |
 | `off` | `true` turns it off where the rule holds; `false` turns it back on. |
-| `platforms` | Any of `mac`, `iphone`, `ipad`, `ios` (iPhone and iPad together), `android`, `windows`. Absent or empty: every platform. |
+| `platforms` | Any of `mac`, `iphone`, `ipad`, `ios` (iPhone and iPad together), `android`, `windows`, `linux` (both processors). Absent or empty: every platform. |
 | `from` | The rule holds for this version and later. Optional. |
 | `below` | The rule holds for versions earlier than this one. Optional. |
 | `note` | Why, for whoever reads the file or the page. Never sent to an app. |

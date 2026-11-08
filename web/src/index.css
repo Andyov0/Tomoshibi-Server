@@ -1,8 +1,10 @@
 @import "tailwindcss";
 
 /*
- * Dark in every theme, on purpose. A room is looked at for an hour at a stretch
- * and the pictures are the only thing in it that should be bright.
+ * Night, which is what every value in this block is. A call is dark in every
+ * appearance, on purpose: a room is looked at for an hour at a stretch and the
+ * pictures are the only thing in it that should be bright. Every other screen
+ * follows the system, and by day takes the values in the block after this one.
  *
  * The neutrals lean warm rather than blue. A blue-grey ground pushes skin tones
  * towards green, and this interface is a screen full of faces.
@@ -35,8 +37,55 @@
 	   lightness and chroma so it sits in the same palette rather than beside it. */
 	--color-good: oklch(0.79 0.157 152);
 
+	/* The amber and the green when they are words or thin marks rather than
+	   lights: a warning written out, a latency figure, a link in a message, a
+	   tick beside the chosen row. At night they are the lights themselves,
+	   which read at nine to one on the ground. By day the lights are kept for
+	   what is filled — a button, the tally line, a dot, a badge's tint — and
+	   words and thin marks take the deeper ink the shared palette gives each
+	   accent for that, because the lighter amber on the day ground is about
+	   two to one, and a warning in eleven-pixel type at that contrast is a
+	   warning nobody reads. */
+	--color-tally-ink: var(--color-tally);
+	--color-good-ink: var(--color-good);
+
 	--color-danger: oklch(0.627 0.185 31);
 	--color-danger-fg: oklch(0.99 0 0);
+
+	/* The red as words and thin marks, for the reason the amber has an ink:
+	   the red itself at night, and a deeper red by day, where the lighter one
+	   is three to one on the ground. The red button keeps the lighter one. */
+	--color-danger-ink: var(--color-danger);
+
+	/* What darkens the chrome itself: the ring that lifts a menu off the page,
+	   the band behind a heading in a list. Black at night, which is what these
+	   were written as; by day a quarter of that, because a ring at forty per
+	   cent of black reads as a drawn outline on a pale page rather than as an
+	   edge. Not for anything laid over a picture, which keeps its own black in
+	   either appearance — a name pill has the picture behind it, not the page. */
+	--color-shade: #000;
+
+	/*
+	 * What a press looks like on a filled control, before and during it.
+	 *
+	 * The grey a secondary button is filled with was lightened on hover by
+	 * being made translucent — `bg-surface-hi/80` — which on the island let the
+	 * island's own grey through, a fifth of a step darker, and on anything
+	 * else let the page through. Measured on the call's microphone it moved
+	 * the fill by two levels in two hundred and fifty-five: a hover nobody
+	 * could see, and no pressed state at all. So the fill is moved towards
+	 * the foreground instead, which is lighter at night and darker by day
+	 * with nothing written twice, and a press moves it further.
+	 *
+	 * Mixed rather than given as values, so that the day block's
+	 * replacements carry through: these resolve against whichever surface
+	 * and foreground the root has. The same two steps, as a wash over
+	 * nothing, are what a control without a fill takes.
+	 */
+	--color-surface-hi-hover: color-mix(in oklab, var(--color-surface-hi) 90%, var(--color-fg));
+	--color-surface-hi-press: color-mix(in oklab, var(--color-surface-hi) 84%, var(--color-fg));
+	--color-wash: color-mix(in oklab, var(--color-fg) 8%, transparent);
+	--color-wash-press: color-mix(in oklab, var(--color-fg) 13%, transparent);
 
 	--radius-tile: 0.5rem;
 
@@ -47,9 +96,359 @@
 	--ease-leave: cubic-bezier(0.4, 0, 1, 1);
 }
 
+/*
+ * The colours that differ between day and night, registered as colours so
+ * that a change between the two can be faded rather than cut (the root's
+ * transition, in the base layer below).
+ *
+ * An unregistered custom property is a string, and a string changes between
+ * two frames; so when the system turned while a page was open, only the
+ * ground faded, because the body had a transition of its own, and every card,
+ * field, word and border took its new colour at once. Filmed thirty
+ * milliseconds after the switch, the cards were already black on a ground
+ * still mid-grey. A transition on every element would fade a hover too, which
+ * has always been immediate, and a class set from the media query's change
+ * event arrives too late in Chrome: the page has already been restyled for
+ * the new appearance by the time the event is heard, so nothing it lends a
+ * transition has an old colour left to fade from. Registered, the colours
+ * themselves are what moves, once, at the root, and everything drawn in them
+ * follows within the same frames, whatever caused the change: the system, or
+ * a call taking the night and giving it back.
+ *
+ * Only the ones with a day value. The foregrounds on amber and on red are the
+ * same in both, and the mixes from the raised grey are recomputed from the
+ * colours below at each frame, so they follow without being registered. The
+ * initial values are never seen, since the theme declares every one of these
+ * on the root; a registered colour has to name one.
+ */
+@property --color-bg {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-surface {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-surface-hi {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-border {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-fg {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-fg-muted {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-tally {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-tally-ink {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-good {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-good-ink {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-danger {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-danger-ink {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+@property --color-shade {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+/*
+ * The same condition as a variant, for the few places where a class has to
+ * say something different by day rather than take a different value.
+ *
+ * Text a step quieter than muted is the case. At night muted text is six to
+ * one on the ground, so a step below it is still three and a half; by day
+ * muted is the native clients' own secondary grey at three and a third, and
+ * the same step below it came out at two or less — the hints under the
+ * management page's fields and the timestamps in its tables could not be
+ * read. So by day that step becomes muted itself, which is where the night
+ * had it in contrast.
+ * Written at each place rather than as one rule over the class name, so that
+ * whoever reads the class sees that it has a day half.
+ */
+@custom-variant day {
+	@media (prefers-color-scheme: light) {
+		:root:not([data-appearance="night"]) & {
+			@slot;
+		}
+	}
+}
+
+/*
+ * What floats, by day.
+ *
+ * At night a menu stands off the page by being lighter than it — the raised
+ * grey, a ring of black, a deep shadow — which is how a dark interface says
+ * "above". Taken into the day as it was, the same menu was the raised grey
+ * on a white card: darker than what it floats over, so it read as a hole in
+ * the page rather than a sheet on it. By day what floats is white with the
+ * day's border and one soft shadow, as the menus drawn by Radix already
+ * were, and the raised grey is kept for what sits inside a surface: fields,
+ * tracks, chips. The shared palette says the same for every client.
+ *
+ * One class on each floating panel rather than four day variants on it,
+ * because the four belong together: a white panel that kept the night's
+ * forty-per-cent ring, or its 2xl shadow, would still be the night's panel
+ * repainted. The shadow is the one Tailwind calls lg, which is what the
+ * Radix menus wear in both appearances, so every floating thing by day casts
+ * the same shadow. Nothing here applies at night.
+ */
+@utility afloat {
+	@variant day {
+		background-color: var(--color-surface);
+		border-color: var(--color-border);
+		box-shadow:
+			0 10px 15px -3px rgb(0 0 0 / 0.1),
+			0 4px 6px -4px rgb(0 0 0 / 0.1);
+	}
+}
+
+/*
+ * The material of the controls that float over a call, and of nothing else.
+ *
+ * The island, the connection reading, the stage's own buttons and the
+ * preview's switches each wore a translucency of their own — the surface at
+ * ninety per cent, the raised grey at ninety, black at sixty, black at fifty
+ * — with three different blurs, so the four things that float over a picture
+ * read as four materials. They are one layer, and the native clients draw
+ * that layer in the platform's own material (a thin material on Apple, a
+ * blurred surface on Android, acrylic on Windows), so here it is one recipe:
+ * the surface at three quarters, blurred far enough that a picture behind it
+ * is colour rather than detail, with a hairline that is the foreground at a
+ * tenth so it reads as an edge in either appearance.
+ *
+ * Only for controls. A panel that holds what people wrote, a menu, a dialog,
+ * is content, and stays opaque: text over a moving picture is text that
+ * changes contrast while it is being read.
+ */
+@utility glass {
+	background-color: color-mix(in oklab, var(--color-surface) 76%, transparent);
+	border-color: color-mix(in oklab, var(--color-fg) 10%, transparent);
+	-webkit-backdrop-filter: blur(24px) saturate(1.5);
+	backdrop-filter: blur(24px) saturate(1.5);
+	box-shadow:
+		0 12px 32px -12px rgb(0 0 0 / 0.55),
+		0 2px 6px -2px rgb(0 0 0 / 0.3);
+
+	/*
+	 * By day, the one soft shadow everything floating casts (afloat, above).
+	 * The night's is drawn to lift a pale control off a dark picture; outside
+	 * a call the glass also sits on the join screen's preview, which by day
+	 * is white with the camera off, and there the night's shadow at fifty-five
+	 * per cent of black was a grey smear under the switches. A call is night
+	 * in every appearance, so this reaches a call only once CALLS_STAY_DARK
+	 * is off.
+	 */
+	@variant day {
+		box-shadow:
+			0 10px 15px -3px rgb(0 0 0 / 0.1),
+			0 4px 6px -4px rgb(0 0 0 / 0.1);
+	}
+}
+
+/*
+ * A control that is pressed, shrinking under the press and coming back.
+ *
+ * The one piece of motion every button shares, so it is one rule: a short
+ * scale on the way down, which says the press landed before anything it
+ * starts has had time to answer. Nothing moves for somebody who asked for
+ * less motion; the colour change the press also makes still says it.
+ */
+@utility pressable {
+	transition-property: background-color, border-color, color, opacity, transform, box-shadow;
+	transition-duration: 140ms;
+	transition-timing-function: var(--ease-settle);
+
+	&:active:not(:disabled) {
+		transform: scale(0.95);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		&:active:not(:disabled) {
+			transform: none;
+		}
+	}
+}
+
+/*
+ * Day.
+ *
+ * The same names with the values the native clients use by day, so that the
+ * four of them read as one product in either appearance. Only the colours
+ * change: every screen keeps the layout, the type and the motion it has at
+ * night, and nothing here is a second design.
+ *
+ * Applied by the system's own question rather than by a script, so that the
+ * first frame is already right — a page that is drawn dark and corrected once
+ * its code has run is a flash of black on every load, which is exactly what
+ * somebody choosing a light appearance asked not to see — and so that it
+ * follows the system live, the moment the system changes, with nothing to
+ * subscribe to.
+ *
+ * Except where the document says night. A call says it for as long as it is on
+ * screen (live/appearance.ts, which also holds the one switch that would let a
+ * call follow the system like everything else); everything opened from it is
+ * drawn inside that same document and so is night with it, menus and notices
+ * included, which a class on the call's own element could not reach — Radix
+ * puts every menu at the end of the body, outside it.
+ *
+ * In the base layer, which comes after the theme's: the night values are
+ * declared there, on the same element, and a later layer wins whatever the
+ * selectors say.
+ *
+ * Two of the night values are not overridden. The foreground on amber was
+ * dark on amber and still is, at about seven and a half to one on the lighter
+ * amber; and the foreground on red is white in both.
+ */
 @layer base {
+	@media (prefers-color-scheme: light) {
+		:root:not([data-appearance="night"]) {
+			--color-bg: #f2f2f7;
+			--color-surface: #ffffff;
+			--color-surface-hi: #e5e5ea;
+			--color-border: rgb(0 0 0 / 0.1);
+
+			--color-fg: #1c1c1e;
+			/* Three quarters rather than the system's own three fifths. At
+			   three fifths the quieter text was three and a third to one on
+			   this ground and three and an eighth on the raised grey, where
+			   the night has it at five and more; at three quarters it is four
+			   and a half or better on all three of the day's surfaces. The
+			   native clients take the same value. */
+			--color-fg-muted: rgb(60 60 67 / 0.75);
+
+			--color-tally: #f2901e;
+			--color-good: #34c759;
+			--color-danger: #ff3b30;
+
+			/* The palette's text inks (its addendum after the Android pass),
+			   four and a half to one or better on this ground; the green's dot
+			   and the red's button keep the values above. */
+			--color-tally-ink: #a35c09;
+			--color-good-ink: #217e38;
+			--color-danger-ink: #d70015;
+
+			--color-shade: rgb(0 0 0 / 0.25);
+		}
+	}
+
+	/*
+	 * The browser's own parts — scrollbars, the native select and checkbox,
+	 * the canvas behind the page — in the same appearance as the page, and
+	 * night wherever the document says so whatever the system says. The meta
+	 * tag in each document says the same before this stylesheet has arrived.
+	 */
+	:root {
+		color-scheme: light dark;
+
+		/*
+		 * Day and night fade into each other, the whole page at once.
+		 *
+		 * Into a call and out of one is the moment the colours change from day
+		 * to night and back, and it is also the moment one screen is taken
+		 * away and the next rises in over the ground: cut between two frames,
+		 * the ground would go from pale to black under a screen that has only
+		 * begun to appear, which is a flash. The same when the system turns
+		 * under a page somebody has open. This was a transition on the body's
+		 * background alone, so the ground faded and everything standing on it
+		 * changed at once; it is the registered colours above that move now,
+		 * and everything drawn in them moves with them. Nothing changes at
+		 * night, where nothing here changes value. The screens themselves move
+		 * as they always did.
+		 */
+		transition-property:
+			--color-bg, --color-surface, --color-surface-hi, --color-border, --color-fg, --color-fg-muted,
+			--color-tally, --color-tally-ink, --color-good, --color-good-ink, --color-danger,
+			--color-danger-ink, --color-shade;
+		transition-duration: 260ms;
+		transition-timing-function: var(--ease-settle);
+
+		@media (prefers-reduced-motion: reduce) {
+			transition: none;
+		}
+	}
+
+	:root[data-appearance="night"] {
+		color-scheme: dark;
+	}
+
+	/*
+	 * Nothing below the root keeps a transition of its own while day and
+	 * night fade into each other, or what eases its colour for a hover
+	 * chases the fade from behind and arrives late (live/appearance.ts,
+	 * holdStill). The root's own transition is the fade, and is not touched.
+	 */
+	:root[data-appearance-changing] *,
+	:root[data-appearance-changing] *::before,
+	:root[data-appearance-changing] *::after {
+		transition-property: none !important;
+	}
+
 	* {
 		border-color: var(--color-border);
+	}
+
+	/*
+	 * The words in an empty field, by day, where a field has not said what
+	 * colour they are. The browser's own is the text colour at half strength,
+	 * which on the raised grey every field inside a card wears by day is about
+	 * three to one: the management pages' fields, the account page's guest
+	 * link and the join screen's sealing word were all hints at that contrast.
+	 * Muted is four and a half or better on all three of the day's surfaces.
+	 * Fields that name a placeholder colour keep it; the night keeps the
+	 * browser's.
+	 */
+	@media (prefers-color-scheme: light) {
+		:root:not([data-appearance="night"]) ::placeholder {
+			color: var(--color-fg-muted);
+		}
 	}
 
 	html,
@@ -145,26 +544,26 @@
 
 
 	/*
-	 * How something on an otherwise empty screen arrives.
+	 * How the cards of a screen arrive: together, fading in where they will
+	 * stay.
 	 *
-	 * Further and slower than a tile, because there is nothing else moving to
-	 * measure it against: the same eight pixels that read as a lift inside a busy
-	 * grid read as nothing at all on a page holding one card.
-	 *
-	 * The delay is set per element rather than baked in, so a screen with three
-	 * things on it can bring them in one after another. That ordering is the
-	 * whole point — it tells somebody where to look first without anything having
-	 * to be brighter or bigger than the rest.
+	 * They used to rise fourteen pixels each, one after another, a delay set on
+	 * each so that a screen of three brought them in in turn. The owner found the
+	 * pages hopping as they were opened, as the language was changed and as the
+	 * screens followed one another, and asked for the interface to be steady:
+	 * eight cards each climbing into place a beat after the last is eight
+	 * movements somebody sits through every time, and the page's own arrival
+	 * (page, below) moved under them as well. Nothing moves now; a card comes in
+	 * by fading, in a quarter of a second, with the rest.
 	 */
 	@keyframes rise {
 		from {
 			opacity: 0;
-			transform: translateY(14px);
 		}
 	}
 
 	.animate-rise {
-		animation: rise 420ms var(--ease-settle) backwards;
+		animation: rise 240ms var(--ease-settle) backwards;
 	}
 
 	@media (prefers-reduced-motion: reduce) {
@@ -187,10 +586,14 @@
 	 * page having reloaded, which is the one thing it must not look like on a
 	 * flow where each step is a decision somebody just made.
 	 */
+	/*
+	 * A fade and nothing else, for the steadiness rise gives the reason for: a
+	 * page that slid and grew by a fraction as it arrived, under cards that
+	 * rose inside it, moved twice at once.
+	 */
 	@keyframes page {
 		from {
 			opacity: 0;
-			transform: translateY(6px) scale(0.995);
 		}
 	}
 
@@ -214,7 +617,7 @@
 		 * Backwards gives the same result for the same reason `both` was chosen
 		 * — the from-state applies during any delay — and leaves nothing behind.
 		 */
-		animation: page 260ms var(--ease-settle) backwards;
+		animation: page 200ms var(--ease-settle) backwards;
 	}
 
 	@media (prefers-reduced-motion: reduce) {
@@ -230,21 +633,19 @@
 	 * frames: the new one rose in and the old one was simply gone, which is the
 	 * asymmetry useLingering's comment describes — the arrival says where the
 	 * panel came from and the departure says the page redrew itself. The owner's
-	 * rule is that nothing appears or disappears without moving.
+	 * rule is that nothing appears or disappears without a transition, and that
+	 * the transition be steady: a fade, as the arrival is, with no travel.
 	 *
-	 * The same distance as the arrival and on the leaving curve, and quicker,
-	 * for the reason depart gives: what is being left has already been decided
-	 * about. Forwards rather than backwards, unlike the arrival: the panel stays
-	 * at its last frame, transparent, until it is taken away, where backwards
-	 * would put it back on screen for the frame between the animation ending
-	 * and the panel leaving the page. The transform it holds meanwhile is the
-	 * containing-block trap described above, and harmless here, since nothing
-	 * on a panel that is leaving is being opened.
+	 * On the leaving curve, and quicker, for the reason depart gives: what is
+	 * being left has already been decided about. Forwards rather than
+	 * backwards, unlike the arrival: the panel stays at its last frame,
+	 * transparent, until it is taken away, where backwards would put it back on
+	 * screen for the frame between the animation ending and the panel leaving
+	 * the page.
 	 */
 	@keyframes page-leave {
 		to {
 			opacity: 0;
-			transform: translateY(4px) scale(0.995);
 		}
 	}
 
@@ -335,6 +736,14 @@
 	.tally-line.is-live::after {
 		opacity: 1;
 	}
+
+	/* Flat by day, as every glow is in the shared palette. A call is night in
+	   every appearance, so this applies only once CALLS_STAY_DARK is off. */
+	@media (prefers-color-scheme: light) {
+		:root:not([data-appearance="night"]) .tally-line::after {
+			box-shadow: none;
+		}
+	}
 }
 
 /*
@@ -404,12 +813,108 @@
 	}
 }
 
+/*
+ * The lobby's notice fading in and out, while the room it takes opens and
+ * closes beneath it (SiteNotice). It came down from the top as the apps' does,
+ * and was steadied with everything else when the owner asked for the
+ * interface to stop moving about: the room opening is all the movement there
+ * is.
+ */
+@keyframes notice-in {
+	from {
+		opacity: 0;
+	}
+}
+
+@keyframes notice-out {
+	to {
+		opacity: 0;
+	}
+}
+
+@utility animate-notice-in {
+	animation: notice-in 300ms var(--ease-settle) backwards;
+
+	@media (prefers-reduced-motion: reduce) {
+		animation-duration: 1ms;
+	}
+}
+
+@utility animate-notice-out {
+	animation: notice-out 200ms var(--ease-leave) forwards;
+	pointer-events: none;
+
+	@media (prefers-reduced-motion: reduce) {
+		animation-duration: 1ms;
+	}
+}
+
 @utility animate-depart {
 	animation: depart 180ms var(--ease-settle) both;
 	pointer-events: none;
 
 	@media (prefers-reduced-motion: reduce) {
 		animation-duration: 1ms;
+	}
+}
+
+/*
+ * Something going on behind a button, breathing: music or a film playing.
+ *
+ * Tailwind's own pulse did this and did it for everybody, including somebody
+ * who has asked their system for less motion — a dot that never stops is the
+ * motion that request is most about. Still for them; the dot itself says it.
+ */
+@keyframes breathe {
+	50% {
+		opacity: 0.45;
+	}
+}
+
+@utility animate-breathe {
+	animation: breathe 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+
+	@media (prefers-reduced-motion: reduce) {
+		animation: none;
+	}
+}
+
+/*
+ * A sheet up from the foot of a phone, and back down.
+ *
+ * The messages and the sound panel are sheets on a narrow screen and cards on
+ * a wide one, and they arrived and left as neither: they were drawn on one
+ * frame and gone on the next, the only two panels in a call that did. A card
+ * lifts in as everything else that opens does; a sheet comes up from the edge
+ * it is attached to, which is how every phone moves one, and goes back down
+ * faster than it came.
+ */
+@keyframes sheet-in {
+	from {
+		transform: translateY(100%);
+	}
+}
+
+@keyframes sheet-out {
+	to {
+		transform: translateY(100%);
+	}
+}
+
+@utility animate-sheet {
+	animation: sheet-in 300ms var(--ease-settle) backwards;
+
+	@media (prefers-reduced-motion: reduce) {
+		animation: fade-in 1ms both;
+	}
+}
+
+@utility animate-sheet-leave {
+	animation: sheet-out 200ms var(--ease-leave) forwards;
+	pointer-events: none;
+
+	@media (prefers-reduced-motion: reduce) {
+		animation: fade-out 1ms both;
 	}
 }
 
@@ -431,6 +936,41 @@
  * than the library's rule, because the library's is injected after this
  * stylesheet and wins a tie on order.
  */
+/*
+ * The management pages' detail sheet on a wide screen: in from the right
+ * edge, where the system's own inspectors come from, and back out the same
+ * way, faster. On a phone the same sheet rises from the bottom (sheet-in
+ * above). Faded rather than moved for somebody who asked for less motion.
+ */
+@keyframes side-in {
+	from {
+		transform: translateX(100%);
+	}
+}
+
+@keyframes side-out {
+	to {
+		transform: translateX(100%);
+	}
+}
+
+@utility animate-side {
+	animation: side-in 320ms var(--ease-settle) backwards;
+
+	@media (prefers-reduced-motion: reduce) {
+		animation: fade-in 1ms both;
+	}
+}
+
+@utility animate-side-leave {
+	animation: side-out 200ms var(--ease-leave) forwards;
+	pointer-events: none;
+
+	@media (prefers-reduced-motion: reduce) {
+		animation: fade-out 1ms both;
+	}
+}
+
 @media (min-width: 601px) {
 	[data-sonner-toaster][data-y-position] {
 		width: 18rem;
@@ -462,5 +1002,5 @@
  * island's own offset from the edge, then its height and a gap.
  */
 body[data-island] [data-sonner-toaster][data-y-position="bottom"] {
-	bottom: calc(max(1.25rem, env(safe-area-inset-bottom) + 0.5rem) + 4rem);
+	bottom: calc(max(1.25rem, env(safe-area-inset-bottom) + 0.5rem) + 4.25rem);
 }

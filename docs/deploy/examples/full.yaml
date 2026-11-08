@@ -86,3 +86,35 @@ meet:
   # See docs/deploy/native-apps.md.
   # apps:
   #   mac_dir: /var/lib/tomoshibi/apps
+
+  # Optional. Cloudflare Turnstile in front of the account and management
+  # sign-ins. Both keys come from one widget in Cloudflare's dashboard; the
+  # secret never leaves this server. Unset, neither sign-in asks for a check.
+  # turnstile:
+  #   site_key: "<the widget's site key>"
+  #   secret_key: "<the widget's secret key>"
+  #   # Where the sign-in pages are served. Set it, above all where the widget
+  #   # is shared with another site: empty holds a token to the Host each
+  #   # request names, which a script writes for itself.
+  #   hostnames: [meet.example.com]
+  #   # The native apps are never asked for the check, administrators
+  #   # included, while this is true (the default), by the owner's decision.
+  #   # The sign-in lockout and the guessing budget protect a sign-in from an
+  #   # app. The management sign-in is never exempt; the apps never call it.
+  #   exempt_native_apps: true
+  #   # A program on this machine that connects over loopback and sends none
+  #   # of X-Forwarded-For, X-Real-IP and Forwarded signs in at either door
+  #   # without the check while this is true (the default): a cron health
+  #   # check or an operations script at http://127.0.0.1:8080. Only the check
+  #   # is spared; the lockout and the limits still apply. A proxy in front
+  #   # MUST always set X-Forwarded-For or X-Real-IP (the nginx example sets
+  #   # X-Forwarded-For $proxy_add_x_forwarded_for), or every caller it passes
+  #   # on is spared too, and counted as 127.0.0.1 with the tools themselves.
+  #   # In nginx that is every location that passes to this server: one that
+  #   # sets any proxy_set_header of its own inherits none from the server
+  #   # block, and proxy_pass alone sends none. And nothing that forwards
+  #   # below HTTP may point at this server's port while this is true, since
+  #   # it cannot add the header: HAProxy in mode tcp, socat, frp, a port
+  #   # forward in sing-box or xray, ssh -L or -R, DNAT with route_localnet.
+  #   # Where any of those is needed, set this false.
+  #   exempt_local: true

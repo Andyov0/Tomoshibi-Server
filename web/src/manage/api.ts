@@ -1,5 +1,7 @@
 import { linkIs } from "./units";
 import { t } from "@/live/i18n";
+import { shutOutFor } from "@/live/lockout";
+import { humanCheckSaid } from "@/live/turnstile";
 
 /**
  * What the management pages ask the server.
@@ -61,6 +63,12 @@ export interface NodeReading {
 	cpus: number;
 	load: number;
 	startedAt?: string;
+	/**
+	 * When the certificate this relay serves stops being good. Absent from a
+	 * relay older than the field and from one behind a proxy that terminates
+	 * TLS, where there is no certificate on the relay to read.
+	 */
+	certExpires?: string;
 }
 
 /**
@@ -93,6 +101,8 @@ export interface Now {
 	bytes: { in: number; out: number; inPerSec: number; outPerSec: number; window: number };
 	packets: { nackTotal: number; nackPerSec: number };
 	cpu: { count: number; load: number };
+	/** A deployment of one machine's own certificate, where it serves one. */
+	certExpires?: string;
 }
 
 /**
@@ -171,6 +181,8 @@ export interface KnownRoom {
 	name: string;
 	firstSeen: string;
 	lastSeen: string;
+	/** How many joins this name has had, as the store counts them. */
+	joins?: number;
 	/**
 	 * Where the next meeting of this name will be held, where somebody has said.
 	 *
@@ -191,7 +203,7 @@ export interface KnownRoom {
  * Taken on the request's word (internal/app/device.go).
  */
 export interface Client {
-	/** web, iphone, ipad, mac, android, windows, app (too old to say which), or other. */
+	/** web, iphone, ipad, mac, android, windows, linux, app (too old to say which), or other. */
 	kind: string;
 	/** The app's version, for an app that says it. */
 	app?: string;
@@ -316,6 +328,11 @@ export interface Account {
 	/** The groups they belong to, each a name a room may be held under after an `@`. */
 	scopes?: string[];
 	/**
+	 * The relays they have of their own, by name: offered to them and nobody
+	 * else, and the only ones they are offered.
+	 */
+	relays?: string[];
+	/**
 	 * Every permission and whether they hold it.
 	 *
 	 * Drawn from rather than the stored overrides the server also keeps, so
@@ -325,6 +342,19 @@ export interface Account {
 	effective?: Record<string, boolean>;
 	/** What the Emby relay has carried on their behalf since the server started. */
 	embySpent?: number;
+	/**
+	 * What they have joined from, newest first, one per device, read from the
+	 * rooms' histories. Absent from a server older than the field, which the
+	 * page says rather than drawing an account that has used nothing.
+	 */
+	devices?: Seen[];
+}
+
+/** One thing somebody joined from, when they last used it, and for which room. */
+export interface Seen {
+	client: Client;
+	at: string;
+	room: string;
 }
 
 /**
@@ -429,6 +459,11 @@ export interface AppNotice {
  * The notice in the file, and whether the apps are shown it now: a notice past
  * its end is still in the file and is no longer sent.
  */
+/** Which of the two notices: the lobby's, or the sign-in page's. */
+export type NoticeSlot = "lobby" | "signin";
+
+const NOTICE_AT: Record<NoticeSlot, string> = { lobby: "/remote/notice", signin: "/remote/signin-notice" };
+
 export interface AppNoticeReading {
 	notice: AppNotice | null;
 	showing: boolean;
@@ -459,6 +494,67 @@ export interface AppSwitches {
 	unread: number;
 }
 
+/**
+ * One line of the process log, as the ring in memory keeps it
+ * (internal/logring): numbered, so the page can ask for what came after the
+ * last one it has.
+ */
+export interface LogLine {
+	seq: number;
+	at: string;
+	/** debug, info, warn, or error. */
+	level: string;
+	message: string;
+	attrs?: { key: string; value: string }[];
+}
+
+/** What came after the line asked about, and whether lines in between were pushed out. */
+export interface LogReading {
+	lines: LogLine[];
+	missed?: boolean;
+	/** When this process started, so a page can say the log begins there. */
+	started: string;
+}
+
+/** One platform's newest app, as the apps and the download page are told of it. */
+export interface Offered {
+	/** mac, android, windows, ios, linux-x86_64 or linux-aarch64. */
+	platform: string;
+	version?: string;
+	available: boolean;
+	size?: number;
+}
+
+/**
+ * One caller shut out of signing in (internal/lockout): an address and a
+ * device together, after more than the rule's failures inside its window.
+ */
+export interface Lockout {
+	/** What the lockout is lifted by; a digest, naming nothing. */
+	key: string;
+	/** What is shut out: an IPv4 address, or the /64 an IPv6 one is in. */
+	address: string;
+	/** The exact address the last failure came from. */
+	seen?: string;
+	/** The device, read as a join's is, with the user agent as sent. */
+	client?: Client;
+	first: string;
+	last: string;
+	since: string;
+	until: string;
+	failures: number;
+	/** "account", "management", or both. */
+	doors: string[];
+}
+
+/** The lockouts in force, and the rule they were made by. */
+export interface Lockouts {
+	lockouts: Lockout[];
+	failures: number;
+	windowSeconds: number;
+	forSeconds: number;
+}
+
 /** Raised when the session has gone, so a caller can send somebody to sign in. */
 export class SignedOut extends Error {
 	constructor() {
@@ -475,12 +571,12 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 	if (response.status === 401) throw new SignedOut();
 
 	if (!response.ok) {
-		const reason = await response
+		const said = await response
 			.json()
-			.then((body: { error?: string }) => body.error)
+			.then((body: { error?: string; until?: string }) => body)
 			.catch(() => undefined);
 
-		throw new Error(explain(reason, response.status));
+		throw new Error(explain(said?.error, response.status, said?.until));
 	}
 
 	if (response.status === 204) return undefined as T;
@@ -498,10 +594,20 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
  * every sentence goes through the dictionary like the rest of the interface —
  * which it did not, because this file had no import at all.
  */
-function explain(reason: string | undefined, status: number): string {
+function explain(reason: string | undefined, status: number, until?: string): string {
+	// The sign-in's human check, in the sentences the other two sign-in forms
+	// use for it (live/turnstile.ts).
+	const human = humanCheckSaid(reason);
+	if (human) return human;
+
 	switch (reason) {
+		// A sign-in lockout names its end, and says how long; the guessing
+		// budget's own refusal names none (live/lockout.ts).
 		case "too_many_attempts":
+			if (until) return shutOutFor(until);
 			return t("Too many attempts. Wait a minute and try again.");
+		case "no_such_lockout":
+			return t("That lockout has already ended.");
 		case "refused":
 			return t("That passphrase is not an administrator's.");
 		case "wrong_passphrase":
@@ -585,6 +691,14 @@ function explain(reason: string | undefined, status: number): string {
 			return t("That relay signals through another one itself.");
 		case "relay_signalled_through":
 			return t("Other relays signal through this one. Point them at another first.");
+		// Both directions of one rule: a relay is either kept for
+		// administrators or somebody's own, never both.
+		case "relay_reserved":
+			return t("A relay kept for administrators cannot be somebody's own.");
+		case "relay_is_somebodys":
+			return t("This relay is somebody's own. Take it off their account first.");
+		case "relay_needs_probe":
+			return t("A relay that signals through another needs a probe address, or clients measure it by opening TLS to it.");
 		case "relay_no_name":
 			return t("A relay needs a name.");
 		case "relay_long_name":
@@ -609,6 +723,8 @@ function explain(reason: string | undefined, status: number): string {
 			return t("This deployment does not let machines enrol themselves.");
 		case "wrong_secret":
 			return t("That is not the enrolment secret.");
+		case "no_such_enrolment":
+			return t("That token has already been used, withdrawn, or has expired.");
 		case "no_certificate":
 			return t("There is no certificate to hand out.");
 		// Both, because the server says both: unreadable_request from some
@@ -709,6 +825,18 @@ export interface Relay {
 	 */
 	signalVia?: string;
 	/**
+	 * Why a relay in service is offered to nobody, where it is: "no_signalling"
+	 * for one that signals through another while no relay that signals for
+	 * itself is answering. Clients never open TLS to such a machine, so until
+	 * one answers nobody can be sent there.
+	 */
+	unavailable?: string;
+	/**
+	 * The accounts that have this relay as their own, by name: the only people
+	 * besides administrators it is offered to.
+	 */
+	owners?: string[];
+	/**
 	 * Where the machine is, in degrees.
 	 *
 	 * Two things read it and both were dead until it could be set. The globe on
@@ -746,8 +874,13 @@ export const api = {
 	 * on the deployment has ever reused one. The name makes a guess have to be
 	 * aimed at somebody.
 	 */
-	signIn: (name: string, passphrase: string) =>
-		call<Who>("/session", { method: "POST", body: JSON.stringify({ name, passphrase }) }),
+	signIn: (name: string, passphrase: string, turnstile = "") =>
+		call<Who>("/session", {
+			method: "POST",
+			// The human check's token where the deployment asks for one, and
+			// nothing where it does not.
+			body: JSON.stringify(turnstile ? { name, passphrase, turnstile } : { name, passphrase }),
+		}),
 	signOut: () => call<void>("/session", { method: "DELETE" }),
 
 	now: () => call<Now>("/now"),
@@ -1029,6 +1162,16 @@ export const api = {
 	/** Everybody who has an account here. */
 	accounts: () => call<Account[]>("/accounts"),
 
+	/** Who is shut out of signing in. */
+	lockouts: () => call<Lockouts>("/lockouts"),
+
+	/** Let one caller back in early. */
+	liftLockout: (key: string) =>
+		call<{ lifted: Lockout }>(`/lockouts/${encodeURIComponent(key)}`, { method: "DELETE" }),
+
+	/** Let everybody shut out back in. */
+	liftLockouts: () => call<{ lifted: number }>("/lockouts", { method: "DELETE" }),
+
 	/**
 	 * Make one.
 	 *
@@ -1057,6 +1200,7 @@ export const api = {
 			blocked?: boolean;
 			note?: string;
 			scopes?: string[];
+			relays?: string[];
 			perms?: Record<string, boolean>;
 		},
 	) =>
@@ -1073,6 +1217,22 @@ export const api = {
 
 	relayCommand: () => call<{ command: string; domain: string; port: number }>("/relays/command"),
 
+	/**
+	 * A token for one new machine: one prefix, once, for half an hour.
+	 *
+	 * Minted here rather than written into the command, which is what the old
+	 * long-lived secret was: a command is kept in a shell's history, and this
+	 * buys the deployment's credentials. The script asks for it when it runs.
+	 */
+	mintEnrolment: (wanted: { prefix: string; replace: boolean; from?: string }) =>
+		call<{
+			token: string;
+			command: string;
+			domain: string;
+			port: number;
+			grant: { prefix: string; replace?: boolean; from?: string; expires: string };
+		}>("/relays/enrolments", { method: "POST", body: JSON.stringify(wanted) }),
+
 	dropRelay: (name: string) =>
 		call<{ removed: string }>(`/relays/${encodeURIComponent(name)}`, { method: "DELETE" }),
 
@@ -1087,18 +1247,32 @@ export const api = {
 			{ method: "POST", body: JSON.stringify({ track }) },
 		),
 
-	/** The lobby's notice in the apps, and whether they are shown it now. */
-	notice: () => call<AppNoticeReading>("/remote/notice"),
+	/**
+	 * The process log after the line numbered `after`.
+	 *
+	 * Answered from memory and nothing else, so it answers while the store or
+	 * the media servers are failing, which is when it is read.
+	 */
+	log: (after: number) => call<LogReading>(`/log?after=${after}`),
+
+	/** Which version of each app this deployment hands out, and whether it hands any out. */
+	apps: () => call<{ configured: boolean; platforms: Offered[] }>("/apps"),
+
+	/**
+	 * One of the two notices, and whether it is shown now: the lobby's, for
+	 * people signed in, or the sign-in page's (internal/admin/remote.go).
+	 */
+	notice: (kind: NoticeSlot) => call<AppNoticeReading>(NOTICE_AT[kind]),
 
 	/** Publish a notice, in place of whatever was there. */
-	publishNotice: (notice: AppNotice) =>
-		call<AppNoticeReading>("/remote/notice", { method: "PUT", body: JSON.stringify(notice) }),
+	publishNotice: (kind: NoticeSlot, notice: AppNotice) =>
+		call<AppNoticeReading>(NOTICE_AT[kind], { method: "PUT", body: JSON.stringify(notice) }),
 
 	/**
 	 * Take the notice down. The same address and verb as publishing, with
 	 * nothing in place of a notice, so that the notice has one way in and out.
 	 */
-	takeDownNotice: () => call<AppNoticeReading>("/remote/notice", { method: "PUT", body: "null" }),
+	takeDownNotice: (kind: NoticeSlot) => call<AppNoticeReading>(NOTICE_AT[kind], { method: "PUT", body: "null" }),
 
 	/** Every switch in the apps' remote.json. */
 	switches: () => call<AppSwitches>("/remote/switches"),

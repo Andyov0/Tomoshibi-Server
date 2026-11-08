@@ -142,7 +142,6 @@ export function ShareButton({
 						sharing ? t("Screen sharing settings") : listening ? t("Sharing sound") : t("Share your screen")
 					}
 					aria-pressed={sharing || listening}
-					className={sharing || listening ? undefined : "text-fg-muted"}
 				>
 					{sharing ? <MonitorOff /> : listening ? <AudioLines /> : <MonitorUp />}
 				</Button>
@@ -186,7 +185,7 @@ export function ShareButton({
 						<DropdownMenuSeparator />
 						<DropdownMenuLabel>{t("Frames a second")}</DropdownMenuLabel>
 
-						<div className="flex flex-wrap gap-1 px-2 pb-1.5">
+						<div className="flex flex-wrap gap-1.5 px-2.5 pb-2">
 							{rates.map((option) => (
 								<button
 									key={option}
@@ -197,10 +196,15 @@ export function ShareButton({
 										if (sharing) onAdjust(option, shown.quality);
 									}}
 									className={cn(
-										"rounded-md border px-2 py-1 text-[12px] tabular-nums transition-colors",
+										// A chip a cursor can land on and a finger can too: these
+										// were twenty-four pixels tall and as narrow as the
+										// number in them.
+										"pressable min-h-8 min-w-11 rounded-lg border px-2.5 text-[13px] tabular-nums outline-none",
+										"pointer-coarse:min-h-11",
+										"focus-visible:ring-2 focus-visible:ring-fg/70",
 										option === rate
 											? "border-tally/50 bg-tally/15 text-fg"
-											: "border-border text-fg-muted hover:bg-surface-hi hover:text-fg",
+											: "border-border text-fg-muted hover:bg-wash hover:text-fg active:bg-wash-press",
 									)}
 								>
 									{option}

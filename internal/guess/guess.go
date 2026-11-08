@@ -1,14 +1,25 @@
 // Package guess bounds how fast a passphrase can be tried.
 //
-// Its own package because more than one door takes a passphrase and they have
-// to share a budget. A limit on the management sign-in and none on the room
-// join is not two limits, it is none: the same secret is checked at both, and
-// an attacker uses whichever is cheaper. This deployment had exactly that —
+// Its own package because more than one door takes a passphrase and every one
+// of them has to be bounded. A limit on the management sign-in and none on the
+// room join is not two limits, it is none: the same secret is checked at both,
+// and an attacker uses whichever is cheaper. This deployment had exactly that —
 // ten a minute at one door and ten a second with no ceiling at the other,
 // sixty times the rate, and the second door answered the same question.
+//
+// Bounded, and no longer shared. The doors once drew on one budget, so that an
+// attacker could not move to whichever was still open, and the cost of that
+// was the reverse: whatever spent the join's budget shut the management
+// sign-in, the account sign-in and the enrolment as well. The join is where
+// ordinary traffic arrives with a passphrase, so ordinary traffic was enough,
+// and a page anywhere could make visitors' browsers send the rest. Each door
+// now has its own, sized for what arrives at it, which an attacker can add
+// together at worst — a few times the rate of one door, against the whole
+// deployment's sign-in shut by a busy hour.
 package guess
 
 import (
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -38,11 +49,8 @@ import (
 // PerAddress and Overall are exported so a test can assert the numbers rather
 // than a behaviour that happens to follow from them.
 const (
-	PerAddress    = 10
-	perAddressAll = rate.Limit(PerAddress) / rate.Limit(time.Minute/time.Second)
-
+	PerAddress = 10
 	Overall    = 30
-	overallAll = rate.Limit(Overall) / rate.Limit(time.Minute/time.Second)
 )
 
 // idle is how long a caller's bucket is kept after it was made or last failed.
@@ -50,6 +58,12 @@ const (
 // Swept on write rather than on a timer, which keeps it free when nobody is
 // trying.
 const idle = 10 * time.Minute
+
+// Join is the ceiling on the join, which is wider than the others because the
+// join is where people arrive: everybody whose passphrase it has not seen
+// before from their browser is charged once, and a meeting starting on the
+// hour is thirty of those in a minute on its own.
+const Join = 60
 
 // Attempts bounds failed guesses, by address and in total.
 //
@@ -69,6 +83,9 @@ type Attempts struct {
 	// every caller. It is held against the ceiling as if already spent.
 	pending int
 	swept   time.Time
+
+	// perCaller is each caller's allowance, PerAddress unless NewWith said.
+	perCaller int
 }
 
 type budget struct {
@@ -78,10 +95,53 @@ type budget struct {
 }
 
 func New() *Attempts {
+	return NewWith(PerAddress, Overall)
+}
+
+// NewWith is a budget of the given sizes, a minute each.
+func NewWith(perAddress, overall int) *Attempts {
+	perMinute := rate.Limit(time.Minute / time.Second)
+
 	return &Attempts{
-		byCaller: make(map[string]*budget),
-		all:      rate.NewLimiter(overallAll, Overall),
+		byCaller:  make(map[string]*budget),
+		all:       rate.NewLimiter(rate.Limit(overall)/perMinute, overall),
+		perCaller: perAddress,
 	}
+}
+
+// callerOf is the key a caller's budget is kept under.
+//
+// An IPv6 address is counted by its /64, which is what one subscriber is handed:
+// counted whole, a single host could be eighteen quintillion callers, each with
+// a fresh allowance.
+func callerOf(caller string) string {
+	address, err := netip.ParseAddr(caller)
+	if err != nil {
+		return caller
+	}
+
+	address = address.Unmap()
+	if address.Is4() {
+		return address.String()
+	}
+
+	prefix, err := address.Prefix(64)
+	if err != nil {
+		return caller
+	}
+
+	return prefix.String()
+}
+
+// Subscriber is the part of an address a caller is counted by: an IPv4
+// address whole, and an IPv6 address by its /64.
+//
+// Exported for the sign-in lockout (internal/lockout), which shuts callers out
+// by the same rule. Two rules for which addresses are one caller would be two
+// answers to the same question, and the looser of them is the one an attacker
+// would find.
+func Subscriber(caller string) string {
+	return callerOf(caller)
 }
 
 // Attempt is one guess between being let through and being decided.
@@ -123,7 +183,7 @@ func (a *Attempts) Take(caller string) (*Attempt, bool) {
 	now := time.Now()
 	a.sweep(now)
 
-	held := a.budgetOf(caller, now)
+	held := a.budgetOf(callerOf(caller), now)
 	if held.limiter.TokensAt(now)-float64(held.pending) < 1 || a.all.TokensAt(now)-float64(a.pending) < 1 {
 		return nil, false
 	}
@@ -189,7 +249,7 @@ func (a *Attempts) Allow(caller string) bool {
 	defer a.mu.Unlock()
 
 	now := time.Now()
-	held, known := a.byCaller[caller]
+	held, known := a.byCaller[callerOf(caller)]
 	if known && held.limiter.TokensAt(now)-float64(held.pending) < 1 {
 		return false
 	}
@@ -205,7 +265,7 @@ func (a *Attempts) Failed(caller string) {
 	now := time.Now()
 	a.sweep(now)
 
-	held := a.budgetOf(caller, now)
+	held := a.budgetOf(callerOf(caller), now)
 	held.seen = now
 	held.limiter.AllowN(now, 1)
 	a.all.AllowN(now, 1)
@@ -215,7 +275,13 @@ func (a *Attempts) Failed(caller string) {
 func (a *Attempts) budgetOf(caller string, now time.Time) *budget {
 	held, known := a.byCaller[caller]
 	if !known {
-		held = &budget{limiter: rate.NewLimiter(perAddressAll, PerAddress), seen: now}
+		per := a.perCaller
+		if per == 0 {
+			per = PerAddress
+		}
+
+		perMinute := rate.Limit(time.Minute / time.Second)
+		held = &budget{limiter: rate.NewLimiter(rate.Limit(per)/perMinute, per), seen: now}
 		a.byCaller[caller] = held
 	}
 

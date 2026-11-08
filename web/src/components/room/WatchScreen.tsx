@@ -17,12 +17,14 @@ import {
 	seenShow,
 	subscribeShow,
 } from "@/live/watch";
-import { whenUnlocked } from "@/live/speakers";
+import { MAX_VOLUME } from "@/live/hearing";
+import { wake, whenUnlocked } from "@/live/speakers";
 import { type Resolved, askAgain, relayOnly } from "@/live/watch-api";
 import { BUFFERING, ENDED, PLAYING, type YouTubePlayer, youtubeApi } from "@/live/youtube";
 import type { Room } from "livekit-client";
 import { Clapperboard, CloudOff, ListVideo, Loader2, Pause, Play, SkipForward, Volume2, VolumeX } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { VolumeRange } from "./VolumeRange";
 
 /**
  * The video everybody is watching, as this browser plays it.
@@ -89,7 +91,44 @@ export function rememberedVolume(): number {
 	// Nothing kept is null, which Number makes nought: see monitorVolume.
 	const raw = recall(VOLUME_KEY);
 	const kept = Number(raw);
-	return raw != null && raw !== "" && Number.isFinite(kept) && kept >= 0 && kept <= 1 ? kept : 1;
+	return raw != null && raw !== "" && Number.isFinite(kept) && kept >= 0 && kept <= MAX_VOLUME ? kept : 1;
+}
+
+/*
+ * A video turned up past as loud as it is (VolumeRange, up to MAX_VOLUME): its
+ * sound taken through a gain, on one context for every video this page plays.
+ *
+ * Only a video from this page's own origin, which is every relayed one
+ * (/api/watch/media). Web Audio hears a video from another origin that does not
+ * allow it as silence, and an element once connected is heard only through the
+ * context, so a film from elsewhere turned up would have gone quiet instead;
+ * those, and YouTube's player, stop at as loud as they are. And only from the
+ * first time a video goes past one: before that it plays as it always has.
+ */
+let videoContext: AudioContext | undefined;
+const videoGains = new WeakMap<HTMLMediaElement, GainNode>();
+
+function sameOrigin(url: string): boolean {
+	try {
+		return new URL(url, location.href).origin === location.origin;
+	} catch {
+		return false;
+	}
+}
+
+function gainOf(element: HTMLMediaElement): GainNode {
+	let gain = videoGains.get(element);
+	if (gain) return gain;
+	if (!videoContext) {
+		videoContext = new AudioContext();
+		// Started by the press that starts the call's sound, like every context here.
+		wake(videoContext);
+	}
+	gain = videoContext.createGain();
+	videoContext.createMediaElementSource(element).connect(gain).connect(videoContext.destination);
+	videoGains.set(element, gain);
+	void videoContext.resume().catch(() => {});
+	return gain;
 }
 
 /** One way of playing: a video element, or YouTube's player. */
@@ -305,6 +344,9 @@ function Player({
 			? info.proxy
 			: (info.play as { kind: "file" | "hls"; url: string });
 
+	/** How loud this video may be made: past as loud as it is only from this origin (gainOf). */
+	const loudest = !playsAsYoutube && source && sameOrigin(source.url) ? MAX_VOLUME : 1;
+
 	/** Where the video is has failed this viewer: the relay, or where there is none, saying so. */
 	const giveUp = (why: Lost = "network") =>
 		// The site's answer stands: a stall after it is that answer, not the connection.
@@ -319,6 +361,8 @@ function Player({
 		let stopped = false;
 		let gaveUp = false;
 		let destroy = () => {};
+		// Whether this one can be turned up past as loud as it is; see gainOf.
+		const boostable = sameOrigin(source.url);
 		// Given the relay once, and only while it has never played: a stall
 		// after that is buffering, which the relay would not cure. Measured
 		// before: any seek more than twelve seconds in moved a working direct
@@ -469,7 +513,12 @@ function Player({
 			},
 			currentRate: () => element.playbackRate,
 			volume: (level) => {
-				element.volume = level;
+				if (videoGains.has(element) || (level > 1 && boostable)) {
+					element.volume = 1;
+					gainOf(element).gain.value = Math.min(level, MAX_VOLUME);
+				} else {
+					element.volume = Math.min(level, 1);
+				}
 			},
 			// muted rather than volume: on iOS a video's volume is the
 			// hardware's and cannot be set from a page at all.
@@ -890,17 +939,15 @@ function Player({
 					<Control label={muted ? t("Unmute the video") : t("Mute the video")} onClick={() => setMuted(!muted)}>
 						{muted || volume === 0 ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
 					</Control>
-					<input
-						type="range"
-						min={0}
-						max={1}
-						step={0.05}
+					<VolumeRange
 						value={muted ? 0 : volume}
-						aria-label={t("Video volume")}
-						onChange={(event) => {
+						max={loudest}
+						echo={false}
+						label={t("Video volume")}
+						onChange={(level) => {
 							setMuted(false);
-							setVolumeState(event.target.valueAsNumber);
-							keep(VOLUME_KEY, event.target.valueAsNumber === 1 ? undefined : String(event.target.valueAsNumber));
+							setVolumeState(level);
+							keep(VOLUME_KEY, level === 1 ? undefined : String(level));
 						}}
 						className="hidden w-20 cursor-pointer accent-white sm:block"
 					/>

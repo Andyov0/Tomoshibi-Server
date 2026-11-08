@@ -62,6 +62,22 @@ func controlWithStore(t *testing.T, policy string, relayList ...store.Relay) (ht
 	}
 	t.Cleanup(func() { st.Close() })
 
+	mux, app := controlOnPolicy(t, st, policy, relayList...)
+
+	return mux, st, app
+}
+
+// controlOn is the same over a store the test has already filled, for the
+// tests that need something in it before the router is built.
+func controlOn(t *testing.T, st *store.Store, relayList ...store.Relay) (http.Handler, *App) {
+	t.Helper()
+
+	return controlOnPolicy(t, st, config.PickProbe, relayList...)
+}
+
+func controlOnPolicy(t *testing.T, st *store.Store, policy string, relayList ...store.Relay) (http.Handler, *App) {
+	t.Helper()
+
 	// The store is the live list, so what the pages and the joins both read is
 	// what was put here — the configuration is only ever a starting value.
 	for _, relay := range relayList {
@@ -104,7 +120,7 @@ func controlWithStore(t *testing.T, policy string, relayList ...store.Relay) (ht
 	}
 	t.Cleanup(app.Close)
 
-	return app.Handler(), st, app
+	return app.Handler(), app
 }
 
 // The heart of it. A control node must not answer on the paths a media server

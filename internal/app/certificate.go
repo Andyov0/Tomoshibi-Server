@@ -3,12 +3,17 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"tomoshibi/internal/rtc"
+	"tomoshibi/internal/store"
 )
 
 /*
@@ -127,56 +132,18 @@ func (a *App) carry(last string) (string, bool) {
 		return "", false
 	}
 
+	leaf, err := carried.Leaf()
+	if err != nil {
+		slog.Error("the certificate on this node will not parse, so it was not offered to the relays",
+			"path", certPath, "error", err)
+
+		return "", false
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	var taken, refused int
-
-	// Relays holding a certificate this node did not send, and when theirs runs
-	// out. Said every round rather than only when it is nearly too late: a
-	// watchdog whose only output is an alarm is one nobody can tell from a
-	// watchdog that has stopped, and these are the machines whose certificate
-	// depends on a cron job somewhere else.
-	own := map[string]time.Time{}
-
-	for _, relay := range relays {
-		serving, err := a.cluster.SendCertificate(ctx, relay.URL, carried)
-		if err != nil {
-			// Not fatal and not retried here. The next hour offers it again,
-			// and a certificate arrives with about thirty days to spare.
-			slog.Warn("a relay would not take the certificate; it will be offered again",
-				"relay", relay.Name, "error", err)
-
-			refused++
-
-			continue
-		}
-
-		taken++
-
-		// What it is actually serving, which is not always what was sent.
-		//
-		// A relay may hold a certificate this node has no copy of and cannot
-		// renew: two here have one for their own bare address, because the name
-		// they used to answer to is filtered on the path that reaches them.
-		// Those are six-day certificates renewed by a cron job on the machine
-		// itself, and until now nothing anywhere would have noticed that job
-		// stopping — the relay would have gone on answering perfectly until the
-		// morning it did not.
-		//
-		// Warned about rather than fixed, because it cannot be fixed from here.
-		// Two days is enough warning for a certificate that renews every two.
-		if !serving.IsZero() && !serving.Equal(expires) {
-			own[relay.Name] = serving
-		}
-
-		if !serving.IsZero() && time.Until(serving) < shortly {
-			slog.Warn("a relay is serving a certificate that expires soon, and it is not one "+
-				"this node can renew: look at the acme client on that machine",
-				"relay", relay.Name, "expires", serving.Format(time.RFC3339),
-				"in", time.Until(serving).Round(time.Hour).String())
-		}
-	}
+	taken, refused, own := a.handOut(ctx, a.cluster, relays, carried, leaf, expires)
 
 	// Only the hour the certificate actually changed says so. The rest is the
 	// round having happened, which matters to anybody wondering whether the
@@ -205,4 +172,111 @@ func (a *App) carry(last string) (string, bool) {
 	}
 
 	return mark, true
+}
+
+// certifying is what handing the certificate out needs of the cluster: send it,
+// or only read back what a relay serves.
+type certifying interface {
+	SendCertificate(ctx context.Context, relay string, cert rtc.Certificate) (time.Time, error)
+	Serving(ctx context.Context, relay string) (time.Time, error)
+}
+
+// handOut offers the certificate to the relays that should have it, reads back
+// what the rest are serving, and says which serve their own.
+//
+// Sent to fewer machines than it was. The push carries the wildcard's private
+// key, and it went to every relay in the store: one dialled over ws://, which
+// sent the key in the clear every hour; ones out of service; ones dialled by
+// bare address, which refuse a certificate that does not answer for their
+// address and so were handed the key to refuse it; and any record whose
+// address had been typed as some other machine's. Now it goes only to a relay
+// that is in service, dialled over wss:// by a name the certificate answers
+// for, under the enrolment domain where there is one. A relay dialled by
+// address is still watched — what it serves is read from a handshake — and the
+// rest are named in the log once a round so that nobody wonders.
+func (a *App) handOut(ctx context.Context, via certifying, relays []store.Relay, carried rtc.Certificate,
+	leaf *x509.Certificate, expires time.Time) (taken, refused int, own map[string]time.Time) {
+	own = map[string]time.Time{}
+	domain := strings.ToLower(strings.Trim(a.conf.Meet.Enrol.Domain, "."))
+
+	for _, relay := range relays {
+		if !relay.Enabled {
+			continue
+		}
+
+		parsed, err := url.Parse(relay.URL)
+		if err != nil || parsed.Hostname() == "" {
+			continue
+		}
+
+		host := strings.ToLower(parsed.Hostname())
+
+		var serving time.Time
+
+		switch {
+		case parsed.Scheme != "wss":
+			slog.Warn("a relay is dialled over plain ws://, so it is not sent the certificate: its "+
+				"private key would cross the network in the clear", "relay", relay.Name)
+
+			continue
+
+		// Dialled by address: never sent the key, only asked what it holds.
+		case net.ParseIP(host) != nil:
+			serving, err = via.Serving(ctx, relay.URL)
+			if err != nil {
+				slog.Warn("could not read the certificate a relay dialled by address is serving",
+					"relay", relay.Name, "error", err)
+
+				refused++
+
+				continue
+			}
+
+		case leaf.VerifyHostname(host) != nil || (domain != "" && !strings.HasSuffix(host, "."+domain)):
+			slog.Warn("a relay's address is not a name this certificate answers for, so it is not "+
+				"sent the certificate", "relay", relay.Name, "host", host)
+
+			continue
+
+		default:
+			serving, err = via.SendCertificate(ctx, relay.URL, carried)
+			if err != nil {
+				// Not fatal and not retried here. The next hour offers it again,
+				// and a certificate arrives with about thirty days to spare.
+				slog.Warn("a relay would not take the certificate; it will be offered again",
+					"relay", relay.Name, "error", err)
+
+				refused++
+
+				continue
+			}
+		}
+
+		taken++
+
+		// What it is actually serving, which is not always what was sent.
+		//
+		// A relay may hold a certificate this node has no copy of and cannot
+		// renew: two here have one for their own bare address, because the name
+		// they used to answer to is filtered on the path that reaches them.
+		// Those are six-day certificates renewed by a cron job on the machine
+		// itself, and until now nothing anywhere would have noticed that job
+		// stopping — the relay would have gone on answering perfectly until the
+		// morning it did not.
+		//
+		// Warned about rather than fixed, because it cannot be fixed from here.
+		// Two days is enough warning for a certificate that renews every two.
+		if !serving.IsZero() && !serving.Equal(expires) {
+			own[relay.Name] = serving
+		}
+
+		if !serving.IsZero() && time.Until(serving) < shortly {
+			slog.Warn("a relay is serving a certificate that expires soon, and it is not one "+
+				"this node can renew: look at the acme client on that machine",
+				"relay", relay.Name, "expires", serving.Format(time.RFC3339),
+				"in", time.Until(serving).Round(time.Hour).String())
+		}
+	}
+
+	return taken, refused, own
 }

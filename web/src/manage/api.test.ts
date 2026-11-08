@@ -77,3 +77,33 @@ describe("the relay switches", () => {
 		expect(JSON.parse(String(init?.body))).toEqual({ [field]: false });
 	});
 });
+
+/*
+ * The management sign-in shut out after too many failures says how long, and
+ * the guessing budget's own refusal, which names no end, says what it said.
+ */
+describe("a sign-in lockout", () => {
+	it("is said with the minutes it has left", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(
+				JSON.stringify({ error: "too_many_attempts", until: new Date(Date.now() + 12 * 60_000).toISOString(), retryAfter: 720 }),
+				{ status: 429 },
+			)),
+		);
+
+		await expect(api.signIn("adam", "a guess")).rejects.toThrow("Too many failed sign-ins. Try again in 12 minutes.");
+	});
+
+	it("is not confused with the guessing budget", async () => {
+		refusing(429, "too_many_attempts");
+
+		await expect(api.signIn("adam", "a guess")).rejects.toThrow("Too many attempts. Wait a minute and try again.");
+	});
+
+	it("that has already ended is said so when it is lifted", async () => {
+		refusing(404, "no_such_lockout");
+
+		await expect(api.liftLockout("0123")).rejects.toThrow("That lockout has already ended.");
+	});
+});

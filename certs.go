@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -138,4 +139,48 @@ func leafOf(cert *tls.Certificate) (*x509.Certificate, error) {
 	}
 
 	return x509.ParseCertificate(cert.Certificate[0])
+}
+
+// errNotForThisName is a handshake a silent relay declines.
+var errNotForThisName = errors.New("no certificate for the name asked for")
+
+// named is certificate for a silent relay: it serves the certificate only to a
+// handshake that names something the certificate answers for.
+//
+// A handshake with no name at all, straight to the address, was given the
+// deployment's wildcard — which names the deployment, and can be looked up in
+// the certificate transparency logs to find every other machine that serves
+// it. That is the one thing a prober of a silent relay is not meant to learn,
+// and it was learnt before a single byte of HTTP. So a handshake that names
+// nothing, or names something the certificate does not cover, fails as a
+// handshake does, saying nothing.
+//
+// Except where the certificate is for an address. A relay dialled by bare
+// address holds a certificate for that address, and a browser dialling an
+// address sends no name; refusing those would take exactly the relays that
+// have no name off the air.
+func (k *keypair) named(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	held, err := k.certificate(hello)
+	if err != nil || held == nil {
+		return held, err
+	}
+
+	leaf, err := leafOf(held)
+	if err != nil {
+		return nil, errNotForThisName
+	}
+
+	if hello.ServerName == "" {
+		if len(leaf.IPAddresses) > 0 {
+			return held, nil
+		}
+
+		return nil, errNotForThisName
+	}
+
+	if leaf.VerifyHostname(hello.ServerName) != nil {
+		return nil, errNotForThisName
+	}
+
+	return held, nil
 }

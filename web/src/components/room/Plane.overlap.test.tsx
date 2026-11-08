@@ -43,3 +43,38 @@ describe("the page indicator", () => {
 		expect(pill?.className).toMatch(/\btop-/);
 	});
 });
+
+/*
+ * A card in a call of two, drawn under the picture it sits on.
+ *
+ * The plan for two people lays the person looking as a card over the other,
+ * who fills the screen, and the pictures are drawn in the roster's order,
+ * which puts the person looking first. With nothing lifting it the card was
+ * painted first and the filling picture over it, so in every call of two the
+ * card was simply not there. The plan says which spots are over others; what
+ * is held here is that the plane draws them above.
+ */
+describe("a card over another picture", () => {
+	it("is drawn above the picture it sits on, whatever the order", () => {
+		const plan: Plan = new Map([
+			["me", { x: 200, y: 56, width: 100, height: 56, over: true }],
+			["them", { x: 0, y: 0, width: 320, height: 568 }],
+		]);
+
+		const { getByText } = render(
+			<Plane
+				measure={() => {}}
+				plan={plan}
+				tiles={[
+					{ id: "me", node: <span>me</span> },
+					{ id: "them", node: <span>them</span> },
+				]}
+			/>,
+		);
+
+		const card = getByText("me").parentElement as HTMLElement;
+		const filling = getByText("them").parentElement as HTMLElement;
+
+		expect(Number(card.style.zIndex)).toBeGreaterThan(Number(filling.style.zIndex || 0));
+	});
+});

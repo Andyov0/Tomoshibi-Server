@@ -87,7 +87,7 @@ export function Notices() {
 						// beside it, and this interface spends its two colours on
 						// what things are rather than on tinting them.
 						"border-l-2 border-l-border",
-						"bg-surface/95 px-3 py-2 shadow-lg backdrop-blur-md",
+						"bg-surface px-3 py-2 shadow-lg",
 						"font-sans text-[12.5px] text-fg leading-snug",
 					].join(" "),
 					icon: "hidden",
@@ -98,11 +98,13 @@ export function Notices() {
 						// The foreground colour rather than the signal one. Amber
 						// means something is happening, and the notice this sits on
 						// says nothing can be heard.
-						"shrink-0 self-center rounded-md bg-fg px-2 py-1",
+						"shrink-0 self-center rounded-lg bg-fg px-2.5 py-1.5 pointer-coarse:py-2.5",
 						"font-semibold text-[11.5px] text-bg transition-opacity hover:opacity-90",
 					].join(" "),
 					closeButton: [
-						"order-last shrink-0 self-start rounded p-0.5 text-fg-muted",
+						// Twenty-four, and forty-four under a finger: it was
+						// eighteen, a cross in a notice that may never go by itself.
+						"-my-1 -mr-1.5 order-last grid size-6 shrink-0 place-items-center self-start rounded-full text-fg-muted pointer-coarse:size-11",
 						"transition-colors hover:bg-surface-hi hover:text-fg",
 						"outline-none focus-visible:ring-2 focus-visible:ring-fg/70",
 					].join(" "),

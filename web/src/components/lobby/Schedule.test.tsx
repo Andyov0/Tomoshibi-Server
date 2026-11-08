@@ -108,6 +108,67 @@ it("says so on its own when the chosen minute passes", async () => {
 	expect(screen.getByText("That time has already gone.")).toBeTruthy();
 });
 
+/*
+ * The card is mounted with the lobby, and it worked out its starting time
+ * once, then: a lobby left open for an afternoon opened its card on a quarter
+ * hour long gone. Opening the card starts the time afresh, unless somebody
+ * picked one.
+ */
+function shownTime() {
+	return [
+		(screen.getByLabelText("Hour") as HTMLSelectElement).value,
+		(screen.getByLabelText("Minute") as HTMLSelectElement).value,
+	];
+}
+
+function card() {
+	return screen.getByRole("button", { name: /Schedule a meeting/ });
+}
+
+it("starts its time from when it is opened, not from when the lobby was", async () => {
+	render(<Schedule servers={[]} server="" onServer={() => {}} onOpenChange={() => {}} />);
+
+	// The lobby sits open for three hours before anybody opens the card.
+	vi.setSystemTime(new Date(2026, 8, 5, 13, 7, 0));
+	fireEvent.click(card());
+	await screen.findByText("Day");
+
+	expect(shownTime()).toEqual(["13", "15"]);
+	fireEvent.click(screen.getByRole("button", { name: todayLabel() }));
+	expect(screen.queryByText("That time has already gone.")).toBeNull();
+	expect((screen.getByRole("button", { name: "Arrange" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("keeps a time somebody picked when the card is opened again later", async () => {
+	await opened();
+	fireEvent.change(screen.getByLabelText("Hour"), { target: { value: "16" } });
+	fireEvent.change(screen.getByLabelText("Minute"), { target: { value: "30" } });
+
+	fireEvent.click(card());
+	await waitFor(() => expect(screen.queryByText("Day")).toBeNull());
+	vi.setSystemTime(new Date(2026, 8, 5, 14, 2, 0));
+	fireEvent.click(card());
+	await screen.findByText("Day");
+
+	expect(shownTime()).toEqual(["16", "30"]);
+});
+
+it("starts afresh at the next opening once a meeting is arranged", async () => {
+	vi.mocked(arrange).mockResolvedValue(made);
+	await opened();
+	chooseToday(11, 0);
+	fireEvent.click(screen.getByRole("button", { name: "Arrange" }));
+	await screen.findByText("standup");
+
+	fireEvent.click(card());
+	await waitFor(() => expect(screen.queryByText("Day")).toBeNull());
+	vi.setSystemTime(new Date(2026, 8, 5, 15, 40, 0));
+	fireEvent.click(card());
+	await screen.findByText("Day");
+
+	expect(shownTime()).toEqual(["15", "45"]);
+});
+
 it("tells a request that failed apart from nothing arranged, and offers to try again", async () => {
 	vi.mocked(arrangements).mockRejectedValueOnce(new Error("boom"));
 	await opened();
@@ -255,4 +316,28 @@ it("says why when arranging was taken away while the lobby was open", async () =
 	await waitFor(() =>
 		expect(actionFailed).toHaveBeenCalledWith("Arranging meetings has not been opened to you."),
 	);
+});
+
+// The lobby keeps its own server list beside the form on a wide screen, and
+// the form brought in the same list again: two globes on one screen, the
+// mistake onOpenChange exists to avoid the other way round. On a phone the
+// lobby's list is put away and the form's is the one there is.
+it("brings in the server list only where the lobby does not keep its own beside it", async () => {
+	const servers = [
+		{ name: "hk", url: "wss://hk.example.com", lat: 22.3, lon: 114.2 },
+		{ name: "tokyo", url: "wss://tokyo.example.com", lat: 35.7, lon: 139.7 },
+	] as Parameters<typeof Schedule>[0]["servers"];
+
+	const shown = render(
+		<Schedule servers={servers} server="hk" onServer={() => {}} onOpenChange={() => {}} serversBeside />,
+	);
+	fireEvent.click(screen.getByRole("button", { name: /Schedule a meeting/ }));
+	await screen.findByText("Day");
+	expect(shown.container.querySelector("svg.cursor-grab"), "a second globe beside the lobby's").toBeNull();
+
+	cleanup();
+	const alone = render(<Schedule servers={servers} server="hk" onServer={() => {}} onOpenChange={() => {}} />);
+	fireEvent.click(screen.getByRole("button", { name: /Schedule a meeting/ }));
+	await screen.findByText("Day");
+	expect(alone.container.querySelector("svg.cursor-grab"), "no list to choose the machine from on a phone").not.toBeNull();
 });

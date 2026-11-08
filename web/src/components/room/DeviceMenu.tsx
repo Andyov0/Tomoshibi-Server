@@ -15,7 +15,7 @@ import { deviceFailed } from "@/live/notices";
 import { type ChosenKind, rememberDeviceChoice } from "@/live/preferences";
 import { applyOriginalSound, rememberedOriginal } from "@/live/sound";
 import { type Room, supportsAudioOutputSelection } from "livekit-client";
-import { ChevronUp, Loader2 } from "lucide-react";
+import { Loader2, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 
 /**
@@ -37,7 +37,11 @@ export function DeviceMenu({
 	room,
 	where,
 	onPlace,
-}: { room: Room; where: Placement; onPlace: (where: Placement) => void }) {
+}: {
+	room: Room;
+	where: Placement;
+	onPlace: (where: Placement) => void;
+}) {
 	const t = useT();
 	const background = useBlur(room);
 	const original = useOriginalSound(room);
@@ -52,8 +56,18 @@ export function DeviceMenu({
 			}}
 		>
 			<DropdownMenuTrigger asChild>
-				<Button variant="ghost" size="round" aria-label={t("Devices")}>
-					<ChevronUp />
+				{/* A gear, filled like the buttons beside it, as the native
+				    clients draw it. It was a bare caret pointing up, which said
+				    that something opens upwards and nothing about what: in a
+				    row of filled circles it read as a mark left between two
+				    buttons, and in the island's second row as nothing at all. */}
+				<Button
+					variant="secondary"
+					size="round"
+					aria-label={t("Devices")}
+					className="data-[state=open]:bg-surface-hi-press"
+				>
+					<Settings />
 				</Button>
 			</DropdownMenuTrigger>
 
@@ -135,8 +149,12 @@ export function DeviceMenu({
 							}}
 							onCheckedChange={() => void background.toggle()}
 						>
-							{background.busy && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-							{background.on ? t("Blurred") : t("Not blurred")}
+							{/* What the tick means, written once. It said "Blurred" when
+							    ticked and "Not blurred" when not, so the row named the
+							    opposite of what pressing it would do half the time,
+							    beside a tick that already said which. */}
+							{t("Blur my background")}
+							{background.busy && <Loader2 className="ml-auto size-3.5 animate-spin text-fg-muted" />}
 						</DropdownMenuCheckboxItem>
 					</>
 				)}

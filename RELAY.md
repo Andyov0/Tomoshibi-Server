@@ -43,6 +43,42 @@ across the split.
 
 Generate a pair with `tomoshibi keygen` and put the same one everywhere.
 
+### What one relay broken into is worth
+
+Everything a relay can do with the pair, which is a lot: sign a token for any
+room and any identity, including a hidden one, and join any meeting on the
+fleet unseen; act on every relay's management API. Unencrypted meetings are
+open to whoever controls one relay. A call sealed with a word (end-to-end
+encryption) is not.
+
+Two things are no longer in that list. The control node's own host endpoints
+— close, remove, mute, move, answer the door, mint invitations, including the
+standing ones into a scoped room — used to accept any token that verified, so a
+relay could write itself a token wearing a host's or an administrator's
+signature (both are on screen in every call) and run any room. Now a token is
+accepted there only if it carries the control node's proof, an HMAC in its JWT
+ID keyed from the tripcode key, which never leaves the control node
+(`room.Vouched`). Past its expiry it is still accepted while the identity it
+names is in the room and for at most a day after it was minted, so that a host
+whose only credential is that token keeps running the meeting; the token the
+media server refreshes in a client carries no proof and is not accepted. And being an administrator there is something a session says
+— the management one, or an account's — and never something a token says, even
+a genuine one minted for somebody who typed an administrator's passphrase into
+the join field.
+
+**Per-relay key pairs were considered and not built**, because they would not
+contain a broken relay. LiveKit's cluster does not authenticate its nodes to
+each other with the keys: a signalling node verifies the client's token and then
+hands the media node the grants as JSON over redis (`StartSession.GrantsJson`),
+which the media node believes. Room-service calls are routed the same way. A
+relay holding only its own pair, and the redis password it needs to be in the
+cluster at all, can therefore still mint itself a token, verify it locally,
+and join a room held on any other relay, or publish a `StartSession` with
+whatever grants it likes straight onto the bus. Per-relay keys would add a
+second thing to rotate on every machine and leave the exposure where it is. The
+boundary that does hold is redis: a relay that should not be trusted with the
+fleet's meetings must not be in the fleet's cluster.
+
 ## Redis
 
 Every relay and the control node point at one instance. It is what lets the
@@ -83,7 +119,14 @@ replies is a website, and an unregistered domain may not be one. An endpoint
 answering 204 to anybody who asks is that probe's evidence, served continuously
 and by us — and every client asking for it before every join is that probe
 arriving from our own users. `meet.silent` exists for the same reason and turns
-off every answer that is not a WebSocket upgrade.
+off every answer that is not a WebSocket upgrade to the signalling path
+(`/rtc`), or a call carrying a bearer token to the management API (`/twirp/`,
+which is how the control node reaches a relay). Everything else, an upgrade to
+any other path included, is closed without a byte. A silent relay also
+completes a TLS handshake only for a name its certificate answers for, or with
+no name at all where its certificate is for its address: one that names
+nothing used to receive the deployment's wildcard, which names the deployment
+before any HTTP is spoken.
 
 So the timing is done two other ways, and the choice is made for the whole list
 rather than per relay — a relay measured the fast way would beat a nearer one
@@ -101,6 +144,37 @@ The control node's own check is neither. It opens a TCP connection to the
 signalling port and closes it without sending a byte, and where a relay has a
 probe port it also sends one STUN request, which is the only thing here that
 notices a relay whose signalling is reachable and whose media is not.
+
+`/api/relays` answers anybody, because a browser measures before it signs in
+to anything, so it says no more than measuring needs: a caller without a
+management session is not told about relays kept for administrators, is given
+each probe as the address it resolves to rather than its name, and nobody is
+given the signalling address of a relay that signals through another (such a
+relay must have a probe address). No client is ever sent that address to open
+either: where nothing that signals for itself is answering to carry such a
+relay's signalling, the relay is not chosen for anybody, is greyed in this
+list, says "Offered to nobody" on the relays page, and a join that could only
+reach its meeting by signalling to it is refused with `no_signalling`
+(docs/deploy/cross-border.md). The public `/install` no longer names the
+relay domain either.
+
+A relay can also be somebody's own: a machine they provided, ticked under
+"Their own relays" on their account. They are shown and sent through their own
+relays and no others, still reach meetings held anywhere through them (so such
+a relay wants "Forwards other rooms"), and cannot join while none of them is
+answering — the join says `own_relay_unavailable` rather than using another
+machine. Nobody else is shown one or may ask for it by name, though a meeting
+held on it lets in whoever has the link, as a relay kept for administrators
+does. Administrators may use it, including one signed in at the front, which is
+how the apps carry one. A relay cannot be both kept for administrators and
+somebody's own, and cannot be removed while it is anybody's
+(internal/store/own.go).
+
+The list a client is offered also leaves out any relay the control node cannot
+reach, out of service or not. Most of the fleet failing in one sweep is put
+down to the control node's own line and the readings are kept, but for two
+minutes at most, and counting only the relays that were answering when the
+sweep began (internal/app/reachable.go).
 
 What travels is a name from the list it was given and never an address. A forged
 one selects a different relay of the deployment's own at worst; an unknown one
@@ -137,19 +211,46 @@ browsers exempt only localhost.
 ### Bringing up a relay
 
 One line on the new machine, taken from the management pages under **Relays →
-Add a relay**, where it arrives with the enrolment secret already in it:
+Add a machine**, and a token minted on the same page for that machine:
 
 ```
-curl -fsSL https://meet.example/install | ENROL=<secret> sh -s <prefix>
+bash <(curl -fLSs https://meet.example/install) <prefix>
 ```
 
-What it does, in order: downloads the binary from the control node, asks
-`/api/enrol` for its share of the deployment — the API key and secret, the redis
-address, the certificate and key, the region and node selector — creates the DNS
-record for `<prefix>.<enrol.domain>` through Cloudflare, writes
-`/etc/tomoshibi/relay.yaml`, installs a `tomoshibi-relay` systemd unit, and
-starts it. `REPLACE=1` re-runs it over an existing relay, which is also the only
-way to upgrade one's binary.
+The script asks for the token and reads it with the terminal's echo off (or
+from standard input, `... <prefix> < token-file`). A token is minted for one
+prefix by an administrator holding `moderate`, works once, and expires after
+half an hour; it can also be bound to the address the machine will connect
+from. It is never part of the command, so it is never in a shell's history or a
+process list, and a copy found afterwards is worth nothing.
+
+The DNS record is created only at a single label under `enrol.domain`, and
+only over a record this deployment created (its comment begins `Tomoshibi
+relay.`); a name somebody else made is refused and left alone, and so is the
+control node's own. A control node whose `enrol.domain` is its own name or the
+domain directly above it turns enrolment off at startup and says so.
+
+What it does, in order: asks `/api/enrol` for its share of the deployment — the
+API key and secret, the redis address, the certificate and key, the region and
+node selector, and the SHA-256 of the binary — creates the DNS record for
+`<prefix>.<enrol.domain>` through Cloudflare, downloads the binary and refuses
+it unless it hashes to what the control node said, writes
+`/etc/tomoshibi/relay.yaml` under `umask 077`, installs a `tomoshibi-relay`
+systemd unit, and starts it. A refusal prints the control node's reason and
+never its answer.
+
+**Taking over a prefix already in use** — a rebuilt machine keeping its name —
+is decided when the token is minted (**Takes over the relay already called
+this**, confirmed in a dialog), not by the machine. It used to be `REPLACE=1`,
+which let whoever held the long-lived secret move any relay's name to any
+address. A machine still running is upgraded by replacing its binary
+([upgrade-relays.sh](docs/deploy/examples/upgrade-relays.sh)), not by enrolling
+it again.
+
+`meet.enrol.secret`, the long-lived secret this used to run on, is no longer
+accepted. A control node started with it still configured says so; set
+`meet.enrol.accept_secret: true` only to finish a machine half way through an
+old install, and never for a takeover, which it refuses.
 
 Two things to know before running it:
 
@@ -160,10 +261,11 @@ Two things to know before running it:
   serves the control node's own running binary, so an arm64 relay enrolling
   against an amd64 control node downloads something it cannot execute.
 
-`/install` and `/download/tomoshibi` are both unauthenticated. The script served
-at the public address carries no secret — that travels in the operator's own
-command, so nothing that logs a URL ever sees it — while the copy downloaded
-from the management pages has it embedded, because those are behind a session.
+`/install` and `/download/tomoshibi` are both unauthenticated, and neither
+carries a secret: the token is the only thing that enrols a machine, and it is
+pasted into the running script rather than fetched or typed on a command line.
+Every enrolment, and every refusal, is in the control node's audit log with the
+address the request came from and the address the relay's name was pointed at.
 
 Then, on the machine: open the TCP port under `meet.listen`, the UDP port under
 `rtc.udp_port`, and `meet.probe_port` if the deployment sets one. A cloud
@@ -173,7 +275,9 @@ relay answers signalling and carries no media.
 The relay's certificate is then this control node's business: it compares what
 it holds against what each relay serves every hour, sends a renewed one when it
 changes, and warns about any relay serving something it did not send and cannot
-renew. A relay dialled by bare address has its own short-lived certificate from
+renew. The push carries the private key, so it goes only to relays in service
+dialled over `wss://` at a name the certificate covers, under the enrolment
+domain; a relay dialled by address is only read from, by a TLS handshake. A relay dialled by bare address has its own short-lived certificate from
 an acme client on the machine itself; that cron job is not in this repository
 and the hourly check is what notices when it stops.
 
@@ -303,7 +407,7 @@ one-core machine the processor is likely to be the first limit reached.
 
 The installer writes them for a new relay. A relay brought up before them has
 its own file, holding things added by hand — a probe port, a region list,
-`silent` — and re-enrolling with `REPLACE=1` rewrites it whole and takes those
+`silent` — and enrolling it again with a takeover token rewrites it whole and takes those
 away. So the lines are added by hand:
 
 1. **Choose a moment with nobody in a meeting anywhere in the fleet.** A restart

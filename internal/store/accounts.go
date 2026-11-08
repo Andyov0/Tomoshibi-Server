@@ -85,6 +85,14 @@ type Account struct {
 	// only by SetAccountPerms and ChangeAccountPerms, for the reason given at
 	// the first.
 	Perms map[string]bool `json:"perms,omitempty"`
+
+	// Relays are the relays this person has of their own, by name: machines
+	// somebody provided for themselves. See own.go for what holding one means.
+	//
+	// On the account for the reason Scopes are, and because a relay's name is
+	// already rewritten wherever it is held when the relay is renamed, which a
+	// list of accounts kept on the relay would have needed a second rule for.
+	Relays []string `json:"relays,omitempty"`
 }
 
 var (
@@ -227,6 +235,7 @@ func (s *Store) AddAccount(account Account) error {
 
 	account.Name = strings.TrimSpace(account.Name)
 	account.Perms = accountPerms(account.Perms)
+	account.Relays = ownRelays(account.Relays)
 
 	if account.Created.IsZero() {
 		account.Created = time.Now().UTC()
@@ -244,6 +253,10 @@ func (s *Store) AddAccount(account Account) error {
 
 		if taken(bucket, account.Trip, "") {
 			return ErrAccountTripTaken
+		}
+
+		if err := mayOwn(tx, account.Relays, nil); err != nil {
+			return err
 		}
 
 		encoded, err := json.Marshal(account)
@@ -390,6 +403,7 @@ func (s *Store) UpdateAccount(was string, account Account) error {
 	}
 
 	account.Name = strings.TrimSpace(account.Name)
+	account.Relays = ownRelays(account.Relays)
 
 	return s.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(accountsBucket)
@@ -416,6 +430,14 @@ func (s *Store) UpdateAccount(was string, account Account) error {
 		account.Created = existing.Created
 		account.LastSeen = existing.LastSeen
 		account.Perms = existing.Perms
+
+		// Only the relays being given now are asked about. One already held is
+		// one this store let through and has kept current since (own.go), and
+		// asking again would refuse every change to the account — its note, its
+		// block — over a field the change does not touch.
+		if err := mayOwn(tx, account.Relays, existing.Relays); err != nil {
+			return err
+		}
 
 		key := accountKey(account.Name)
 

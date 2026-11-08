@@ -139,7 +139,7 @@ export function WatchCard({
 				<Failed>{failure.current}</Failed>
 			</Said>
 
-			<div className="flex flex-col gap-3 px-3 py-3 sm:px-4">
+			<div className="flex flex-col gap-3 px-2 py-3 sm:px-3">
 				<Group heading={t("Emby films")}>
 					<Choice
 						label={t("Relay no Emby films")}
@@ -162,7 +162,7 @@ export function WatchCard({
 				    in English and the same word in Japanese is a sentence that can
 				    only be assembled in English. */}
 				<Said show={accounts !== undefined || admins !== undefined}>
-					<p className="readout flex flex-col gap-0.5 text-[11.5px] text-fg-muted">
+					<p className="flex flex-col gap-0.5 text-[12.5px] text-fg-muted">
 						<span>{t("Accounts granted Emby: {count}", { count: granted })}</span>
 						<span>{t("Administrators granted Emby: {count}", { count: grantedAdmins })}</span>
 					</p>
@@ -198,7 +198,7 @@ export function WatchCard({
 				{/* While it is on, and after, for as long as there is a figure: a
 				    switch turned off a minute ago has still spent what it spent. */}
 				<Said show={youtube || youtubeSpent > 0}>
-					<p className="readout text-[11.5px] text-fg-muted">
+					<p className="text-[12.5px] text-fg-muted">
 						{t("{size} relayed since restart", { size: size(youtubeSpent) })}
 					</p>
 				</Said>
@@ -229,7 +229,7 @@ export function WatchCard({
 				</Group>
 
 				<Said show={bangumi || bangumiSpent > 0}>
-					<p className="readout text-[11.5px] text-fg-muted">
+					<p className="text-[12.5px] text-fg-muted">
 						{t("{size} relayed since restart", { size: size(bangumiSpent) })}
 					</p>
 				</Said>
@@ -270,7 +270,7 @@ export function WatchCard({
 function Group({ heading, children }: { heading: string; children: ReactNode }) {
 	return (
 		<div role="radiogroup" aria-label={heading} className="flex flex-col">
-			<p aria-hidden className="px-3 pb-1 font-medium text-[10.5px] text-fg-muted uppercase tracking-[0.08em]">
+			<p aria-hidden className="px-3 pb-1 font-medium text-[13px] text-fg">
 				{heading}
 			</p>
 			{children}

@@ -64,16 +64,19 @@ describe("hearing", () => {
 	});
 
 	/*
-	 * `HTMLMediaElement.volume` throws outside nought to one rather than
-	 * clamping, and this application mixes through elements, so there is no gain
-	 * node that would take a louder number. A slider cannot produce a bad value;
-	 * this is about the ones that arrive some other way.
+	 * Up to three times as loud as sent (MAX_VOLUME), played above one through
+	 * a gain node rather than an element, whose volume throws outside nought to
+	 * one. A slider cannot produce a bad value; this is about the ones that
+	 * arrive some other way.
 	 */
-	it("never lets out a volume the browser would throw on", async () => {
+	it("never lets out a volume above three times, or below nought", async () => {
 		const { setVolume, settingFor } = await load();
 
+		setVolume(PROVEN, "voice", 2.5);
+		expect(settingFor(PROVEN, "voice").volume).toBe(2.5);
+
 		setVolume(PROVEN, "voice", 4);
-		expect(settingFor(PROVEN, "voice").volume).toBe(1);
+		expect(settingFor(PROVEN, "voice").volume).toBe(3);
 
 		setVolume(PROVEN, "voice", -1);
 		expect(settingFor(PROVEN, "voice").volume).toBe(0);
@@ -90,7 +93,7 @@ describe("hearing", () => {
 
 		const { settingFor } = await load();
 
-		expect(settingFor(PROVEN, "voice").volume).toBe(1);
+		expect(settingFor(PROVEN, "voice").volume).toBe(3);
 	});
 
 	it("survives a reload for somebody who can prove who they are", async () => {

@@ -24,10 +24,12 @@ import type { Account, Policy, Watching } from "./api";
  * would read the change as theirs to refuse.
  */
 
-const { accounts, changeAccount, addAccount, settings, policy, actionFailed } = vi.hoisted(() => ({
+const { accounts, changeAccount, addAccount, dropAccount, settings, policy, actionFailed, relays } = vi.hoisted(() => ({
 	accounts: vi.fn(),
+	relays: vi.fn(),
 	changeAccount: vi.fn(),
 	addAccount: vi.fn(),
+	dropAccount: vi.fn(),
 	settings: vi.fn(),
 	policy: vi.fn(),
 	actionFailed: vi.fn(),
@@ -36,7 +38,7 @@ const { accounts, changeAccount, addAccount, settings, policy, actionFailed } = 
 vi.mock("./api", () => ({
 	// The poll reaches for this to tell a lost session from a failure.
 	SignedOut: class SignedOut extends Error {},
-	api: { accounts, changeAccount, addAccount, settings, policy, dropAccount: vi.fn() },
+	api: { accounts, changeAccount, addAccount, settings, policy, dropAccount, relays },
 }));
 
 vi.mock("@/live/notices", () => ({ actionFailed }));
@@ -66,19 +68,24 @@ function opening(openedBy: Policy["openedBy"]): Policy {
 	};
 }
 
-/** The row an account is drawn in, found by its name. */
+/** The row an account is drawn in, in the table, found by its name. */
 async function row(name: string): Promise<HTMLElement> {
-	const named = await screen.findByText(name);
+	const list = await screen.findByRole("list", { name: "Accounts" });
+	const named = await within(list).findByRole("button", { name });
 	const item = named.closest("li");
 	if (!item) throw new Error(`no row for ${name}`);
 	return item;
 }
 
-/** Open a row's permissions and hand back the box for one of them. */
+/** The box for one permission in a row of the table, where it is pressed without opening anything. */
 async function box(name: string, label: string): Promise<HTMLInputElement> {
-	const item = await row(name);
-	fireEvent.click(within(item).getByRole("button", { name: "Permissions" }));
-	return within(item).getByRole("checkbox", { name: label }) as HTMLInputElement;
+	return within(await row(name)).getByRole("checkbox", { name: label }) as HTMLInputElement;
+}
+
+/** Open an account's sheet, and hand it back. */
+async function detail(name: string): Promise<HTMLElement> {
+	fireEvent.click(within(await row(name)).getByRole("button", { name }));
+	return screen.findByRole("dialog", { name });
 }
 
 beforeEach(() => {
@@ -87,6 +94,7 @@ beforeEach(() => {
 	settings.mockResolvedValue(on);
 	policy.mockResolvedValue(opening("accounts"));
 	changeAccount.mockResolvedValue({ name: "ada", trip: "tada0000" });
+	relays.mockResolvedValue({ relays: [] });
 });
 
 describe("a permission box", () => {
@@ -260,15 +268,18 @@ describe("the Emby box", () => {
 		await waitFor(() => expect(changeAccount).toHaveBeenCalledWith("ada", { perms: { emby: true } }));
 	});
 
+	// Once over the table, where the column is, and in full beside the box in
+	// the sheet, where somebody about to tick it is reading.
 	it("says when the switch above every grant is off", async () => {
 		settings.mockResolvedValue({ ...on, embyRelay: false });
 
 		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
 
-		await box("ada", "Emby library");
+		expect(await screen.findByText("The Emby relay is switched off for the whole site.")).toBeDefined();
 
+		const sheet = await detail("ada");
 		expect(
-			await screen.findByText(
+			await within(sheet).findByText(
 				"The Emby relay is switched off for the whole site, so this does nothing until it is turned on under Rooms.",
 			),
 		).toBeDefined();
@@ -307,9 +318,9 @@ describe("an administrator who may only look", () => {
 		expect(within(item).queryByRole("button", { name: "Permissions" })).toBeNull();
 		expect(within(item).queryByRole("checkbox")).toBeNull();
 
-		// Taken away is drawn, not left out: struck through, and said.
-		expect(within(item).getByText("Music").textContent).toContain("not allowed");
-		expect(within(item).getByText("Guest links").textContent).not.toContain("not allowed");
+		// Taken away is drawn, not left out, and said.
+		expect(within(item).getByRole("img", { name: "Music, not allowed" })).toBeDefined();
+		expect(within(item).getByRole("img", { name: "Guest links" })).toBeDefined();
 	});
 });
 
@@ -319,9 +330,9 @@ describe("a new passphrase", () => {
 
 		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
 
-		const item = await row("ada");
-		fireEvent.click(within(item).getByRole("button", { name: "Set a new passphrase" }));
-		fireEvent.click(await within(item).findByRole("button", { name: "Set it" }));
+		const sheet = await detail("ada");
+		fireEvent.click(within(sheet).getByRole("button", { name: "Set a new passphrase" }));
+		fireEvent.click(await within(sheet).findByRole("button", { name: "Set it" }));
 
 		await waitFor(() => expect(actionFailed).toHaveBeenCalled());
 
@@ -338,21 +349,23 @@ describe("a new passphrase", () => {
 	it("is not offered for somebody holding Emby, to an administrator who cannot give it", async () => {
 		render(<AccountsPanel canAccounts canModerate={false} onSignedOut={vi.fn()} />);
 
-		const locked = within(await row("bea")).getByRole("button", { name: "Set a new passphrase" }) as HTMLButtonElement;
+		const locked = within(await detail("bea")).getByRole("button", { name: "Set a new passphrase" }) as HTMLButtonElement;
 		expect(locked.disabled).toBe(true);
 		expect(locked.title).toBe(
 			"Only an administrator who can manage everything can give or take away Emby, or set the passphrase of somebody who has it.",
 		);
 
 		// Anybody else's is.
-		const open = within(await row("ada")).getByRole("button", { name: "Set a new passphrase" }) as HTMLButtonElement;
+		fireEvent.keyDown(document, { key: "Escape" });
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "bea" })).toBeNull());
+		const open = within(await detail("ada")).getByRole("button", { name: "Set a new passphrase" }) as HTMLButtonElement;
 		expect(open.disabled).toBe(false);
 	});
 
 	it("is offered for somebody holding Emby to an administrator who can give it", async () => {
 		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
 
-		const key = within(await row("bea")).getByRole("button", { name: "Set a new passphrase" }) as HTMLButtonElement;
+		const key = within(await detail("bea")).getByRole("button", { name: "Set a new passphrase" }) as HTMLButtonElement;
 		expect(key.disabled).toBe(false);
 	});
 });
@@ -397,10 +410,11 @@ describe("the note", () => {
 
 		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
 
-		const line = await within(await row("ada")).findByRole("button", { name: "the one from accounts" });
+		const sheet = await detail("ada");
+		const line = await within(sheet).findByRole("button", { name: "the one from accounts" });
 		fireEvent.click(line);
 
-		const field = within(await row("ada")).getByRole("textbox", { name: "Note" });
+		const field = within(sheet).getByRole("textbox", { name: "Note" });
 
 		// Both on screen for a moment: the line on its way out, the field on
 		// its way in.
@@ -412,7 +426,7 @@ describe("the note", () => {
 
 		fireEvent.keyDown(field, { key: "Escape" });
 
-		const back = await within(await row("ada")).findByRole("button", { name: "the one from accounts" });
+		const back = await within(sheet).findByRole("button", { name: "the one from accounts" });
 		expect(field.isConnected).toBe(true);
 		expect(field.parentElement?.className).toContain("animate-fade-out");
 		expect(back.parentElement?.className).toContain("animate-fade-in");
@@ -435,8 +449,9 @@ describe("the note, saved", () => {
 
 		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
 
-		fireEvent.click(await within(await row("ada")).findByRole("button", { name: "Add a note" }));
-		const field = within(await row("ada")).getByRole("textbox", { name: "Note" });
+		const sheet = await detail("ada");
+		fireEvent.click(await within(sheet).findByRole("button", { name: "Add a note" }));
+		const field = within(sheet).getByRole("textbox", { name: "Note" });
 
 		fireEvent.change(field, { target: { value: "the one from accounts" } });
 		fireEvent.keyDown(field, { key: "Enter" });
@@ -455,10 +470,11 @@ describe("the scopes", () => {
 
 		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
 
-		const tags = (await within(await row("ada")).findByText("@acme")).parentElement as HTMLElement;
-		fireEvent.click(within(await row("ada")).getByRole("button", { name: "Scopes" }));
+		const sheet = await detail("ada");
+		const tags = (await within(sheet).findByText("@acme")).parentElement as HTMLElement;
+		fireEvent.click(within(sheet).getByRole("button", { name: "Scopes" }));
 
-		const field = within(await row("ada")).getByRole("textbox", { name: "Scopes" });
+		const field = within(sheet).getByRole("textbox", { name: "Scopes" });
 
 		expect(tags.isConnected).toBe(true);
 		expect(tags.parentElement?.className).toContain("animate-fade-out");
@@ -468,12 +484,192 @@ describe("the scopes", () => {
 		fireEvent.keyDown(field, { key: "Escape" });
 
 		expect(field.parentElement?.className).toContain("animate-fade-out");
-		const back = (await within(await row("ada")).findByText("@acme")).parentElement as HTMLElement;
+		const back = (await within(sheet).findByText("@acme")).parentElement as HTMLElement;
 		expect(back.parentElement?.className).toContain("animate-fade-in");
 
 		fireEvent.blur(field);
 		expect(changeAccount).not.toHaveBeenCalled();
 
 		await waitFor(() => expect(field.isConnected).toBe(false));
+	});
+});
+
+/*
+ * The table, and the sheet each row opens.
+ *
+ * The owner asked for the permissions as boxes per account, so that who may use
+ * the Emby library can be seen and changed at once (2026-10-12). What can go
+ * wrong quietly is the page saying two things: a box ticked in the sheet that
+ * the row beside it still shows unticked until the next poll, which reads as
+ * the press not having taken and invites the press that undoes it. And the
+ * sheet is a dialog, so Escape closes it — except where a field inside has
+ * taken Escape to abandon an edit, where closing the sheet as well would throw
+ * away the account somebody was looking at along with the edit.
+ */
+describe("the table", () => {
+	it("says who holds Emby down one column, without opening anything", async () => {
+		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
+
+		expect((await box("bea", "Emby library")).checked).toBe(true);
+		expect((await box("ada", "Emby library")).checked).toBe(false);
+		expect(screen.queryByRole("dialog")).toBeNull();
+	});
+
+	it("moves the row's box at once when the same box is pressed in the sheet", async () => {
+		changeAccount.mockReturnValue(new Promise(() => {}));
+
+		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
+
+		const sheet = await detail("ada");
+		fireEvent.click(within(sheet).getByRole("checkbox", { name: "Music" }));
+
+		expect((await box("ada", "Music")).checked).toBe(false);
+		await waitFor(() => expect(changeAccount).toHaveBeenCalledTimes(1));
+		expect(changeAccount).toHaveBeenCalledWith("ada", { perms: { music: false } });
+	});
+});
+
+describe("the sheet", () => {
+	it("lists what an account has joined from, where, and when", async () => {
+		accounts.mockResolvedValue([
+			{
+				...account("ada"),
+				devices: [
+					{
+						client: { kind: "iphone", app: "0.1.2.4", system: "iOS 27.0.1", device: "iPhone17,1" },
+						at: new Date(Date.now() - 5 * 60_000).toISOString(),
+						room: "standup",
+					},
+				],
+			},
+		]);
+
+		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
+
+		const sheet = await detail("ada");
+		expect(within(sheet).getByText("iPhone app 0.1.2.4")).toBeDefined();
+		expect(within(sheet).getByText("Last used 5 min ago in standup")).toBeDefined();
+	});
+
+	it("asks before removing an account", async () => {
+		dropAccount.mockResolvedValue({ removed: "ada" });
+
+		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
+
+		const sheet = await detail("ada");
+		fireEvent.click(within(sheet).getByRole("button", { name: "Remove" }));
+
+		expect(dropAccount).not.toHaveBeenCalled();
+		const sure = await within(sheet).findByText("Remove ada? This cannot be undone.");
+
+		const confirm = within(sure.parentElement as HTMLElement).getByRole("button", { name: "Remove" });
+		fireEvent.click(confirm);
+
+		await waitFor(() => expect(dropAccount).toHaveBeenCalledWith("ada"));
+	});
+
+	it("stays open when Escape is for a field inside it, and closes when it is not", async () => {
+		accounts.mockResolvedValue([{ ...account("ada"), note: "the one from accounts" }]);
+
+		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
+
+		const sheet = await detail("ada");
+		fireEvent.click(await within(sheet).findByRole("button", { name: "the one from accounts" }));
+		fireEvent.keyDown(within(sheet).getByRole("textbox", { name: "Note" }), { key: "Escape" });
+
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		expect(screen.getByRole("dialog", { name: "ada" })).toBeDefined();
+
+		fireEvent.keyDown(document, { key: "Escape" });
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "ada" })).toBeNull());
+	});
+});
+
+/*
+ * The row says who the account is as it did before the redesign: its
+ * signature, which is what somebody reads off a name in a call to find it
+ * here, and the groups it belongs to, which are what let it into a room. The
+ * redesign moved both into the sheet, and a list that no longer says which
+ * account is which until each is opened is a list that says less (2026-11-01).
+ */
+describe("an account's row", () => {
+	it("says its signature and its groups without opening anything", async () => {
+		accounts.mockResolvedValue([{ ...account("ada"), scopes: ["acme", "team-b"] }]);
+
+		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
+
+		const item = await row("ada");
+		expect(within(item).getByText("tada0000")).toBeDefined();
+		expect(within(item).getByText("@acme")).toBeDefined();
+		expect(within(item).getByText("@team-b")).toBeDefined();
+		expect(screen.queryByRole("dialog")).toBeNull();
+	});
+});
+
+/*
+ * A relay of somebody's own, given from their sheet.
+ *
+ * Each box sends the whole list as it should now stand, since the server
+ * replaces the list; what is worth guarding is that ticking one keeps the
+ * others they hold, that unticking one takes only that one away, and that a
+ * relay kept for administrators — which cannot be anybody's own — is not
+ * offered as though it could be.
+ */
+describe("their own relays", () => {
+	const fleet = {
+		relays: [
+			{ name: "theirs", url: "wss://t", enabled: true, reachable: true, forwards: true },
+			{ name: "second", url: "wss://s", enabled: true, reachable: true, owners: ["bea"] },
+			{ name: "kept", url: "wss://k", enabled: true, reachable: true, adminOnly: true },
+		],
+	};
+
+	it("adds the one ticked to the ones already held", async () => {
+		relays.mockResolvedValue(fleet);
+		accounts.mockResolvedValue([{ ...account("ada"), relays: ["theirs"] }]);
+
+		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
+
+		const sheet = await detail("ada");
+		const second = (await within(sheet).findByRole("checkbox", { name: "second" })) as HTMLInputElement;
+		expect((within(sheet).getByRole("checkbox", { name: "theirs" }) as HTMLInputElement).checked).toBe(true);
+		expect(second.checked).toBe(false);
+
+		// Said that it is somebody else's too, and that a relay not forwarding
+		// keeps them to the meetings held on it.
+		expect(within(sheet).getByText("Also bea's own")).toBeDefined();
+
+		fireEvent.click(second);
+		await waitFor(() => expect(changeAccount).toHaveBeenCalledWith("ada", { relays: ["theirs", "second"] }));
+	});
+
+	it("takes away only the one unticked", async () => {
+		relays.mockResolvedValue(fleet);
+		accounts.mockResolvedValue([{ ...account("ada"), relays: ["theirs", "second"] }]);
+
+		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
+
+		const sheet = await detail("ada");
+		fireEvent.click(await within(sheet).findByRole("checkbox", { name: "theirs" }));
+
+		await waitFor(() => expect(changeAccount).toHaveBeenCalledWith("ada", { relays: ["second"] }));
+	});
+
+	it("does not offer a relay kept for administrators", async () => {
+		relays.mockResolvedValue(fleet);
+
+		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
+
+		const sheet = await detail("ada");
+		await within(sheet).findByRole("checkbox", { name: "theirs" });
+		expect(within(sheet).queryByRole("checkbox", { name: "kept" })).toBeNull();
+	});
+
+	it("is said on the row, since having one changes every call they make", async () => {
+		accounts.mockResolvedValue([{ ...account("ada"), relays: ["theirs"] }]);
+
+		render(<AccountsPanel canAccounts canModerate onSignedOut={vi.fn()} />);
+
+		expect(within(await row("ada")).getByText("theirs")).toBeDefined();
 	});
 });

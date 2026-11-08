@@ -3,10 +3,12 @@ import { useHearing } from "@/hooks/useHearing";
 import { useRoster } from "@/hooks/useRoomState";
 import { useT } from "@/hooks/useT";
 import { cn } from "@/lib/utils";
-import { type Sound, setBlocked, setVolume, silenced } from "@/live/hearing";
+import { MAX_VOLUME, type Sound, setBlocked, setVolume, silenced } from "@/live/hearing";
 import { isMusic } from "@/live/sound";
 import { type Participant, type Room, Track } from "livekit-client";
 import { Volume2, VolumeX, X } from "lucide-react";
+import { usePanel } from "@/hooks/usePanel";
+import { VolumeRange } from "./VolumeRange";
 
 /**
  * How loud everybody else is.
@@ -25,8 +27,18 @@ import { Volume2, VolumeX, X } from "lucide-react";
  * here — it is two rows, and the layout has been showing them as two pictures
  * all along.
  */
-export function SoundPanel({ room, onClose }: { room: Room; onClose: () => void }) {
+export function SoundPanel({
+	room,
+	leaving = false,
+	onClose,
+}: {
+	room: Room;
+	/** On its way out; see useLingering. */
+	leaving?: boolean;
+	onClose: () => void;
+}) {
 	const t = useT();
+	const panel = usePanel(onClose);
 	const roster = useRoster(room);
 
 	// Everybody but ourselves. Nobody hears their own microphone, so a row for
@@ -35,31 +47,36 @@ export function SoundPanel({ room, onClose }: { room: Room; onClose: () => void 
 
 	return (
 		<aside
+			ref={panel}
+			aria-label={t("Sound")}
 			className={cn(
 				"absolute z-20 flex flex-col overflow-hidden border border-border",
-				"bg-surface/95 shadow-2xl backdrop-blur-md",
+				// Opaque, as the messages are: a list of names is content.
+				"bg-surface shadow-2xl",
+				leaving ? "max-sm:animate-sheet-leave sm:animate-depart" : "max-sm:animate-sheet sm:animate-arrive",
+				"sm:origin-bottom-right",
 				// The same frame the messages take: a sheet up the bottom edge
 				// while narrow, a card once there is room beside the pictures.
 				// They cover the same corner and only one is ever open.
-				"inset-x-0 bottom-0 h-[55%] rounded-t-2xl",
+				"inset-x-0 bottom-0 h-[55%] rounded-t-[22px] border-x-0 border-b-0",
 				// Room for the controls, which float over this sheet's bottom
 				// edge rather than beside it. Without this, the last slider
 				// sits underneath them.
 				"pb-[calc(env(safe-area-inset-bottom)+3.5rem)] sm:pb-0",
-				"sm:inset-x-auto sm:right-3 sm:bottom-3 sm:h-auto sm:w-72 sm:rounded-xl sm:pb-0",
+				"sm:inset-x-auto sm:right-3 sm:bottom-3 sm:h-auto sm:w-72 sm:rounded-[22px] sm:border-x sm:border-b sm:pb-0",
 				"sm:max-h-[min(26rem,calc(100%-5.5rem))]",
 			)}
 		>
-			<header className="flex items-center justify-between border-border border-b px-3 py-2">
-				<strong className="font-semibold text-[12.5px]">{t("Sound")}</strong>
+			<header className="flex items-center justify-between border-border border-b py-1.5 pr-1.5 pl-4">
+				<strong className="font-semibold text-[14px]">{t("Sound")}</strong>
 				<Button
 					variant="ghost"
 					size="icon"
-					className="size-6"
+					className="size-8 rounded-full text-fg-muted hover:text-fg pointer-coarse:size-11"
 					aria-label={t("Close sound")}
 					onClick={onClose}
 				>
-					<X className="size-3.5" />
+					<X />
 				</Button>
 			</header>
 
@@ -147,7 +164,7 @@ export function SoundRow({
 				<Button
 					variant="ghost"
 					size="icon"
-					className={cn("size-7 shrink-0", setting.blocked ? "text-danger" : "text-fg-muted")}
+					className={cn("size-7 shrink-0", setting.blocked ? "text-danger-ink" : "text-fg-muted")}
 					// Named for what pressing it does rather than for the state it
 					// is in, because the two read as opposites and only one of them
 					// is what somebody is deciding.
@@ -162,18 +179,16 @@ export function SoundRow({
 					{setting.blocked ? <VolumeX /> : <Volume2 />}
 				</Button>
 
-				<input
-					type="range"
-					min={0}
-					max={1}
-					step={0.05}
+				<VolumeRange
 					value={setting.volume}
+					max={MAX_VOLUME}
+					echo
 					// Disabled rather than hidden while blocked. Nothing is
 					// arriving to be made louder, and a slider that moves while
 					// the sound stays off is a control that lies.
 					disabled={setting.blocked}
-					aria-label={t("{name}'s volume", { name })}
-					onChange={(event) => setVolume(identity, sound, event.target.valueAsNumber)}
+					label={t("{name}'s volume", { name })}
+					onChange={(volume) => setVolume(identity, sound, volume)}
 					// The browser's own slider, tinted. Stripping its appearance to
 					// draw a track by hand takes the thumb with it — the accent
 					// colour only applies to a control the browser is still
@@ -188,7 +203,14 @@ export function SoundRow({
 
 				{/* Read at a glance beside the slider, because a slider near one
 				    end tells nobody whether it is at nought. */}
-				<span className="readout w-9 shrink-0 text-right text-[10.5px] text-fg-muted tabular-nums">
+				<span
+					className={cn(
+						"readout w-9 shrink-0 text-right text-[10.5px] tabular-nums",
+						// Past as sent in the colour that marks something live: louder
+						// than anybody sent it, which the slider warned of crossing.
+						!setting.blocked && setting.volume > 1 ? "text-tally-ink" : "text-fg-muted",
+					)}
+				>
 					{setting.blocked ? t("Muted") : `${Math.round(setting.volume * 100)}%`}
 				</span>
 			</div>

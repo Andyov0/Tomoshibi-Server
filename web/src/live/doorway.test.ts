@@ -135,6 +135,51 @@ describe("a bare address", () => {
  * what the host opening their own link looks like: the waiting screen, so that
  * the press that begins the meeting is a press and not an arrival.
  */
+/*
+ * An invitation this tab kept, and an address that names somewhere else.
+ *
+ * A tab keeps the last invitation it was let in on, so that a reload goes back
+ * into the call. Opened on another room's address afterwards, it went to the
+ * old room and rewrote the address to say so, and Join put the person in the
+ * room they had left (the health check of 2026-10-29). The meeting link had
+ * this rule already; a plain address did not.
+ */
+describe("an invitation the tab kept", () => {
+	it("does not take an address for another room back to its own", () => {
+		const landing = doorway(arriving({ invitation: "last-week", invitationKept: true, address: "today", opening: "anyone" }));
+
+		expect(landing).toEqual({ at: "open" });
+	});
+
+	it("still puts a reload back into the room it is for", () => {
+		expect(
+			doorway(arriving({ invitation: "today", invitationKept: true, address: "today", wasIn: "today" })),
+		).toEqual({ at: "invited", room: "today", rejoin: true });
+	});
+
+	it("is still the way in where the address names no room", () => {
+		expect(doorway(arriving({ invitation: "today", invitationKept: true, opening: "admins" }))).toEqual({
+			at: "invited",
+			room: "today",
+			rejoin: false,
+		});
+	});
+
+	it("gives way to the room's own rules, a sign-in where only accounts open rooms", () => {
+		expect(
+			doorway(arriving({ invitation: "last-week", invitationKept: true, address: "today", opening: "signed", account: true })),
+		).toEqual({ at: "ready", rejoin: true });
+	});
+
+	it("is not an invitation the address carries, which is the link in hand and wins", () => {
+		expect(doorway(arriving({ invitation: "the-link", invitationKept: false, address: "today" }))).toEqual({
+			at: "invited",
+			room: "the-link",
+			rejoin: false,
+		});
+	});
+});
+
 describe("a meeting link", () => {
 	it("lands on the waiting screen", () => {
 		expect(doorway(arriving({ meeting: "tok", address: "standup" }))).toEqual({

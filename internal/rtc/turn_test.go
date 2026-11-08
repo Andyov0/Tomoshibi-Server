@@ -1,8 +1,11 @@
 package rtc
 
 import (
+	"net"
 	"testing"
+	"time"
 
+	livekitconf "github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/service"
 	"github.com/livekit/protocol/auth"
 	"github.com/pion/stun/v3"
@@ -97,5 +100,84 @@ func TestForwardingRefusesToMintFromNothing(t *testing.T) {
 				"TURN server it can never authenticate to, and would gather no "+
 				"candidates at all", missing.what)
 		}
+	}
+}
+
+// Only the listed relays, and everything else denied, read the way the media
+// server reads its two lists: a private peer is refused unless the private
+// allow list has it, and any peer in a denied range is refused.
+func TestATurnServerForwardsOnlyToTheFleet(t *testing.T) {
+	conf := &livekitconf.Config{}
+	conf.TURN.Enabled = true
+
+	if err := RestrictTurnPeers(conf, []string{"198.51.100.7", "203.0.113.0/28", "10.8.0.2", "2001:db8::5"}); err != nil {
+		t.Fatal(err)
+	}
+
+	permitted := func(peer string) bool {
+		ip := net.ParseIP(peer)
+
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			allowed := false
+			for _, cidr := range conf.TURN.AllowRestrictedPeerCIDRs {
+				if _, n, err := net.ParseCIDR(cidr); err == nil && n.Contains(ip) {
+					allowed = true
+				}
+			}
+			if !allowed {
+				return false
+			}
+		}
+
+		for _, cidr := range conf.TURN.DenyPeerCIDRs {
+			if _, n, err := net.ParseCIDR(cidr); err == nil && n.Contains(ip) {
+				return false
+			}
+		}
+
+		return true
+	}
+
+	for peer, want := range map[string]bool{
+		"198.51.100.7": true, "203.0.113.0": true, "203.0.113.15": true, "10.8.0.2": true, "2001:db8::5": true,
+		"198.51.100.6": false, "198.51.100.8": false, "203.0.113.16": false, "8.8.8.8": false,
+		"1.1.1.1": false, "10.8.0.3": false, "127.0.0.1": false, "2001:db8::6": false, "2606:4700::1111": false,
+		"255.255.255.255": false, "0.0.0.1": false,
+	} {
+		if got := permitted(peer); got != want {
+			t.Errorf("peer %s permitted %v, want %v", peer, got, want)
+		}
+	}
+
+	if len(conf.TURN.DenyPeerCIDRs) > 400 {
+		t.Errorf("%d ranges denied for four peers; the media server parses each on every permission", len(conf.TURN.DenyPeerCIDRs))
+	}
+}
+
+func TestAPeerThatCannotBeReadStopsTheRelay(t *testing.T) {
+	if err := RestrictTurnPeers(&livekitconf.Config{}, []string{"198.51.100.7", "relay-two"}); err == nil {
+		t.Error("a peer list with a name in it was accepted, so the relay it meant would be denied")
+	}
+}
+
+// Twelve hours: the browser opens every allocation of the call with the
+// credential it was given at the join, so one that expired mid-meeting was a
+// forwarded call that did not come back after a network change. The open-proxy
+// risk a short life was meant to bound is closed by meet.turn_peers instead.
+func TestAForwardingCredentialOutlivesALongMeeting(t *testing.T) {
+	forward, err := Forward("relay.example:39219", "APIabcdefghij", "an-api-secret-of-a-realistic-length")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := service.NewTURNAuthHandler(auth.NewSimpleKeyProvider("APIabcdefghij", "an-api-secret-of-a-realistic-length"))
+
+	_, _, expiry, err := handler.ParseUsername(forward.Username)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if left := time.Until(time.Unix(expiry, 0)); left > 12*time.Hour+time.Minute || left < 12*time.Hour-time.Minute {
+		t.Errorf("a forwarding credential opens allocations for %s, want twelve hours", left.Round(time.Minute))
 	}
 }

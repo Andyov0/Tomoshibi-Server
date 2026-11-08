@@ -312,6 +312,10 @@ func TestAStoreThatWillNotAnswerClosesOnlyScopedRooms(t *testing.T) {
  * administrator who may only watch. The controls answer 502 where they were
  * allowed, because there is no media server behind this fixture, and 403 where
  * they were not.
+ *
+ * An administrator runs it by a session, and not by the token they joined with:
+ * every relay can write a token carrying an administrator's signature, and a
+ * session is this node's alone.
  */
 func TestEveryMemberRunsAScopedRoomAndNobodyElse(t *testing.T) {
 	mux, st, _ := scoped(t)
@@ -331,7 +335,7 @@ func TestEveryMemberRunsAScopedRoomAndNobodyElse(t *testing.T) {
 		want  int
 	}{
 		{"a member", member, http.StatusBadGateway},
-		{"an administrator who may moderate", administrator, http.StatusBadGateway},
+		{"an administrator who may moderate, by the token alone", administrator, http.StatusForbidden},
 		{"an administrator who may only watch", watcher, http.StatusForbidden},
 		{"a guest", guest, http.StatusForbidden},
 		{"an account outside the scope", outsider, http.StatusForbidden},
@@ -339,6 +343,13 @@ func TestEveryMemberRunsAScopedRoomAndNobodyElse(t *testing.T) {
 		if got := ask(mux, asking(http.MethodPost, "/api/rooms/standup@acme/mute", tc.token, mute)).Code; got != tc.want {
 			t.Errorf("%s muting answered %d, want %d", tc.who, got, tc.want)
 		}
+	}
+
+	signed := asking(http.MethodPost, "/api/rooms/standup@acme/mute", administrator, mute)
+	signed.AddCookie(sessionFor(t, st, "adam", room.Trip(tripKey, adamPassphrase)))
+
+	if got := ask(mux, signed).Code; got != http.StatusBadGateway {
+		t.Errorf("an administrator who may moderate, signed in, muting answered %d, want 502", got)
 	}
 
 	// Not in the call at all, and signed in: still runs it.

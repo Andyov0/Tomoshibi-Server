@@ -1,5 +1,6 @@
 import { useT } from "@/hooks/useT";
 import { cn } from "@/lib/utils";
+import { hush } from "@/live/progress";
 import { ASK_EVERY, GIVE_UP_AFTER, atTheDoor, knock } from "@/live/knock";
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -26,6 +27,10 @@ export function Knocking({
 	onAdmitted: (invite: string) => void;
 }) {
 	const t = useT();
+
+	// No bar along the top while waiting here (live/progress.ts): the page
+	// asks the door every few seconds, and says itself that it is waiting.
+	useEffect(() => hush(), []);
 
 	const [asking, setAsking] = useState(false);
 	const [gaveUp, setGaveUp] = useState(false);
@@ -133,7 +138,7 @@ export function Knocking({
 				<p className="text-fg-muted text-[11px]">{t("Nobody let you in. Ask for a link.")}</p>
 			)}
 
-			{failed && <p className="text-tally text-[11px]">{t("That could not be sent.")}</p>}
+			{failed && <p className="text-tally-ink text-[11px]">{t("That could not be sent.")}</p>}
 		</div>
 	);
 }

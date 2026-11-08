@@ -1,11 +1,13 @@
 import { useT } from "@/hooks/useT";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Eye, EyeOff, ShieldCheck } from "lucide-react";
+import { useHumanCheck } from "@/components/ui/human-check";
+import { useLingering } from "@/hooks/useLingering";
+import { cn } from "@/lib/utils";
+import { Eye, EyeOff } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { passphraseOf } from "@/live/name";
 import { actionFailed } from "@/live/notices";
-import { api } from "./api";
+import { SignedOut, api } from "./api";
 
 /**
  * The way in.
@@ -33,89 +35,131 @@ export function SignIn({ onIn }: { onIn: () => void }) {
 	const [passphrase, setPassphrase] = useState("");
 	const [shown, setShown] = useState(false);
 	const [busy, setBusy] = useState(false);
+	const check = useHumanCheck("admin-sign-in");
 
 	const submit = async (event: FormEvent) => {
 		event.preventDefault();
-		if (busy || !passphrase) return;
+		if (busy || !passphrase || !check.ready) return;
 
 		setBusy(true);
 
 		try {
-			await api.signIn(name, passphraseOf(passphrase));
+			await api.signIn(name, passphraseOf(passphrase), check.token);
 			onIn();
 		} catch (err) {
 			// A refused passphrase is an event, and the field is cleared for the
 			// next attempt. Kept as a banner it would sit under an empty field
 			// describing an attempt that is already over.
-			actionFailed(err instanceof Error ? err.message : String(err));
-			setPassphrase("");
+			//
+			// The server refuses a wrong passphrase with 401, which the client
+			// reads everywhere else as a session that has ended, and this
+			// passed on its message: a wrong passphrase was answered "signed
+			// out", in English, whatever the page's language.
+			if (err instanceof SignedOut) {
+				actionFailed(t("That passphrase is not an administrator's."));
+				setPassphrase("");
+			} else {
+				// Anything else is a sentence already, the human check's among
+				// them, and the passphrase stays where the check is what failed.
+				actionFailed(err instanceof Error ? err.message : String(err));
+			}
+
+			// A fresh token either way: the one sent is spent.
+			check.reset();
 		} finally {
 			setBusy(false);
 		}
 	};
 
+	// The eye arrives with the first character and leaves with the last, faded
+	// rather than cut, like everything else here that comes and goes.
+	const eye = useLingering(passphrase !== "", 160);
+
 	return (
-		<main className="grid min-h-full place-items-center bg-bg p-6 text-fg">
-			<form onSubmit={submit} className="flex w-full max-w-sm flex-col gap-4">
-				<header className="flex flex-col items-center gap-2 text-center">
-					<ShieldCheck className="size-8 text-fg-muted" />
-					<h1 className="font-semibold text-xl tracking-tight">{t("Management")}</h1>
-					<p className="text-fg-muted text-sm">{t("Enter your name and passphrase.")}</p>
+		<main className="grid min-h-full place-items-center bg-bg px-4 py-10 text-fg">
+			<form onSubmit={submit} className="flex w-full max-w-[22rem] animate-rise flex-col gap-6">
+				{/* The product's mark rather than a shield: this is the same
+				    product as the call and the lobby, and a generic lock icon over
+				    a form is the look of every other sign-in page. */}
+				<header className="flex flex-col items-center gap-3 text-center">
+					<img src="/favicon.svg" alt="" className="size-14 rounded-[14px]" />
+					<div className="flex flex-col gap-1">
+						<h1 className="font-semibold text-[22px] tracking-[-0.01em]">{t("Management")}</h1>
+						<p className="text-[14px] text-fg-muted">{t("Enter your name and passphrase.")}</p>
+					</div>
 				</header>
 
 				{/*
+				  * The two fields as one group, as the platforms draw a sign-in:
+				  * two rows on one surface with a hairline between, rather than
+				  * two boxes that happen to be stacked.
+				  *
 				  * An administrator's passphrase is generated rather than chosen,
 				  * so it is eleven characters of nothing memorable read out of a
 				  * password manager. Being able to see what was typed is the
 				  * difference between one attempt and three.
-				  */}
-				{/*
-				  * Asked for, and not only as a label. Without it a guess is
-				  * checked against every administrator at once, so a stuffed
-				  * credential succeeds if anybody here has ever reused a
+				  *
+				  * The name is asked for, and not only as a label. Without it a
+				  * guess is checked against every administrator at once, so a
+				  * stuffed credential succeeds if anybody here has ever reused a
 				  * passphrase; with it, an attacker has to be right about who as
 				  * well as about what.
 				  */}
-				<Input
-					value={name}
-					onChange={(event) => setName(event.target.value)}
-					placeholder={t("Name")}
-					aria-label={t("Name")}
-					autoComplete="username"
-					// biome-ignore lint/a11y/noAutofocus: the page exists to be typed into
-					autoFocus
-					maxLength={64}
-				/>
-
-				<div className="relative">
-					<Input
-						type={shown ? "text" : "password"}
-						value={passphrase}
-						onChange={(event) => setPassphrase(event.target.value)}
-						placeholder={t("Passphrase")}
-						aria-label={t("Passphrase")}
-						autoComplete="current-password"
-						maxLength={200}
-						className={passphrase ? "pr-10" : undefined}
+				<div className="overflow-hidden rounded-[14px] border border-border bg-surface day:border-transparent">
+					<input
+						value={name}
+						onChange={(event) => setName(event.target.value)}
+						placeholder={t("Name")}
+						aria-label={t("Name")}
+						autoComplete="username"
+						// biome-ignore lint/a11y/noAutofocus: the page exists to be typed into
+						autoFocus
+						maxLength={64}
+						className={cn(field, "border-border border-b")}
 					/>
 
-					{passphrase && (
-						<button
-							type="button"
-							onClick={() => setShown((was) => !was)}
-							aria-label={shown ? "Hide passphrase" : "Show passphrase"}
-							aria-pressed={shown}
-							className="-translate-y-1/2 absolute top-1/2 right-2 grid size-7 place-items-center rounded text-fg-muted outline-none transition-colors hover:text-fg focus-visible:ring-2 focus-visible:ring-fg/70"
-						>
-							{shown ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-						</button>
-					)}
+					<div className="relative">
+						<input
+							type={shown ? "text" : "password"}
+							value={passphrase}
+							onChange={(event) => setPassphrase(event.target.value)}
+							placeholder={t("Passphrase")}
+							aria-label={t("Passphrase")}
+							autoComplete="current-password"
+							maxLength={200}
+							className={cn(field, "pr-12")}
+						/>
+
+						{eye.mounted && (
+							<button
+								type="button"
+								onClick={() => setShown((was) => !was)}
+								aria-label={shown ? t("Hide passphrase") : t("Show passphrase")}
+								aria-pressed={shown}
+								className={cn(
+									"-translate-y-1/2 absolute top-1/2 right-1.5 grid size-9 place-items-center rounded-[10px] text-fg-muted outline-none",
+									"transition-colors hover:bg-wash hover:text-fg focus-visible:ring-2 focus-visible:ring-fg/70",
+									eye.leaving ? "animate-fade-out" : "animate-fade-in",
+								)}
+							>
+								{shown ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+							</button>
+						)}
+					</div>
 				</div>
 
-				<Button type="submit" size="lg" disabled={!passphrase || busy}>
+				{check.widget}
+
+				<Button type="submit" variant="primary" size="lg" disabled={!passphrase || busy || !check.ready}>
 					{busy ? t("Signing in…") : t("Sign in")}
 				</Button>
 			</form>
 		</main>
 	);
 }
+
+/** One row of the group: no box of its own, the group is the box. */
+const field = cn(
+	"block h-12 w-full bg-transparent px-4 text-[15px] text-fg outline-none placeholder:text-fg-muted",
+	"focus-visible:bg-wash pointer-coarse:text-base",
+);

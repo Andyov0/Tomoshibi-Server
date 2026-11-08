@@ -153,7 +153,7 @@ export function ScopedRoomInput({
 			<p
 				role="status"
 				className={cn(
-					"overflow-hidden text-[12px] text-danger leading-snug transition-[max-height,opacity,margin] duration-150",
+					"overflow-hidden text-[12px] text-danger-ink leading-snug transition-[max-height,opacity,margin] duration-150",
 					strange ? "mt-1.5 max-h-10 opacity-100" : "max-h-0 opacity-0",
 				)}
 			>

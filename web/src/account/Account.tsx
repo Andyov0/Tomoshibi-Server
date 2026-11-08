@@ -1,16 +1,24 @@
+import { FOLD_MS, Unfolding } from "@/components/Folding";
+import { WhenField, readLocal } from "@/components/WhenField";
+import { Steady } from "@/components/Steady";
+import { CORNER } from "@/components/corner";
 import { GetTheApp } from "@/components/lobby/GetTheApp";
 import { LanguagePicker } from "@/components/room/LanguagePicker";
 import { Button } from "@/components/ui/button";
+import { useHumanCheck } from "@/components/ui/human-check";
 import { Input } from "@/components/ui/input";
 import { useLingering } from "@/hooks/useLingering";
+import { useWideScreen } from "@/hooks/useWideScreen";
 import { useT } from "@/hooks/useT";
 import { cn } from "@/lib/utils";
 import { type Placement, placement, remember as rememberPlacement } from "@/live/controls";
 import { rememberedDucking, setDucking, subscribeDuck } from "@/live/duck";
 import { locale, t as say } from "@/live/i18n";
+import { lockedUntil, shutOutFor } from "@/live/lockout";
 import { whenSaid } from "@/live/meeting";
 import { MAX_SCOPE, normaliseRoomName, validRoomName, validScope } from "@/live/names";
 import { actionDone, actionFailed } from "@/live/notices";
+import { humanCheckSaid, reasonOf } from "@/live/turnstile";
 import {
 	type MusicQuality,
 	WATCH_QUALITIES,
@@ -107,7 +115,6 @@ function holds(me: Me, permission: Permission): boolean {
 }
 
 export function Account() {
-	const t = useT();
 	const [me, setMe] = useState<Me>();
 	const [asking, setAsking] = useState(true);
 
@@ -129,97 +136,171 @@ export function Account() {
 	if (asking) return <div className="min-h-full bg-bg" />;
 	if (!me) return <SignIn onIn={identify} />;
 
-	return (
-		<main className="mx-auto flex min-h-full max-w-lg flex-col gap-4 bg-bg p-5 text-fg sm:p-6">
-			{/*
-			 * The way back, first and above everything.
-			 *
-			 * This is a page somebody arrives at from the front of the site, does
-			 * one thing on, and leaves — and until this existed the only way out
-			 * was the browser's own back button, which is not where anybody looks
-			 * on a page that has its own address. A page with no exit reads as a
-			 * place you have been sent rather than one you visited.
-			 *
-			 * The language beside it, as on every other page that has a header.
-			 * This one went without, so somebody handed an account in a language
-			 * the browser guessed wrongly had nowhere to correct it short of
-			 * joining a call.
-			 */}
-			<nav className="animate-rise flex items-center gap-2">
-				<a
-					href="/"
-					className={cn(
-						"flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5",
-						"text-[12px] text-fg-muted transition-colors hover:bg-surface-hi hover:text-fg",
-					)}
-				>
-					<ArrowLeft className="size-3.5" />
-					{t("Back to meetings")}
-				</a>
+	return <Signed me={me} onChanged={setMe} />;
+}
 
-				<div className="ml-auto flex items-center gap-1">
+/**
+ * The page for somebody signed in, laid out as the lobby is.
+ *
+ * It was one column 464 pixels wide, nine cards from the way back to the note
+ * under the passphrase, 1186 pixels tall at every width: a laptop scrolled
+ * through it, and a large monitor left most of itself empty either side. The
+ * owner asked for it to be laid out again, as the lobby had been, in two
+ * blocks on one screen: who they are on the left (the account, what it may
+ * use, its passphrase), and this browser and the people they let in on the
+ * right (the apps, the settings, the guest links). One column on a phone, in
+ * the order the visits come for: the account and its picture, the passphrase,
+ * then the rest, the apps last as in the lobby.
+ *
+ * The two blocks line up at the top and the bottom, which the owner asked of
+ * the lobby: the last card of the shorter block takes up what is left, and
+ * keeps what it holds at its top with its button at its foot.
+ */
+function Signed({ me, onChanged }: { me: Me; onChanged: (me: Me | undefined) => void }) {
+	const t = useT();
+	const links = holds(me, "invite") && (me.admin || (me.scopes?.length ?? 0) > 0);
+
+	// The settings unfold within the right block and lengthen it. The left
+	// block holds the height it had meanwhile, at the top, rather than its
+	// last card being stretched to the open settings and back as they close,
+	// which is what the owner saw in the lobby and asked not to see again.
+	const [settingsOpen, setSettingsOpen] = useState(false);
+	const settling = useLingering(settingsOpen, FOLD_MS + 40).mounted || settingsOpen;
+	const wide = useWideScreen();
+	const [left, setLeft] = useState<HTMLElement | null>(null);
+	const [leftHeight, setLeftHeight] = useState(0);
+	useEffect(() => {
+		if (!left || settling) return;
+		const read = () => {
+			if (left.offsetHeight > 0) setLeftHeight(left.offsetHeight);
+		};
+		read();
+		const observer = new ResizeObserver(read);
+		observer.observe(left);
+		return () => observer.disconnect();
+	}, [left, settling]);
+	const holding = wide && settling && leftHeight > 0;
+
+	// A block of its own on a wide screen; on a phone nothing, so that its
+	// cards are one column with the other block's, in the order each gives.
+	const block = "contents md:flex md:min-w-0 md:flex-col md:gap-4";
+	const fills = "md:flex md:flex-1 md:flex-col";
+
+	const passphrase = (
+		<div className={cn("animate-rise order-2 md:order-none", fills)}>
+			<Passphrase />
+		</div>
+	);
+
+	return (
+		<main className="relative grid min-h-full grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-x-clip bg-bg text-fg">
+			{/*
+			 * The header the lobby has, across the page: the way back first, as
+			 * it always was here, since this is a page somebody arrives at, does
+			 * one thing on and leaves; and the console, signing out and the
+			 * language in the corner, the same buttons in the same places as on
+			 * the lobby. They were small outlined links inside the column.
+			 */}
+			<header className="animate-rise z-10 flex items-center justify-between gap-2 p-5 sm:gap-4 sm:p-6">
+				<div className="flex min-w-0 items-center gap-3">
+					<a href="/" className="flex items-center gap-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-fg/70">
+						<img src="/favicon.svg" alt="" className="size-5 rounded-[5px]" />
+						<span className="font-semibold text-[13px] tracking-tight max-[420px]:sr-only">Tomoshibi</span>
+					</a>
+
+					<a
+						href="/"
+						className={cn(CORNER, "border-border text-fg-muted hover:bg-wash hover:text-fg active:bg-wash-press")}
+					>
+						<ArrowLeft className="size-3.5" />
+						<Steady phrase="Back to meetings" />
+					</a>
+				</div>
+
+				<div className="flex items-center gap-2">
 					{me.admin && (
 						<a
 							href="/admin"
 							aria-label={t("Admin console")}
-							className={cn(
-								"flex items-center gap-1.5 rounded-md border border-tally/30 bg-tally/10 px-2.5 py-1.5",
-								"text-[12px] text-fg transition-colors hover:bg-tally/20",
-							)}
+							className={cn(CORNER, "border-tally/30 bg-tally/10 text-fg hover:bg-tally/20 active:bg-tally/25")}
 						>
-							<Shield className="size-3.5 text-tally" />
-							{/* The shield alone on the narrowest phones, where the
-							    three of these together are wider than the screen. */}
-							<span className="max-[400px]:hidden">{t("Admin console")}</span>
+							<Shield className="size-3.5 text-tally-ink" />
+							<Steady phrase="Admin console" className="hidden sm:inline-grid" />
 						</a>
 					)}
 
+					<button
+						type="button"
+						onClick={async () => {
+							await fetch("/api/account/session", { method: "DELETE", credentials: "same-origin" });
+							onChanged(undefined);
+						}}
+						aria-label={t("Sign out")}
+						title={t("Sign out")}
+						className={cn(
+							CORNER,
+							"w-8 justify-center border-border px-0 text-fg-muted hover:bg-wash hover:text-fg active:bg-wash-press pointer-coarse:w-11",
+						)}
+					>
+						<LogOut className="size-3.5" />
+					</button>
+
 					<LanguagePicker />
 				</div>
-			</nav>
+			</header>
 
-			<div className="animate-rise [animation-delay:60ms]">
-				<Header me={me} onChanged={setMe} />
-			</div>
+			{/* Placed by the window's height and not by what is in it, as the
+			    lobby is (Lobby Frame says why): the settings unfolding, or a
+			    link being made, grow the page below its top and never move it. */}
+			<div className="z-10 flex items-start justify-center px-5 pb-16 sm:px-6 md:pb-6">
+				<div className="w-full max-w-lg pt-1 md:max-w-[54rem] md:pt-[max(1rem,calc((100vh-5rem-36rem)*0.4))]">
+					<div className="flex flex-col gap-4 md:grid md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:gap-x-6">
+						<div
+							ref={setLeft}
+							style={holding ? { height: leftHeight } : undefined}
+							className={cn(block, holding && "md:sticky md:top-4 md:self-start")}
+						>
+							<div className="animate-rise order-1 md:order-none">
+								<Identity me={me} onChanged={(changed) => onChanged(changed)} />
+							</div>
 
-			{/* The apps, as a card under who they are rather than an icon in
-			    the bar above: on a phone that icon had no words beside it,
-			    and nothing said it was the way to the apps. The same card the
-			    lobby has, so the two pages offer it in one way. */}
-			<div className="animate-rise [animation-delay:90ms]">
-				<GetTheApp className="rounded-lg" />
-			</div>
+							<div className={cn("animate-rise order-3 md:order-none", !links && fills)}>
+								<Abilities me={me} />
+							</div>
 
-			<div className="animate-rise [animation-delay:120ms]">
-				<Picture me={me} onChanged={setMe} />
-			</div>
+							{links && passphrase}
+						</div>
 
-			<div className="animate-rise [animation-delay:180ms]">
-				<Abilities me={me} />
-			</div>
+						<div className={block}>
+							{/* The same card the lobby has, so the two pages offer
+							    the apps in one way; last on a phone, as there. */}
+							<div className="animate-rise order-6 md:order-none">
+								<GetTheApp />
+							</div>
 
-			<div className="animate-rise [animation-delay:240ms]">
-				<Settings me={me} />
-			</div>
+							<div className="animate-rise order-4 md:order-none">
+								<Settings me={me} onOpenChange={setSettingsOpen} />
+							</div>
 
-			{/* Only for somebody who can use it: an account given standing links,
-			    and in a scope to send them into. An administrator belongs to
-			    every scope and may type any; anybody else is offered the ones on
-			    their account, and an account with none has no rooms to send
-			    anybody into. The server asks both questions again. */}
-			{holds(me, "invite") && (me.admin || (me.scopes?.length ?? 0) > 0) && (
-				<div className="animate-rise [animation-delay:300ms]">
-					<GuestLinks me={me} />
+							{/* Only for somebody who can use it: an account given
+							    standing links, and in a scope to send them into. An
+							    administrator belongs to every scope and may type
+							    any; anybody else is offered the ones on their
+							    account, and an account with none has no rooms to
+							    send anybody into. The server asks both questions
+							    again. Without them the passphrase is the last card
+							    here, so the two blocks stay near one height. */}
+							{links ? (
+								<div className={cn("animate-rise order-5 md:order-none", fills)}>
+									<GuestLinks me={me} />
+								</div>
+							) : (
+								passphrase
+							)}
+						</div>
+					</div>
 				</div>
-			)}
-
-			<div className="animate-rise [animation-delay:360ms]">
-				<Passphrase />
 			</div>
-
-			<p className="animate-rise [animation-delay:420ms] px-1 text-fg-muted text-[11.5px] leading-relaxed">
-				{t("Your passphrase is not stored here and cannot be sent to you. If you lose it, an administrator sets a new one.")}
-			</p>
 		</main>
 	);
 }
@@ -248,11 +329,12 @@ export function SignIn({
 	const [name, setName] = useState("");
 	const [passphrase, setPassphrase] = useState("");
 	const [busy, setBusy] = useState(false);
+	const check = useHumanCheck("sign-in");
 
 	const submit = async (event: React.FormEvent) => {
 		event.preventDefault();
 
-		if (busy) return;
+		if (busy || !check.ready) return;
 
 		setBusy(true);
 
@@ -261,18 +343,29 @@ export function SignIn({
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				credentials: "same-origin",
-				body: JSON.stringify({ name, passphrase }),
+				body: JSON.stringify(
+					check.token ? { name, passphrase, turnstile: check.token } : { name, passphrase },
+				),
 			});
 
-			if (!response.ok) throw new Error(t("That name and passphrase do not go together."));
+			if (!response.ok) {
+				const refused = await signInRefused(response);
+
+				// The passphrase is kept where only the human check failed: it
+				// was never looked at, and clearing it would be asking for it
+				// again for nothing.
+				if (!refused.human) setPassphrase("");
+
+				throw new Error(refused.said);
+			}
 
 			onIn();
 		} catch (err) {
-			// The field is cleared for the next attempt, and the notice fades:
-			// a refused attempt is something that happened, not something still
-			// true.
+			// The notice fades: a refused attempt is something that happened,
+			// not something still true. And the human check starts again, since
+			// the token just sent is spent whatever the answer was.
 			actionFailed(err instanceof Error ? err.message : String(err));
-			setPassphrase("");
+			check.reset();
 		} finally {
 			setBusy(false);
 		}
@@ -314,7 +407,9 @@ export function SignIn({
 					maxLength={200}
 				/>
 
-				<Button type="submit" variant="primary" size="lg" disabled={busy || !name || !passphrase}>
+				{check.widget}
+
+				<Button type="submit" variant="primary" size="lg" disabled={busy || !name || !passphrase || !check.ready}>
 					{busy ? <Loader2 className="size-4 animate-spin" /> : t("Sign in")}
 				</Button>
 			</form>
@@ -322,46 +417,69 @@ export function SignIn({
 	);
 }
 
-function Header({ me, onChanged }: { me: Me; onChanged: (me: Me | undefined) => void }) {
-	const t = useT();
+/**
+ * What a refused sign-in says, and whether the human check is what refused it.
+ *
+ * A lockout says how long it has left, and is read first: the server answers a
+ * caller shut out before it asks anything else, the human check included, so
+ * a lockout is the whole of what is true about that attempt. It is also read
+ * from a copy of the body (lockedUntil), and the reason below from the body
+ * itself, which can be read once; the other way round, the lockout's end
+ * would never be found. Then the human check's three refusals, in its own
+ * sentences, the one case where the passphrase was never looked at. A
+ * guessing budget's own refusal, which names no end, says to wait a moment;
+ * it used to say the name and passphrase did not go together, which sent
+ * somebody who had typed them correctly to type them again. Anything else is
+ * the pair not going together, which is all this page has ever said about a
+ * wrong name or a wrong passphrase, and all it should: saying which would be
+ * telling a stranger which names exist.
+ */
+async function signInRefused(response: Response): Promise<{ said: string; human: boolean }> {
+	const until = await lockedUntil(response);
+	if (until) return { said: shutOutFor(until), human: false };
 
+	const human = humanCheckSaid(await reasonOf(response));
+	if (human) return { said: human, human: true };
+
+	if (response.status === 429) return { said: say("Too many attempts. Try again in a moment."), human: false };
+
+	return { said: say("That name and passphrase do not go together."), human: false };
+}
+
+/**
+ * Who they are, and the picture they are shown with: one card, where it was
+ * the name in a header and the picture in a card of its own two cards further
+ * down, so that the picture beside the name and the way to change it were
+ * apart. Signing out is in the corner of the page, as on the lobby.
+ */
+function Identity({ me, onChanged }: { me: Me; onChanged: (me: Me) => void }) {
 	return (
-		<header className="flex items-center gap-3">
-			<Face me={me} />
+		<section className="flex h-full flex-col gap-3 rounded-[18px] border border-border bg-surface p-4">
+			<div className="flex items-center gap-3.5">
+				<Face me={me} />
 
-			<div className="flex min-w-0 flex-col">
-				<span className="truncate font-medium text-fg">{me.name}</span>
-				{/* The signature, which is the public half of an account and the
-				    thing that proves a name in a room. Shown here because this is
-				    the one page where somebody has a reason to read their own. */}
-				<span className="readout text-fg-muted text-[12px]">{me.trip}</span>
+				<div className="flex min-w-0 flex-col gap-0.5">
+					<span className="truncate font-medium text-[15px] text-fg">{me.name}</span>
+					{/* The signature, which is the public half of an account and
+					    the thing that proves a name in a room. Shown here because
+					    this is the one page where somebody has a reason to read
+					    their own. */}
+					<span className="readout text-fg-muted text-[12px]">{me.trip}</span>
+				</div>
 			</div>
 
-			<button
-				type="button"
-				onClick={async () => {
-					await fetch("/api/account/session", {
-						method: "DELETE",
-						credentials: "same-origin",
-					});
-					onChanged(undefined);
-				}}
-				className="ml-auto flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] text-fg-muted hover:bg-surface-hi hover:text-fg"
-			>
-				<LogOut className="size-3.5" />
-				{t("Sign out")}
-			</button>
-		</header>
+			<Picture me={me} onChanged={onChanged} />
+		</section>
 	);
 }
 
 function Face({ me }: { me: Me }) {
 	if (me.avatar) {
-		return <img src={me.avatar} alt="" className="size-12 shrink-0 rounded-full object-cover" />;
+		return <img src={me.avatar} alt="" className="size-14 shrink-0 rounded-full object-cover" />;
 	}
 
 	return (
-		<span className="flex size-12 shrink-0 items-center justify-center rounded-full bg-surface-hi text-fg-muted">
+		<span className="flex size-14 shrink-0 items-center justify-center rounded-full bg-surface-hi text-[18px] text-fg-muted">
 			{me.name.slice(0, 1).toUpperCase()}
 		</span>
 	);
@@ -405,58 +523,63 @@ function Picture({ me, onChanged }: { me: Me; onChanged: (me: Me) => void }) {
 	};
 
 	return (
-		<section className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4">
+		<div className="flex flex-col gap-2 border-border border-t pt-3">
 			{/* Not "Picture", which is the share menu's word for the picture's
 			    quality and is translated as that: this card read 画質 in
 			    Japanese and 画面 in Chinese. */}
-			<h2 className="font-medium text-fg text-sm">{t("Profile picture")}</h2>
-			<p className="text-fg-muted text-[11.5px]">
-				{t("Shown beside your name in a call. Scaled down before it is sent.")}
-			</p>
+			{/* For a screen reader only: the picture is beside it, and the
+			    heading over a single button was most of the card's height. */}
+			<h2 className="sr-only">{t("Profile picture")}</h2>
 
-			<div className="mt-1 flex gap-2">
-				<input
-					ref={file}
-					type="file"
-					accept="image/*"
-					className="hidden"
-					onChange={async (event) => {
-						const chosen = event.target.files?.[0];
-						event.target.value = "";
+			<div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+				<div className="flex gap-2">
+					<input
+						ref={file}
+						type="file"
+						accept="image/*"
+						className="hidden"
+						onChange={async (event) => {
+							const chosen = event.target.files?.[0];
+							event.target.value = "";
 
-						if (!chosen) return;
+							if (!chosen) return;
 
-						try {
-							await send(await shrink(chosen));
-						} catch {
-							actionFailed(t("That picture could not be used."));
-						}
-					}}
-				/>
+							try {
+								await send(await shrink(chosen));
+							} catch {
+								actionFailed(t("That picture could not be used."));
+							}
+						}}
+					/>
 
-				<button
-					type="button"
-					disabled={busy}
-					onClick={() => file.current?.click()}
-					className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] hover:bg-surface-hi disabled:opacity-40"
-				>
-					{busy ? <Loader2 className="size-3.5 animate-spin" /> : <Camera className="size-3.5" />}
-					{t("Choose a picture")}
-				</button>
-
-				{me.avatar && (
 					<button
 						type="button"
 						disabled={busy}
-						onClick={() => void send(null)}
-						className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] text-fg-muted hover:bg-surface-hi hover:text-danger disabled:opacity-40"
+						onClick={() => file.current?.click()}
+						className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] hover:bg-surface-hi disabled:opacity-40"
 					>
-						<Trash2 className="size-3.5" />
-						{t("Remove")}
+						{busy ? <Loader2 className="size-3.5 animate-spin" /> : <Camera className="size-3.5" />}
+						<Steady phrase="Choose a picture" />
 					</button>
-				)}
+
+					{me.avatar && (
+						<button
+							type="button"
+							disabled={busy}
+							onClick={() => void send(null)}
+							className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] text-fg-muted hover:bg-surface-hi hover:text-danger-ink disabled:opacity-40"
+						>
+							<Trash2 className="size-3.5" />
+							<Steady phrase="Remove" />
+						</button>
+					)}
+				</div>
+
+				<p className="min-w-0 flex-1 basis-48 text-fg-muted text-[11.5px] leading-snug">
+					<Steady phrase="Shown beside your name in a call. Scaled down before it is sent." block />
+				</p>
 			</div>
-		</section>
+		</div>
 	);
 }
 
@@ -492,9 +615,9 @@ function Abilities({ me }: { me: Me }) {
 	const since = me.created ? dateSaid(me.created) : "";
 
 	return (
-		<section className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4">
+		<section className="flex h-full flex-col gap-2 rounded-[18px] border border-border bg-surface p-4">
 			<h2 className="font-medium text-fg text-sm">{t("What you can use")}</h2>
-			<p className="text-fg-muted text-[11.5px]">{t("Set by whoever runs this deployment.")}</p>
+			<p className="text-fg-muted text-[11.5px]"><Steady phrase="Set by whoever runs this deployment." block /></p>
 
 			{held.length > 0 && (
 				<ul aria-label={t("What you can use")} className="mt-1 flex flex-wrap gap-1.5">
@@ -506,7 +629,7 @@ function Abilities({ me }: { me: Me }) {
 
 			{withheld.length > 0 && (
 				<div className="mt-1 flex flex-col gap-1.5">
-					<span className="text-fg-muted text-[11px]">{t("Not opened to this account")}</span>
+					<span className="text-fg-muted text-[11px]"><Steady phrase="Not opened to this account" /></span>
 					<ul aria-label={t("Not opened to this account")} className="flex flex-wrap gap-1.5">
 						{withheld.map((one) => (
 							<Ability key={one} permission={one} withheld />
@@ -520,10 +643,10 @@ function Abilities({ me }: { me: Me }) {
 			    the link form below, and not at all to somebody who may not make
 			    links. */}
 			{(scopes.length > 0 || since) && (
-				<dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-3 gap-y-2 border-border border-t pt-3 text-[12px]">
+				<dl className="mt-auto grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-3 gap-y-2 border-border border-t pt-3 text-[12px]">
 					{scopes.length > 0 && (
 						<>
-							<dt className="text-fg-muted">{t("Your scopes")}</dt>
+							<dt className="text-fg-muted"><Steady phrase="Your scopes" className="justify-items-start" /></dt>
 							<dd className="flex flex-wrap gap-1">
 								{scopes.map((scope) => (
 									<span key={scope} className="readout rounded bg-surface-hi px-1.5 py-0.5 text-[11px]">
@@ -536,7 +659,7 @@ function Abilities({ me }: { me: Me }) {
 
 					{since && (
 						<>
-							<dt className="text-fg-muted">{t("Account created")}</dt>
+							<dt className="text-fg-muted"><Steady phrase="Account created" className="justify-items-start" /></dt>
 							<dd className="text-fg">{since}</dd>
 						</>
 					)}
@@ -547,7 +670,6 @@ function Abilities({ me }: { me: Me }) {
 }
 
 function Ability({ permission, withheld = false }: { permission: Permission; withheld?: boolean }) {
-	const t = useT();
 	const Icon = PERMISSION_ICONS[permission];
 
 	return (
@@ -561,8 +683,8 @@ function Ability({ permission, withheld = false }: { permission: Permission; wit
 						: "border-border bg-surface-hi text-fg",
 			)}
 		>
-			<Icon className={cn("size-3.5", withheld ? "text-fg-muted/60" : permission === "emby" ? "text-tally" : "text-fg-muted")} />
-			{t(PERMISSION_NAMES[permission])}
+			<Icon className={cn("size-3.5", withheld ? "text-fg-muted/60" : permission === "emby" ? "text-tally-ink" : "text-fg-muted")} />
+			<Steady phrase={PERMISSION_NAMES[permission]} />
 		</li>
 	);
 }
@@ -587,24 +709,27 @@ function dateSaid(at: string): string {
  * and a save button would be a second place for the page and the call to
  * disagree. Nothing is sent anywhere: see live/preferences.ts.
  */
-function Settings({ me }: { me: Me }) {
+function Settings({ me, onOpenChange }: { me: Me; onOpenChange?: (open: boolean) => void }) {
 	const t = useT();
 	const [open, setOpen] = useState(false);
-	const body = useLingering(open);
+	useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
 
 	return (
-		<section className="flex flex-col rounded-lg border border-border bg-surface">
+		<section className="flex flex-col rounded-[18px] border border-border bg-surface">
 			<button
 				type="button"
 				aria-expanded={open}
 				aria-controls="account-settings"
 				onClick={() => setOpen(!open)}
-				className="flex items-start gap-3 rounded-lg p-4 text-left outline-none transition-colors hover:bg-surface-hi/40 focus-visible:ring-2 focus-visible:ring-fg/40"
+				className={cn(
+					"flex items-start gap-3 rounded-[18px] p-4 text-left outline-none transition-colors hover:bg-surface-hi/40 focus-visible:ring-2 focus-visible:ring-fg/40",
+					open && "rounded-b-none",
+				)}
 			>
 				<span className="flex min-w-0 flex-1 flex-col gap-1">
 					<span className="font-medium text-fg text-sm">{t("Settings")}</span>
 					<span className="text-fg-muted text-[11.5px]">
-						{t("How your calls start and look, in this browser. Another browser or device keeps its own.")}
+						<Steady phrase="How your calls start and look, in this browser. Another browser or device keeps its own." block />
 					</span>
 				</span>
 				<ChevronDown
@@ -613,20 +738,16 @@ function Settings({ me }: { me: Me }) {
 				/>
 			</button>
 
-			{body.mounted && (
-				<div
-					id="account-settings"
-					className={cn(
-						"flex flex-col gap-5 border-border border-t px-4 pt-4 pb-4",
-						body.leaving ? "animate-depart" : "animate-arrive",
-					)}
-				>
+			{/* Unfolding from the card's head, as the lobby's arranging form
+			    does, rather than appearing whole below it. */}
+			<Unfolding open={open}>
+				<div id="account-settings" className="flex flex-col gap-5 border-border border-t px-4 pt-4 pb-4">
 					<WhenJoining />
 					<WhereControls />
 					<MusicSettings me={me} />
 					<WatchSettings />
 				</div>
-			)}
+			</Unfolding>
 		</section>
 	);
 }
@@ -909,16 +1030,15 @@ function Passphrase() {
 	};
 
 	return (
-		<form
-			onSubmit={submit}
-			className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4"
-		>
+		<form onSubmit={submit} className="flex h-full flex-col gap-2 rounded-[18px] border border-border bg-surface p-4">
 			<h2 className="font-medium text-fg text-sm">{t("Passphrase")}</h2>
 			<p className="text-fg-muted text-[11.5px]">
-				{t("This is how you are recognised, in a call and here. At least eight characters.")}
+				<Steady phrase="This is how you are recognised, in a call and here. At least eight characters." block />
 			</p>
 
-			<div className="mt-1 flex flex-col gap-2">
+			{/* Side by side where there is room for both, which is a line less
+			    on the account page's left block. */}
+			<div className="mt-1 grid gap-2 sm:grid-cols-2">
 				<Input
 					type="password"
 					value={current}
@@ -938,7 +1058,10 @@ function Passphrase() {
 				/>
 			</div>
 
-			<div className="mt-1 flex items-center gap-3">
+			{/* At the foot, so that where this card is the one stretched to the
+			    other block's height, the space opens above the button rather
+			    than below it. */}
+			<div className="mt-auto flex items-center gap-3 pt-1">
 				<button
 					type="submit"
 					disabled={busy || !current || next.length < 8}
@@ -948,11 +1071,17 @@ function Passphrase() {
 					)}
 				>
 					{busy && <Loader2 className="size-3.5 animate-spin" />}
-					{t("Change it")}
+					<Steady phrase="Change it" />
 				</button>
 
 				{done && <span className="text-[11.5px] text-fg-muted">{t("Changed.")}</span>}
 			</div>
+
+			{/* Under the form it is about, inside its card; it was a line of its
+			    own at the foot of the page. */}
+			<p className="text-fg-muted text-[11.5px] leading-relaxed">
+				<Steady phrase="Your passphrase is not stored here and cannot be sent to you. If you lose it, an administrator sets a new one." block />
+			</p>
 		</form>
 	);
 }
@@ -1086,10 +1215,10 @@ function GuestLinks({ me }: { me: Me }) {
 	const field = "rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-fg/40";
 
 	return (
-		<form onSubmit={make} className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4">
+		<form onSubmit={make} className="flex h-full flex-col gap-2 rounded-[18px] border border-border bg-surface p-4">
 			<h2 className="font-medium text-fg text-sm">{t("Guest links")}</h2>
 			<p className="text-fg-muted text-[11.5px]">
-				{t("A link lets somebody outside your scope into one of its rooms as a guest. Leave the end empty for a link that works until it is stopped.")}
+				<Steady phrase="A link lets somebody outside your scope into one of its rooms as a guest. Leave the end empty for a link that works until it is stopped." block />
 			</p>
 
 			<div className="mt-1 flex items-center gap-1.5">
@@ -1149,36 +1278,44 @@ function GuestLinks({ me }: { me: Me }) {
 				className={field}
 			/>
 
+			{/* The lobby's calendar and clock, opened over the page (WhenField),
+			    where they were the platform's date-and-time fields. The end
+			    offers no day before the start. */}
 			<div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-				<label className="flex flex-col gap-1">
+				<div className="flex min-w-0 flex-col gap-1">
 					<span className="text-fg-muted text-[11px]">{t("Works from")}</span>
-					<input
-						type="datetime-local"
+					<WhenField
 						value={from}
-						onChange={(event) => setFrom(event.target.value)}
-						className={field}
+						onChange={setFrom}
+						label={t("Works from")}
+						none={t("From now")}
+						className={cn(field, "h-[34px]")}
 					/>
-				</label>
+				</div>
 
-				<label className="flex flex-col gap-1">
+				<div className="flex min-w-0 flex-col gap-1">
 					<span className="text-fg-muted text-[11px]">{t("Works until")}</span>
-					<input
-						type="datetime-local"
+					<WhenField
 						value={until}
-						onChange={(event) => setUntil(event.target.value)}
-						className={field}
+						onChange={setUntil}
+						label={t("Works until")}
+						none={t("Until it is stopped")}
+						earliest={readLocal(from)}
+						future
+						className={cn(field, "h-[34px]")}
 					/>
-				</label>
+				</div>
 			</div>
 
-			<div className="mt-1 flex flex-wrap items-center gap-2">
+			{/* At the foot, for the reason the passphrase's button is. */}
+			<div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
 				<button
 					type="submit"
 					disabled={busy !== undefined || !usable}
 					className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[12px] hover:bg-surface-hi disabled:opacity-40"
 				>
 					{busy === "make" ? <Loader2 className="size-3.5 animate-spin" /> : <Link2 className="size-3.5" />}
-					{t("Make a link")}
+					<Steady phrase="Make a link" />
 				</button>
 
 				<button
@@ -1188,7 +1325,7 @@ function GuestLinks({ me }: { me: Me }) {
 					className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] text-fg-muted hover:bg-danger/10 hover:text-fg disabled:opacity-40"
 				>
 					{busy === "stop" ? <Loader2 className="size-3.5 animate-spin" /> : <Link2Off className="size-3.5" />}
-					{t("Stop every link to this room working")}
+					<Steady phrase="Stop every link to this room working" />
 				</button>
 			</div>
 
@@ -1210,7 +1347,7 @@ function GuestLinks({ me }: { me: Me }) {
 							aria-label={copied ? t("Link copied") : t("Copy link")}
 							className="rounded-md border border-border p-1.5 text-fg-muted hover:bg-surface-hi hover:text-fg"
 						>
-							{copied ? <Check className="size-3.5 text-tally" /> : <Copy className="size-3.5" />}
+							{copied ? <Check className="size-3.5 text-tally-ink" /> : <Copy className="size-3.5" />}
 						</button>
 					</div>
 

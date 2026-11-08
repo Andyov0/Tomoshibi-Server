@@ -50,8 +50,37 @@ rather than pretending to have written something.
 type Remote interface {
 	Read() remote.Settings
 	SetNotice(notice *remote.Notice) error
+	SetSignInNotice(notice *remote.Notice) error
 	SetSwitches(switches []remote.Switch) error
 }
+
+// noticeSlot is one of the two notices the file holds: the lobby's, for
+// people signed in, and the sign-in page's, for people who are not. Two since
+// 2026-11-02, when the owner, having seen the lobby's on the web's sign-in
+// page, asked for the sign-in page's to be set apart. The same shape, the
+// same checks and the same endpoints' behaviour, so one set of handlers
+// serves both by which slot they are given.
+type noticeSlot struct {
+	read  func(remote.Settings) *remote.Notice
+	write func(Remote, *remote.Notice) error
+	// What the management log calls publishing it and taking it down.
+	publish, takeDown string
+}
+
+var (
+	lobbyNotice = noticeSlot{
+		read:     func(settings remote.Settings) *remote.Notice { return settings.Notice },
+		write:    Remote.SetNotice,
+		publish:  "publish the apps' notice",
+		takeDown: "take down the apps' notice",
+	}
+	signInNotice = noticeSlot{
+		read:     func(settings remote.Settings) *remote.Notice { return settings.SignInNotice },
+		write:    Remote.SetSignInNotice,
+		publish:  "publish the sign-in notice",
+		takeDown: "take down the sign-in notice",
+	}
+)
 
 // noticeReading is what the page is told of the notice: the one in the file,
 // and whether the apps are being shown it now, which a notice whose end has
@@ -82,8 +111,8 @@ const (
 	reasonRemoteUnwritable = "remote_unwritable"
 )
 
-func (a *API) noticeNow() noticeReading {
-	notice := a.remote.Read().Notice
+func (a *API) noticeNow(slot noticeSlot) noticeReading {
+	notice := slot.read(a.remote.Read())
 
 	return noticeReading{Notice: notice, Showing: notice.Showing(time.Now())}
 }
@@ -99,13 +128,15 @@ func (a *API) switchesNow() switchesReading {
 	return switchesReading{Switches: switches, Unread: settings.UnreadSwitches}
 }
 
-func (a *API) readNotice(_ Session, w http.ResponseWriter, _ *http.Request) {
-	if a.remote == nil {
-		refuse(w, http.StatusServiceUnavailable, reasonNoAppsDirectory)
-		return
-	}
+func (a *API) readNotice(slot noticeSlot) func(Session, http.ResponseWriter, *http.Request) {
+	return func(_ Session, w http.ResponseWriter, _ *http.Request) {
+		if a.remote == nil {
+			refuse(w, http.StatusServiceUnavailable, reasonNoAppsDirectory)
+			return
+		}
 
-	respond(w, a.noticeNow())
+		respond(w, a.noticeNow(slot))
+	}
 }
 
 func (a *API) readSwitches(_ Session, w http.ResponseWriter, _ *http.Request) {
@@ -123,61 +154,63 @@ func (a *API) readSwitches(_ Session, w http.ResponseWriter, _ *http.Request) {
 // own, so that the notice has one address and one verb whatever is done to
 // it. What the apps are told is the file afterwards, so a notice taken down
 // stops being sent at the next check of every app.
-func (a *API) setNotice(session Session, w http.ResponseWriter, r *http.Request) {
-	if a.remote == nil {
-		refuse(w, http.StatusServiceUnavailable, reasonNoAppsDirectory)
-		return
-	}
-
-	// Four languages of five hundred characters, of up to four bytes each,
-	// and the rest of a notice: well inside this.
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
-	if err != nil {
-		refuse(w, http.StatusBadRequest, "unreadable_request")
-		return
-	}
-
-	raw = bytes.TrimSpace(raw)
-
-	if len(raw) == 0 || string(raw) == "null" {
-		target := ""
-		if before := a.remote.Read().Notice; before != nil {
-			target = before.ID
+func (a *API) setNotice(slot noticeSlot) func(Session, http.ResponseWriter, *http.Request) {
+	return func(session Session, w http.ResponseWriter, r *http.Request) {
+		if a.remote == nil {
+			refuse(w, http.StatusServiceUnavailable, reasonNoAppsDirectory)
+			return
 		}
 
-		err := a.remote.SetNotice(nil)
-		a.record(session, "take down the apps' notice", "", target, err)
+		// Four languages of five hundred characters, of up to four bytes each,
+		// and the rest of a notice: well inside this.
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+		if err != nil {
+			refuse(w, http.StatusBadRequest, "unreadable_request")
+			return
+		}
+
+		raw = bytes.TrimSpace(raw)
+
+		if len(raw) == 0 || string(raw) == "null" {
+			target := ""
+			if before := slot.read(a.remote.Read()); before != nil {
+				target = before.ID
+			}
+
+			err := slot.write(a.remote, nil)
+			a.record(session, slot.takeDown, "", target, err)
+
+			if err != nil {
+				a.unwritten(w, err)
+				return
+			}
+
+			respond(w, a.noticeNow(slot))
+			return
+		}
+
+		var sent remote.Notice
+		if err := json.Unmarshal(raw, &sent); err != nil {
+			refuse(w, http.StatusBadRequest, "unreadable_request")
+			return
+		}
+
+		notice, err := remote.CheckNotice(sent, time.Now())
+		if err != nil {
+			refuse(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		err = slot.write(a.remote, &notice)
+		a.recordChange(session, slot.publish, notice.ID, describeNotice(notice), err)
 
 		if err != nil {
 			a.unwritten(w, err)
 			return
 		}
 
-		respond(w, a.noticeNow())
-		return
+		respond(w, a.noticeNow(slot))
 	}
-
-	var sent remote.Notice
-	if err := json.Unmarshal(raw, &sent); err != nil {
-		refuse(w, http.StatusBadRequest, "unreadable_request")
-		return
-	}
-
-	notice, err := remote.CheckNotice(sent, time.Now())
-	if err != nil {
-		refuse(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	err = a.remote.SetNotice(&notice)
-	a.recordChange(session, "publish the apps' notice", notice.ID, describeNotice(notice), err)
-
-	if err != nil {
-		a.unwritten(w, err)
-		return
-	}
-
-	respond(w, a.noticeNow())
 }
 
 // setSwitches replaces every switch.

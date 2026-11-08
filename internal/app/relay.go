@@ -1,9 +1,15 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"hash/fnv"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +60,16 @@ type relays struct {
 	mu       sync.RWMutex
 	cached   []store.Relay
 	cachedAt time.Time
+
+	// owned is whose own each relay is, read with the list and kept with it
+	// (see owners), so a join is not a walk of the accounts either.
+	owned map[string][]string
+}
+
+// Owning is a source that also says whose relays are whose: the store is one,
+// and a list written down in a test may be.
+type Owning interface {
+	RelayOwners() (map[string][]string, error)
 }
 
 // How long a read of the relay list is reused.
@@ -100,11 +116,44 @@ func (r *relays) live() []store.Relay {
 		}
 	}
 
+	// Whose own each one is, read alongside. On a failure the last answer is
+	// kept, as the list is: a store that will not answer is not a reason to
+	// start offering everybody a machine somebody provided for themselves.
+	var owned map[string][]string
+	keepOwned := true
+	if owning, ok := r.source.(Owning); ok {
+		if found, err := owning.RelayOwners(); err == nil {
+			owned, keepOwned = found, false
+		} else {
+			slog.Error("failed to read whose relays are whose; using the last answer", "error", err)
+		}
+	} else {
+		keepOwned = false
+	}
+
 	r.mu.Lock()
 	r.cached, r.cachedAt = enabled, time.Now()
+	if !keepOwned {
+		r.owned = owned
+	}
 	r.mu.Unlock()
 
 	return enabled
+}
+
+// owners is whose own each relay is, by relay name: empty for a relay nobody
+// holds, and for every relay on a deployment with no accounts.
+func (r *relays) owners() map[string][]string {
+	if r == nil {
+		return nil
+	}
+
+	r.live()
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.owned
 }
 
 // forget drops the cache, so the next join reads the store.
@@ -161,7 +210,8 @@ func (r *relays) all() []store.Relay {
 // Not every relay out of service. A machine disabled because it is gone would
 // be a failed check every half minute for ever, and enough of them would tip a
 // sweep into reading as this node's own outage (reach.look), which freezes the
-// readings for everybody. Only one still in somebody's path is worth asking.
+// readings for everybody. Only one still in somebody's path is asked here; the
+// rest are asked on the side, uncounted (resting, reach.glance).
 func (r *relays) watched() []store.Relay {
 	live := r.live()
 
@@ -179,6 +229,28 @@ func (r *relays) watched() []store.Relay {
 	list := append([]store.Relay(nil), live...)
 	for _, relay := range r.all() {
 		if !relay.Enabled && named[relay.Name] {
+			list = append(list, relay)
+		}
+	}
+
+	return list
+}
+
+// resting is every relay out of service that watched leaves out: the ones
+// shown greyed and sent nobody, whose only question is whether to be shown.
+func (r *relays) resting() []store.Relay {
+	if r == nil {
+		return nil
+	}
+
+	asked := map[string]bool{}
+	for _, relay := range r.watched() {
+		asked[relay.Name] = true
+	}
+
+	var list []store.Relay
+	for _, relay := range r.all() {
+		if !relay.Enabled && !asked[relay.Name] {
 			list = append(list, relay)
 		}
 	}
@@ -283,6 +355,25 @@ func (r *relays) reserved(name string) bool {
 	return false
 }
 
+// closedTo reports whether a name belongs to a relay this caller may not use:
+// one kept for administrators, or somebody else's own (own.go).
+//
+// The same distinction reserved draws, for the same reason: a name nobody has
+// is ignored and a name somebody may not use is refused out loud.
+func (r *relays) closedTo(name string, c caller) bool {
+	if name == "" {
+		return false
+	}
+
+	for _, relay := range r.all() {
+		if relay.Name == name {
+			return !mayUse(c, relay, r.owners())
+		}
+	}
+
+	return false
+}
+
 // named finds a relay by name, and says whether it is one of ours and usable.
 //
 // Out of service counts as not usable: a room recorded as held on a machine
@@ -346,22 +437,89 @@ func (r *relays) named(name string) (store.Relay, bool) {
 // administrators is not among them, since this hands its address to
 // everybody joining.
 func (r *relays) signalling(name string) (store.Relay, bool) {
+	return r.signallingAmong(name, r.live())
+}
+
+// signallingAmong is signalling over a list of the relays in service already
+// read, so that asking it of every relay in a join costs no store read beyond
+// the cached one. The one named is looked for among every relay only when it
+// is not among those, which is the uncommon case of it having been taken out
+// of service.
+func (r *relays) signallingAmong(name string, live []store.Relay) (store.Relay, bool) {
 	usable := func(relay store.Relay) bool {
 		return relay.SignalVia == "" && relay.URL != "" && r.reach.up(relay.URL)
 	}
 
-	if named, ok := r.everywhere(name); ok && usable(named) {
+	named, found := r.byName(live, name)
+	if !found {
+		named, found = r.everywhere(name)
+	}
+
+	if found && usable(named) {
 		return named, true
 	}
 
+	// Nor one that is somebody's own, for the same reason: this hands its
+	// address to everybody joining, and carrying their signalling is using it.
+	owners := r.owners()
+
 	var others []store.Relay
-	for _, relay := range r.live() {
-		if usable(relay) && !relay.AdminOnly {
+	for _, relay := range live {
+		if usable(relay) && !relay.AdminOnly && len(owners[relay.Name]) == 0 {
 			others = append(others, relay)
 		}
 	}
 
 	return r.reach.quickest(others)
+}
+
+/*
+A relay that carries media only, with nothing to carry its signalling.
+
+No client opens TLS to a machine in mainland China, ever. That is the whole
+reason such a relay names another to signal through (store.Relay SignalVia),
+and the join used to break it at the one moment it mattered: where no relay
+that signals for itself was answering, the client was handed the media relay's
+own wss address, on the reasoning that a call which might be intercepted beats
+one that certainly fails. It does not. The handshake is what gets the machine
+filtered, and from every client that tried; the native core already refuses
+such an address on its side.
+
+So a relay in that state is stranded: not chosen for anybody, not offered as a
+choice (relayList greys it like a relay out of service), and a join that would
+have to signal to it — because the meeting is held there and nothing can carry
+it — is refused with a code that says so (reasonNoSignalling), rather than
+answered with the address.
+*/
+
+// stranded reports whether a relay carries media only and nothing can carry
+// its signalling now.
+func (r *relays) stranded(relay store.Relay) bool {
+	if relay.SignalVia == "" {
+		return false
+	}
+
+	_, ok := r.signalling(relay.SignalVia)
+
+	return !ok
+}
+
+// carried drops the stranded relays from a list.
+func (r *relays) carried(list []store.Relay) []store.Relay {
+	live := r.live()
+
+	kept := make([]store.Relay, 0, len(list))
+	for _, relay := range list {
+		if relay.SignalVia != "" {
+			if _, ok := r.signallingAmong(relay.SignalVia, live); !ok {
+				continue
+			}
+		}
+
+		kept = append(kept, relay)
+	}
+
+	return kept
 }
 
 // pick returns the relay for this room and this client.
@@ -373,30 +531,38 @@ func (r *relays) signalling(name string) (store.Relay, bool) {
 //
 // chosen is what a client measured and asked for, empty when it did not ask.
 func (r *relays) pick(room string, chosen string, req *http.Request, trustProxy bool, admin bool) store.Relay {
+	relay, _ := r.pickFor(room, chosen, req, trustProxy, caller{admin: admin})
+	return relay
+}
+
+// pickFor is pick for a caller, which may be somebody with relays of their own.
+//
+// False only for them, when none of their own can take a call: out of service,
+// not answering, or carrying media only with nothing to carry its signalling.
+// Everybody else always has an answer, if only the empty one.
+func (r *relays) pickFor(room string, chosen string, req *http.Request, trustProxy bool, c caller) (store.Relay, bool) {
 	// Nil where this deployment holds its own media and has no list to choose
 	// from. Guarded here rather than at each caller, because "there is nothing
 	// to choose" is an answer this function can give and every caller already
 	// handles: an empty relay means the deployment's own address is used.
 	if r == nil {
-		return store.Relay{}
+		return store.Relay{}, !c.restricted()
 	}
-
-	all := r.live()
 
 	// A relay reserved for administrators is not among the ones anybody else is
 	// chosen from, and not one they can ask for by name either. Removed here
 	// rather than only from the list that is published, because the published
-	// list is a convenience and this is the rule.
-	if !admin {
-		open := make([]store.Relay, 0, len(all))
-		for _, relay := range all {
-			if !relay.AdminOnly {
-				open = append(open, relay)
-			}
-		}
+	// list is a convenience and this is the rule. The same for a relay that is
+	// somebody's own, and — for that somebody — for every relay that is not.
+	all := usable(c, r.live(), r.owners())
 
-		all = open
-	}
+	// Nor a relay that carries media only while nothing can carry its
+	// signalling: choosing it would hand the client its own address to open
+	// TLS to. A client that measured it and asked for it is not refused — it is
+	// given another relay, which its next join will say — because an older
+	// client cannot act on a refusal it has no words for, and the choice it
+	// made is one this deployment cannot honour anyway.
+	all = r.carried(all)
 
 	// Two preferences, applied in order, and the order is the argument.
 	//
@@ -416,6 +582,17 @@ func (r *relays) pick(room string, chosen string, req *http.Request, trustProxy 
 	if len(list) == 0 {
 		list = r.reach.only(reserve)
 	}
+
+	// Except for somebody with relays of their own, who is not sent to one
+	// that is not answering: they asked for their calls to go through those
+	// machines and nowhere else, and a call sent to one the control node cannot
+	// reach is a call that does not start. The suspicion that argues for
+	// falling back above is a suspicion about the whole fleet going quiet at
+	// once, which one person's one or two machines going quiet is not.
+	if c.restricted() && len(list) == 0 {
+		return store.Relay{}, false
+	}
+
 	if len(list) == 0 {
 		list = ordinary
 	}
@@ -428,38 +605,38 @@ func (r *relays) pick(room string, chosen string, req *http.Request, trustProxy 
 	// server overruling a measurement it cannot make itself.
 	if r.policy == config.PickProbe && chosen != "" {
 		if relay, ok := r.byName(all, chosen); ok {
-			return relay
+			return relay, true
 		}
 	}
 
 	switch {
 	case len(list) == 0:
-		return store.Relay{}
+		return store.Relay{}, !c.restricted()
 
 	case len(list) == 1:
 		// One relay is not a choice, and taking this early keeps the policies
 		// below from having to be correct about a case with no alternatives.
-		return list[0]
+		return list[0], true
 
 	case r.policy == config.PickProbe:
 		// What the client measured, if it is one of ours. A name that is not
 		// falls through to the room's own relay: an unmeasured client should
 		// still land with the rest of their meeting.
 		if relay, ok := r.byName(list, chosen); ok {
-			return relay
+			return relay, true
 		}
-		return list[int(hashRoom(room)%uint64(len(list)))]
+		return list[int(hashRoom(room)%uint64(len(list)))], true
 
 	case r.policy == config.PickRoundRobin:
 		// Wraps on overflow, which is the behaviour wanted: the sequence is
 		// what matters and it continues across the boundary.
-		return list[int(r.turn.Add(1)-1)%len(list)]
+		return list[int(r.turn.Add(1)-1)%len(list)], true
 
 	case r.policy == config.PickNearest:
 		if region := clientRegion(req, trustProxy); region != "" {
 			for _, relay := range list {
 				if strings.EqualFold(relay.Region, region) {
-					return relay
+					return relay, true
 				}
 			}
 		}
@@ -470,7 +647,7 @@ func (r *relays) pick(room string, chosen string, req *http.Request, trustProxy 
 		fallthrough
 
 	default:
-		return list[int(hashRoom(room)%uint64(len(list)))]
+		return list[int(hashRoom(room)%uint64(len(list)))], true
 	}
 }
 
@@ -563,6 +740,10 @@ func (a *App) UseCluster(cluster *rtc.Cluster) {
 	a.control = cluster
 	a.admin.OnRelaysChanged(a.relays.forget)
 
+	// And which relays are stranded, for the page to say why one is not
+	// offered to anybody.
+	a.admin.UseStranded(a.relays.stranded)
+
 	// And the same connection the management pages are drawn from decides which
 	// relays clients are offered. The browser cannot tell a relay that refused
 	// from one that was never there — both are an error event with nothing on
@@ -582,6 +763,10 @@ func (a *App) UseCluster(cluster *rtc.Cluster) {
 // Handler so that a deployment which did not configure enrolment has no such
 // address at all, rather than one that refuses.
 func (a *App) UseEnrolment(enrolment *admin.Enrolment) {
+	if enrolment != nil && enrolment.BinarySum == nil {
+		enrolment.BinarySum = a.binarySum
+	}
+
 	a.admin.UseEnrolment(enrolment)
 	a.enrolment = enrolment
 }
@@ -652,17 +837,19 @@ func pairable(entry, holding store.Relay) bool {
 // A bridge has to satisfy everything an ordinary entry does. It must be in
 // service, it must forward, it must have somewhere to forward from, and it must
 // be a relay this person is allowed to use — a machine reserved for
-// administrators does not stop being reserved by being useful. And it must pair
+// administrators, or somebody's own, does not stop being so by being useful. And it must pair
 // with the room's own relay, because a bridge that cannot reach the meeting is
 // no more use than the entry that could not.
-func (r *relays) bridging(holding store.Relay, isAdmin bool) (store.Relay, bool) {
+func (r *relays) bridging(holding store.Relay, c caller) (store.Relay, bool) {
+	owners := r.owners()
+
 	for _, candidate := range r.live() {
 		switch {
 		case !candidate.Bridge, !candidate.Forwards, candidate.Turn == "":
 			continue
 		case candidate.Name == holding.Name:
 			continue
-		case candidate.AdminOnly && !isAdmin:
+		case !mayUse(c, candidate, owners):
 			continue
 		case !pairable(candidate, holding):
 			continue
@@ -696,4 +883,60 @@ func elsewhere(entry, holding store.Relay) string {
 	}
 
 	return holding.Shown()
+}
+
+// binaryPath is the file /download/tomoshibi serves: the configured one, or
+// the build this process is running.
+func (a *App) binaryPath() string {
+	if path := a.conf.Meet.Enrol.Binary; path != "" {
+		return path
+	}
+
+	if resolved, err := os.Executable(); err == nil {
+		return resolved
+	}
+
+	return ""
+}
+
+// binarySum is what that file hashes to, for the install script to check its
+// download against.
+//
+// Remembered by the file's size and modification time, so that enrolling a
+// machine reads fifty megabytes once per build rather than once per machine,
+// and a binary replaced under a running control node is hashed afresh.
+func (a *App) binarySum() (string, error) {
+	path := a.binaryPath()
+	if path == "" {
+		return "", errors.New("this node cannot say which binary it serves")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+
+	stamp := fmt.Sprintf("%s:%d:%d", path, info.Size(), info.ModTime().UnixNano())
+
+	a.summed.Lock()
+	defer a.summed.Unlock()
+
+	if a.summed.stamp == stamp {
+		return a.summed.sum, nil
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	digest := sha256.New()
+	if _, err := io.Copy(digest, file); err != nil {
+		return "", err
+	}
+
+	a.summed.stamp, a.summed.sum = stamp, hex.EncodeToString(digest.Sum(nil))
+
+	return a.summed.sum, nil
 }

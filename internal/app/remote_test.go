@@ -179,6 +179,7 @@ func TestARuleIsForThePlatformsItNames(t *testing.T) {
 		{"feature": "screen-share", "off": true, "platforms": ["android"]},
 		{"feature": "background-blur", "off": true, "platforms": ["ios"]},
 		{"feature": "music", "off": true, "platforms": ["mac", "windows"]},
+		{"feature": "watch-together", "off": true, "platforms": ["linux"]},
 		{"feature": "app-updates", "off": true}
 	]}`)
 
@@ -188,10 +189,12 @@ func TestARuleIsForThePlatformsItNames(t *testing.T) {
 		ipadAt:    {"app-updates", "background-blur"},
 		macAt:     {"app-updates", "music"},
 		windowsAt: {"app-updates", "music"},
-		// One of the apps that did not say which: told only what holds for
-		// every platform, never what holds for one it might be.
-		"Tomoshibi/%s":                       {"app-updates"},
-		"Tomoshibi/%s (Linux; Debian 13; x)": {"app-updates"},
+		// One of the apps that did not say which, or said a platform this
+		// server does not know: told only what holds for every platform,
+		// never what holds for one it might be.
+		"Tomoshibi/%s":                            {"app-updates"},
+		"Tomoshibi/%s (Haiku; R1; x)":             {"app-updates"},
+		"Tomoshibi/%s (Linux; Debian 13; x86_64)": {"app-updates", "watch-together"},
 	} {
 		got := tellOf(t, askRemote(t, mux, fmt.Sprintf(agent, "0.1.4")))
 		if !reflect.DeepEqual(got.Off, want) {

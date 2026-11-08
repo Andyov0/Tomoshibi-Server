@@ -19,7 +19,7 @@ way, or by hand.
 
 ## Before the first relay
 
-- The control node is running with a `meet.enrol` section (secret, domain,
+- The control node is running with a `meet.enrol` section (domain,
   public URL, ports, certificate, redis address) and, ideally, Cloudflare
   credentials.
 - The wildcard for `*.<enrol.domain>` is at `meet.enrol.cert_file` /
@@ -31,26 +31,33 @@ way, or by hand.
 ## Enrolling a relay
 
 In the management pages: **Relays**, **Add a machine**. The page shows the one
-command to run on the new machine as root, with the enrolment secret already
-in it:
+command to run on the new machine as root:
 
 ```bash
-bash <(curl -fLSs https://meet.example.com/install) <prefix> <enrolment secret>
+bash <(curl -fLSs https://meet.example.com/install) <prefix>
 ```
 
-Replace `<prefix>` with the name the machine should answer to; leave it out
-and the script asks. The page also offers the whole script to read first
-(**What that runs, in full**), which is the copy with the secret embedded.
+and, for an administrator holding `moderate`, a form that mints the
+**enrolment token** for it: the prefix, optionally the address the machine
+will connect from (**Only from this address**), and whether it **takes over
+the relay already called this**, which asks again before minting. The script
+asks for the token when it runs and reads it with the echo off. Also possible:
+`... <prefix> < token-file`, or `ENROL=<token>` in the environment (the only
+form that works with `curl ... | sh`, since there standard input is the
+script). The page also offers the whole script to read first (**What that
+runs, in full**); it carries nothing secret.
 
-The script at the public `/install` carries no secret; it travels in the
-operator's own command, so nothing that logs URLs ever sees it. The other form
-in RELAY.md, `curl -fsSL https://meet.example.com/install | ENROL=<secret> sh
--s <prefix>`, does the same. Process substitution is preferred because a
-script read from a pipe has the download on its standard input.
+A token works **once**, for **that prefix only**, for **thirty minutes** (at
+most two hours), and is kept on the control node by digest. Minting one is
+`moderate`'s, not the `relays` capability's, because what an enrolment hands
+over is the API secret, the redis password and the certificate's private key:
+an administrator given the relays alone adds machines by address. Every mint,
+use and refusal is in the audit log with the address the request came from and
+the address the name was pointed at. `GET`/`DELETE
+/api/admin/relays/enrolments[/{id}]` list and withdraw tokens not yet used.
 
-**The command is a credential.** Whoever holds it can add a relay and receives
-the API secret, the redis password and the certificate's private key. Do not
-paste it anywhere it will be kept.
+**A token is a credential until it is used.** Do not paste it anywhere it
+will be kept.
 
 ### Options
 
@@ -58,35 +65,45 @@ Set in front of the command, for example `SILENT=1 REGION=cn-east bash <(...)`:
 
 | Variable | Effect |
 | --- | --- |
-| `SILENT=1` | Writes `meet.silent: true`. For relays in mainland China. |
-| `REPLACE=1` | Take over a prefix already in use without asking. Only for a rebuild of the same relay. |
+| `SILENT=1` | Writes `meet.silent: true`. For relays in mainland China: only a WebSocket upgrade to `/rtc` and a bearer-token call to `/twirp/` are answered, and a TLS handshake that names nothing the certificate covers fails. |
 | `REGION=<label>` | The relay's region label (what `nearest` compares and the picker groups by). |
-| `ADDRESS=<ipv4>` | The address the relay's name should point at, when it cannot be worked out. |
-| `PREFIX=`, `ENROL=` | The prefix and the secret, in place of the arguments. |
+| `ADDRESS=<ipv4>` | The address the relay's name should point at, when it cannot be worked out. Must be a public IPv4 address: the control node refuses loopback, private, shared (100.64/10), link-local and reserved ranges. |
+| `PREFIX=`, `ENROL=` | The prefix and the token, in place of the argument and the prompt. |
 | `http_proxy`, `https_proxy` | Honoured by `curl` for reaching the control node, for machines whose outbound 443 is blocked. Never used for working out the machine's own address. |
+
+`REPLACE=1` is gone: a takeover is the token's to allow. The token is no
+longer accepted as a second argument; the script refuses one so that it does
+not end up in a shell's history.
 
 ### What the script does
 
-1. Checks it runs as root, that `curl` exists and that it has a secret.
+1. Sets `umask 077`, checks it runs as root and that `curl` exists, refuses a
+   token given as an argument, and reads the token.
 2. Checks the prefix (lowercase letters, digits, inner dashes) and asks the
-   control node whether it is taken (`/api/enrol/taken`). A prefix already in
-   use is refused unless you confirm a takeover or pass `REPLACE=1`: a typo
-   would otherwise move an existing relay's name to this machine while that
-   relay went on holding calls at an address nobody reaches.
+   control node whether it is taken (`/api/enrol/taken`, which reads the token
+   without spending it). A prefix already in use is refused unless the token
+   was minted to take it over: a typo would otherwise move an existing relay's
+   name to this machine while that relay went on holding calls at an address
+   nobody reaches.
 3. Works out the machine's public IPv4 address: `ADDRESS` if given; otherwise
    over DNS (`dig` or `nslookup` against OpenDNS's resolvers, which a proxy
    cannot intercept); otherwise from public address-echo services over HTTPS
    with every proxy setting removed; otherwise leaves it to the control node,
    which uses the address the request came from.
-4. Claims its configuration from `/api/enrol`. The control node checks the
-   secret (wrong secrets are rate limited and logged), refuses a taken prefix,
+4. Claims its configuration from `/api/enrol`, with the token on curl's
+   standard input rather than its command line. The control node checks the
+   token (wrong ones are rate limited and logged with their source address),
+   that it was minted for this prefix and, if bound, this source address, that
+   the address is public, refuses a taken prefix unless the token takes it
+   over, spends the token,
    creates the DNS record through Cloudflare if configured (and checks it
    resolves twenty seconds later), records the relay as enabled, and answers
    with the API key and secret, the redis address and password, the
    certificate and key, the ports, and, where locations are known, the
    relay's region name and the fleet's region list.
-5. Downloads the binary from `/download/tomoshibi` to
-   `/usr/local/bin/tomoshibi`.
+5. Downloads the binary from `/download/tomoshibi` and installs it as
+   `/usr/local/bin/tomoshibi` only if its SHA-256 is the one the control node
+   sent (`sha256sum`, `shasum` or `openssl`, whichever is there).
 6. Writes the certificate to `/etc/tomoshibi/certs/relay.fullchain.pem` (644)
    and `relay.key` (640), group `tomoshibi-certs`.
 7. Writes `/etc/tomoshibi/relay.yaml` (640, group `tomoshibi-certs`): the
@@ -159,8 +176,11 @@ For a machine you do not want to enrol, or a different architecture.
    it under `meet.relays`.
 6. Point its DNS name at it yourself.
 
-The control node pushes its relay certificate to every relay in the list,
-including this one, hourly.
+The control node pushes its relay certificate hourly to every relay that is
+in service and dialled over `wss://` at a name the certificate answers for,
+under `meet.enrol.domain` where that is set — this one included if it
+qualifies. The push carries the private key, so it never goes over `ws://`,
+to a relay out of service, or to an address the certificate does not cover.
 
 ## The relay record
 
@@ -179,10 +199,10 @@ relay's row in **Relays**.
 | Forwards other rooms | Whether it may. Forwarding costs the relay two bytes for every one it carries, so this is the switch on its bill. |
 | Never forwards with | Relay names, comma separated, in both directions: pairs whose networks carry nothing usable between them. |
 | Stands in for pairs that cannot reach each other | A bridge: used as the entry for somebody whose own entry is kept apart from the relay holding their meeting. |
-| Signals through | A relay name. This relay's signalling is carried by that relay (through redis); its media stays here. For a machine no TLS reaches. The named relay must signal for itself, and may not be this one. |
+| Signals through | A relay name. This relay's signalling is carried by that relay (through redis); its media stays here. For a machine no TLS reaches. The named relay must signal for itself, and may not be this one. While neither it nor any other relay that signals for itself is answering, this relay is offered to nobody and its row says so (no client is ever given its address to open). Requires **Measured at**: a client measures a relay without a probe address by opening TLS to it, which is what such a machine must never receive, so the two are refused apart (`relay_needs_probe`) and a relay saved before that rule is flagged on its row. Its address is never put in `/api/relays`, for anybody. |
 | Where it is | Latitude, longitude. The globe, and the media servers' distance-aware placement. |
 | Keep in reserve | Only used when no ordinary relay is available. |
-| Administrators only | Never chosen for anybody else, and refused when somebody else asks for it by name, unless the meeting they are joining is already held there. Shown in everybody's list without its address. |
+| Administrators only | Never chosen for anybody else, and refused when somebody else asks for it by name, unless the meeting they are joining is already held there. Left out of `/api/relays` for anybody without a management session. |
 | Send calls here / Stop sending here | In service or not. Out of service takes no new calls and keeps the ones it is holding. |
 | Order | Drag to reorder; the order the pages list relays in. |
 
@@ -202,7 +222,17 @@ entering the country the person is in.
 The TURN server is LiveKit's own, so there is no coturn to run. Credentials
 are minted by the control node from the deployment's key pair at each join,
 usable for twelve hours to open an allocation (a call in progress keeps
-refreshing past that).
+refreshing past that). Long, on purpose: the browser opens every allocation of
+the call with the credential it was given at the join, so a shorter life drops
+a forwarded call whose network changes later in the meeting. What keeps a
+copied credential from being an open proxy is the peer list below, not the
+clock.
+
+LiveKit's TURN refuses only private, loopback and link-local peers and
+forwards to every public address, so **list the other relays under
+`meet.turn_peers`** on every relay that runs TURN: everything else is then
+denied, and a forwarding credential cannot be used as a UDP proxy to the
+internet. Without the list the relay warns at startup.
 
 To set it up on a relay:
 
@@ -217,7 +247,43 @@ To set it up on a relay:
      relay_range_end: 40000
    ```
 
+   and under `meet:` the addresses media is forwarded to — every other
+   relay's media address (its `rtc` node IP, or the viahk hub address a
+   mainland relay is reached through), as addresses or CIDRs:
+
+   ```yaml
+   meet:
+     turn_peers: [198.51.100.7, 198.51.100.8, 203.0.113.0/28]
+   ```
+
+   A peer that is not an address or a CIDR stops the relay at startup, so a
+   typo cannot silently deny the relay it meant. The start says
+   `this relay's TURN server forwards only to the relays listed`.
+
 2. Open UDP 13381 to everyone and the relay range to the other relays.
+   Enforce the same list in the firewall as well, so it holds even on a
+   binary older than `turn_peers` or with the setting left out — outbound
+   from the relay range to the fleet only:
+
+   ```
+   table inet tomoshibi_turn {
+     set fleet4 { type ipv4_addr; flags interval; elements = { 198.51.100.7, 198.51.100.8, 203.0.113.0/28 } }
+     chain out {
+       type filter hook output priority 0; policy accept;
+       udp sport 30000-40000 ip daddr != @fleet4 drop
+       meta nfproto ipv6 udp sport 30000-40000 drop
+     }
+     chain in {
+       type filter hook input priority 0; policy accept;
+       udp dport 30000-40000 ip saddr != @fleet4 drop
+       meta nfproto ipv6 udp dport 30000-40000 drop
+     }
+   }
+   ```
+
+   Saved as `/etc/nftables.d/tomoshibi-turn.nft` and loaded with
+   `nft -f`; the ranges are the relay range above. It touches only TURN's
+   relayed ports, not the media or signalling ports clients use.
 3. Restart it with the fleet idle (it ends the calls on it).
 4. Check from outside:
    `turncheck hk.relay.example.com:13381 <api key> <api secret>` (an
@@ -276,8 +342,12 @@ stops the relay, and a bare number is bytes.
 
 ## Certificates on relays
 
-- The enrolment writes the wildcard; the control node pushes renewals hourly.
-  The relay re-reads its certificate on the next handshake, so no restart.
+- The enrolment writes the wildcard; the control node pushes renewals hourly
+  to the relays in service dialled over `wss://` at a name the wildcard
+  covers (under `meet.enrol.domain`). Not to one dialled over `ws://`, which
+  would carry the private key in the clear, nor to one out of service; both
+  are logged each round. The relay re-reads its certificate on the next
+  handshake, so no restart.
 - A relay takes a pushed certificate only if it expires later than what it
   holds **and** answers for every name the held one answers for. Both rules
   came from real outages: a wildcard pushed over two bare-address relays'
@@ -286,7 +356,10 @@ stops the relay, and a bare number is bytes.
   no override, by design. On the relay, `rm /etc/tomoshibi/certs/relay.fullchain.pem`;
   the next hourly push lands. No restart.
 - **A relay dialled by address** serves a certificate for its own IP,
-  issued and renewed by an ACME client on that machine. Set that client's
+  issued and renewed by an ACME client on that machine. It is no longer sent
+  the wildcard (it refused it every hour anyway): the control node opens a TLS
+  handshake to it and reads the expiry of what it serves, verified as any
+  client would, and warns if that fails. Set that client's
   reload command to fix the files' group and mode and nothing else (no
   restart). The control node reports every hour which relays serve their own
   certificate and when it runs out, and warns at under two days:
@@ -379,9 +452,13 @@ through that relay. The pin is used once.
 
 **5. Signalling.** The client opens its WebSocket to the entry relay, unless
 the entry **Signals through** another relay: then to that relay if it is
-answering, otherwise to the nearest answering relay that signals for itself,
-otherwise to the entry itself. A new room is put on the entry relay first, so
-the meeting is not created on the relay that only carries its signalling.
+answering, otherwise to the nearest answering relay that signals for itself.
+Never to the entry itself: where no relay can carry its signalling the relay
+is stranded, is not chosen in step 2 at all, and a join that would still need
+it (the meeting is held there and nothing forwards to it) is refused with
+`503 no_signalling` rather than handed its address. A new room is put on the
+entry relay first, so the meeting is not created on the relay that only
+carries its signalling.
 
 **6. Inside the cluster.** Which media node creates a room for a signalling
 connection is LiveKit's node selector: `regionaware` with the fleet's
@@ -401,7 +478,7 @@ fleet idle ([chapter 9](operations.md#is-anybody-in-a-call)).
 configuration. `dev/watch/update-relay.sh <ssh-target> [binary]` does one
 relay with rollback; [upgrade-relays.sh](examples/upgrade-relays.sh) does a
 fleet; [chapter 9](operations.md#upgrading-relays) has the procedure.
-Re-running the enrolment with `REPLACE=1` also installs the control node's
+Enrolling it again with a takeover token also installs the control node's
 current binary, but **rewrites `relay.yaml` whole**: anything added by hand
 (a TURN section, a hand-made region list, `silent` unless `SILENT=1` is given
 again) is gone, and the relay's region label is replaced by `REGION`, which
@@ -416,7 +493,9 @@ that is running.
    refused while one does.
 3. **Remove relay** on its row. With Cloudflare configured, its DNS record is
    removed too (a stale record would go on resolving to an address that may
-   later be somebody else's). Placements naming it are logged as
+   later be somebody else's) — but only a record this deployment created, at
+   a single label under `meet.enrol.domain`. Anything else at that name is
+   left in place and logged. Placements naming it are logged as
    `a room is placed on a relay this deployment does not have`; clear them in
    **Rooms**.
 4. On the machine: `systemctl disable --now tomoshibi-relay`, remove

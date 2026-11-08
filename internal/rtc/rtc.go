@@ -12,6 +12,7 @@ package rtc
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -68,13 +69,33 @@ type Server struct {
 // spike ten times its real rate.
 const throughputEvery = 5 * time.Second
 
+// startLogging gives the media server its logger and leaves this process's
+// own as it was.
+//
+// The media server logs through its own package rather than the standard
+// library, and left uninitialised it says nothing at all: a session that
+// fails to set up looks exactly like one that never happened.
+//
+// But initialising it also makes it the standard library's default: the
+// protocol package's InitFromConfig ends with slog.SetDefault of a handler
+// that writes to its own logger. That replaced the handler main installs,
+// which copies every line into the ring the management log page reads
+// (internal/logring), so on a full deployment or a relay nothing written
+// through slog after the media server started reached that page — the
+// management log's own entries included, among them every sign-in lockout
+// and who lifted it. Found by a review that saw those lines on stderr and
+// not on the page. A control node starts no media server and was unaffected,
+// which is why it was not noticed.
+func startLogging(logging *config.LoggingConfig) {
+	kept := slog.Default()
+	config.InitLoggerFromConfig(logging)
+	slog.SetDefault(kept)
+}
+
 // Start builds and starts the media server, returning once it is accepting
 // connections.
 func Start(conf *config.Config) (*Server, error) {
-	// The media server logs through its own package rather than the standard
-	// library, and left uninitialised it says nothing at all: a session that
-	// fails to set up looks exactly like one that never happened.
-	config.InitLoggerFromConfig(&conf.Logging)
+	startLogging(&conf.Logging)
 
 	node, err := routing.NewLocalNode(conf)
 	if err != nil {

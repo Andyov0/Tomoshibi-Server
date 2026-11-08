@@ -1,7 +1,7 @@
 import { useT } from "@/hooks/useT";
 import { cn } from "@/lib/utils";
 import type { Signature } from "@/live/name";
-import { Maximize2, MicOff, Minimize2, VolumeX } from "lucide-react";
+import { MicOff, VolumeX } from "lucide-react";
 import type { ReactNode } from "react";
 
 /**
@@ -16,6 +16,12 @@ import type { ReactNode } from "react";
  * sit in an identically-sized box. The grid measures these, and a tile that
  * sized itself to its contents would make the layout jump as people turn their
  * cameras on.
+ *
+ * No mark in a corner saying that a press makes it larger. There was one,
+ * under the pointer, and it met the stage's own controls in that corner.
+ * Leaving it off the picture on the stage was the first answer; the owner then
+ * had it taken away on every platform (2026-10-26). The whole picture is what
+ * is pressed, and the pointer turning into a hand over it already says so.
  */
 export function Tile({
 	label,
@@ -59,27 +65,28 @@ export function Tile({
 
 	return (
 		<div
-			// A div rather than a button: a tile holds a video and its own
-			// controls, and a button may contain neither. The role and the key
-			// handler are what a button would have provided.
-			role={interactive ? "button" : undefined}
-			tabIndex={interactive ? 0 : undefined}
-			aria-pressed={interactive ? selected : undefined}
-			aria-label={
-				interactive
-					? selected
-						? t("Show everybody")
-						: t("Show {name} larger", { name: label })
-					: undefined
-			}
+			/*
+			 * A group named for the person, with a button inside it for the
+			 * keyboard, rather than the picture itself acting as the button.
+			 *
+			 * It was a div with the role of a button, which a reader takes to be
+			 * one control and reads by its label alone: "Show Ada larger", and
+			 * nothing of the muted microphone on the name, since a button's
+			 * contents are not read. And the stage's own buttons were inside it,
+			 * a button inside a button, which some readers will not enter at
+			 * all. Now the name, its marks and the stage's buttons are read as
+			 * themselves, and the press is a button of its own that a keyboard
+			 * reaches and nothing sees, its focus drawn around the whole picture.
+			 *
+			 * The pointer still presses the picture itself, here, rather than a
+			 * transparent button laid over it: over it, such a button would sit
+			 * on top of whatever the picture holds that can be pressed — the
+			 * player's own buttons, when the picture is the film being watched.
+			 */
+			role={interactive ? "group" : undefined}
+			aria-label={interactive ? label : undefined}
 			onClick={onSelect}
 			onDoubleClick={onExpand}
-			onKeyDown={(event) => {
-				if (event.key === "Enter" || event.key === " ") {
-					event.preventDefault();
-					onSelect?.();
-				}
-			}}
 			className={cn(
 				// `size-full` rather than relying on the parent to stretch it: a
 				// grid item stretches on its own, but the focus stage and the
@@ -88,43 +95,56 @@ export function Tile({
 				"group relative size-full overflow-hidden rounded-tile bg-surface",
 				"tally-line",
 				speaking && "is-live",
-				interactive && "cursor-pointer outline-none",
-				interactive && "focus-visible:ring-2 focus-visible:ring-fg/70",
+				interactive && cn(
+					"cursor-pointer",
+					// That a picture can be pressed, said by the pointer and by a
+					// hairline that comes and goes with it, now that the mark in
+					// the corner is gone; and the keyboard's ring in the same
+					// place. Above the picture, which is drawn after this.
+					"before:pointer-events-none before:absolute before:inset-0 before:z-10 before:rounded-tile",
+					"before:opacity-0 before:shadow-[inset_0_0_0_1px_rgb(255_255_255/0.24)] before:transition-opacity before:duration-150",
+					"[@media(hover:hover)]:hover:before:opacity-100",
+					"has-[>button[data-press]:focus-visible]:before:opacity-100 has-[>button[data-press]:focus-visible]:before:shadow-[inset_0_0_0_2px_rgb(255_255_255/0.75)]",
+				),
 				className,
 			)}
 		>
 			{children}
-			{overlay}
 
-			{/* Over the picture rather than beside it: anything occupying layout
-			    space would reflow the grid as the pointer crossed it. */}
 			{interactive && (
-				<div className="pointer-events-none absolute top-2 right-2 rounded-md bg-black/55 p-1.5 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
-					{selected ? (
-						<Minimize2 className="size-3.5 text-fg" />
-					) : (
-						<Maximize2 className="size-3.5 text-fg" />
-					)}
-				</div>
+				<button
+					type="button"
+					data-press
+					aria-label={selected ? t("Show everybody") : t("Show {name} larger", { name: label })}
+					onClick={(event) => {
+						// Its own press and not the picture's as well.
+						event.stopPropagation();
+						onSelect?.();
+					}}
+					className="sr-only"
+				/>
 			)}
 
-			{/* A pill rather than a gradient scrim. A scrim darkens the bottom
-			    third of every picture to make a few words legible, which is a
-			    lot of picture to spend on a name. */}
+			{overlay}
+
+			{/*
+			 * A capsule, eight in from the corner, the black at seven tenths and
+			 * the name always white.
+			 *
+			 * It was a square-cornered tab at fifty-five per cent with the
+			 * speaker's name turned amber. On a shared white page the white name
+			 * was four to one and the amber one two to one, which is a name that
+			 * disappears exactly while its owner is talking; the line along the
+			 * bottom of the picture already says who that is. The blur behind it
+			 * is gone too: it is the pictures' plate, not the controls' glass.
+			 */}
 			<div
 				className={cn(
-					"pointer-events-none absolute bottom-1.5 left-1.5 flex max-w-[calc(100%-0.75rem)] items-center gap-1.5 rounded-md bg-black/55 px-1.5 py-0.5 backdrop-blur-sm",
+					"pointer-events-none absolute bottom-2 left-2 flex h-6 max-w-[calc(100%-1rem)] items-center gap-1.5 rounded-full bg-black/70 px-2.5",
 					unlabelled && "hidden",
 				)}
 			>
-				<span
-					className={cn(
-						"truncate font-medium text-[11.5px] leading-5",
-						speaking ? "text-tally" : "text-fg",
-					)}
-				>
-					{label}
-				</span>
+				<span className="truncate font-medium text-[12px] text-white leading-6">{label}</span>
 
 				{/*
 				  * A dot for a name somebody proved, and nothing for one they did
@@ -146,7 +166,7 @@ export function Tile({
 				{signature?.proven && (
 					<span
 						title={t("Only this person can use this name")}
-						className="shrink-0 text-[10px] text-fg-muted"
+						className="shrink-0 text-[10px] text-white/70"
 					>
 						·
 					</span>
@@ -173,12 +193,13 @@ export function Tile({
 			  */}
 			{silenced ? (
 				<VolumeX
-					className="size-3 shrink-0 text-danger"
+					role="img"
+					className="size-3.5 shrink-0 text-danger"
 					aria-label={t("Muted by you")}
 				/>
 			) : (
 				muted && (
-					<MicOff className="size-3 shrink-0 text-fg-muted" aria-label={t("microphone off")} />
+					<MicOff role="img" className="size-3.5 shrink-0 text-white/80" aria-label={t("microphone off")} />
 				)
 			)}
 			</div>

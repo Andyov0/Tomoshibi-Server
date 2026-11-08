@@ -10,6 +10,7 @@ package limit
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -124,13 +125,28 @@ func (l *Limiter) client(r *http.Request) string {
 // and every entry it does carry was still written by one this deployment
 // trusts, so the leftmost of them is the furthest out anybody vouches for.
 // Counting is only as good as the outer proxy being the only way in; the
-// deployment above refuses anything that did not come through its CDN.
+// deployment above refuses anything that did not come through its CDN. Where
+// it does not, somebody who reaches nginx directly writes the entry read here,
+// and with it the address every limit and the sign-in lockout count: a fresh
+// one per request, or somebody else's, to have them shut out. Nothing in the
+// header can tell such a request from a real one, which is why the refusing
+// has to be done in front, by the network (docs/deploy/configuration.md).
+//
+// What can be told is an entry that is not an address at all. A proxy writes
+// the address it saw, so an entry that does not parse as one was written by
+// the caller, and it was being kept as their address: in the store beside
+// their join, in the lockout list as markup. Such an entry is passed over for
+// the next one to its right, which a proxy nearer this server wrote, and an
+// address is given in one form however it was written, so that two spellings
+// of one address are one caller.
 func Caller(r *http.Request, hops int) string {
 	if hops > 0 {
 		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
 			entries := strings.Split(forwarded, ",")
-			if address := strings.TrimSpace(entries[max(0, len(entries)-hops)]); address != "" {
-				return address
+			for _, entry := range entries[max(0, len(entries)-hops):] {
+				if address, ok := addressOf(entry); ok {
+					return address
+				}
 			}
 		}
 	}
@@ -141,6 +157,22 @@ func Caller(r *http.Request, hops int) string {
 	}
 
 	return host
+}
+
+// addressOf is an entry of X-Forwarded-For as an address, if it is one: bare,
+// or with a port, which some proxies append.
+func addressOf(entry string) (string, bool) {
+	entry = strings.TrimSpace(entry)
+
+	if address, err := netip.ParseAddr(entry); err == nil {
+		return address.WithZone("").String(), true
+	}
+
+	if pair, err := netip.ParseAddrPort(entry); err == nil {
+		return pair.Addr().WithZone("").String(), true
+	}
+
+	return "", false
 }
 
 // sweep drops budgets nobody has drawn on recently.

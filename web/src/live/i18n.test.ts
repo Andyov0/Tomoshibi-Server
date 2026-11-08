@@ -280,3 +280,88 @@ describe("every dictionary", () => {
 		expect([...seen].filter(([, n]) => n > 1).map(([key]) => key)).toEqual([]);
 	});
 });
+
+/*
+ * The same thing called by the same name, which no test of keys and
+ * placeholders can see: every one of those passes for a dictionary that names
+ * one thing three ways.
+ *
+ * Two secrets matter most. The passphrase is somebody's own: it keeps their
+ * name, makes them the host of a room they open, and is never meant to leave
+ * them. The sealing word is the opposite, a secret shared on purpose with
+ * everybody in an encrypted call, by some other way than the call. The
+ * Japanese dictionary once wrote the two as the same word, a single kana
+ * apart, beside a sentence asking the reader to pass the word on to the
+ * others; somebody following it could have sent their passphrase. The
+ * Traditional Chinese one called the passphrase three different things across
+ * the join form, the account page and the errors, so the error under the field
+ * named something the field did not, and both called the host by three names
+ * (one of them the word for whoever owns a room, which is not what the role
+ * is).
+ *
+ * Phrases are found here by pattern rather than written out in quotes, for the
+ * reason the English dictionary's own test gives: a phrase quoted in this file
+ * counts as one the interface still says.
+ */
+describe("the words for a role or a secret", () => {
+	const field = BASE.find((phrase) => /^Passphrase$/.test(phrase)) ?? "";
+	const sealing = BASE.find((phrase) => /^Sealing word$/.test(phrase)) ?? "";
+	const explained = BASE.filter((phrase) => /^Everybody who types the same word/.test(phrase));
+
+	// Japanese writes the inflection of a word in kana, so two words that differ
+	// only there are the same word to a reader.
+	const stem = (text: string) => text.replace(/[ぁ-ゟ\s]/g, "").toLowerCase();
+
+	it("finds the phrases it compares", () => {
+		expect(field).not.toBe("");
+		expect(sealing).not.toBe("");
+		expect(explained).toHaveLength(1);
+	});
+
+	it.each(OTHERS)("calls the passphrase what the field does (%s)", (locale) => {
+		const dictionary = DICTIONARIES_FOR_TEST[locale] as Record<string, string>;
+		const word = dictionary[field] ?? field;
+
+		const elsewise = BASE.filter(
+			(phrase) => /passphrase/i.test(phrase) && !(dictionary[phrase] ?? phrase).includes(word),
+		);
+		expect(elsewise).toEqual([]);
+	});
+
+	it.each(LOCALES)("keeps the sealing word apart from the passphrase (%s)", (locale) => {
+		const dictionary = DICTIONARIES_FOR_TEST[locale] as Record<string, string>;
+		const passphrase = stem(dictionary[field] ?? field);
+		const word = stem(dictionary[sealing] ?? sealing);
+
+		expect(word).not.toContain(passphrase);
+		expect(passphrase).not.toContain(word);
+		for (const phrase of explained) {
+			expect(stem(dictionary[phrase] ?? phrase)).not.toContain(passphrase);
+		}
+	});
+
+	/*
+	 * Whoever runs a room. Matched on the English, so a phrase that mentions the
+	 * role in a new way is held to it without being listed; a host in "host:port"
+	 * or a {host} placeholder is a machine and is left out.
+	 */
+	const HOST: Record<(typeof OTHERS)[number], string> = {
+		"zh-Hans": "主持人",
+		"zh-Hant": "主持人",
+		ja: "ホスト",
+	};
+	const aboutTheHost = BASE.filter(
+		(phrase) => /\bhost\b(?!:)|\borganiser\b/i.test(phrase) && !/\{host\}/.test(phrase),
+	);
+
+	it("finds the phrases about the host", () => {
+		expect(aboutTheHost.length).toBeGreaterThan(5);
+	});
+
+	it.each(OTHERS)("calls the host one thing (%s)", (locale) => {
+		const dictionary = DICTIONARIES_FOR_TEST[locale] as Record<string, string>;
+
+		const elsewise = aboutTheHost.filter((phrase) => !(dictionary[phrase] ?? phrase).includes(HOST[locale]));
+		expect(elsewise).toEqual([]);
+	});
+});

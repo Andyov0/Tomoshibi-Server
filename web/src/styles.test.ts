@@ -234,3 +234,38 @@ describe("a rule aimed at the notices' own elements", () => {
 		expect(overridden.map((block) => block.header)).toEqual([]);
 	});
 });
+
+/*
+ * Steady pages. The owner found the pages hopping as they were opened, as the
+ * language changed and as one screen followed another, and asked for the
+ * interface to be steady: every card rose fourteen pixels one after another,
+ * inside a page that slid and grew as it arrived. What arrives with a page or
+ * a notice fades now and does not travel, and nothing is staggered; this holds
+ * both, since a transform put back into one of these, or a delay put back on a
+ * card, would look like nothing more than a choice somebody made.
+ */
+describe("what arrives with a page", () => {
+	/** The keyframes of that name, to the brace that closes them. */
+	const frames = (name: string) => {
+		const at = css.indexOf(`@keyframes ${name} {`);
+		expect(at, `@keyframes ${name}`).toBeGreaterThan(-1);
+
+		let depth = 0;
+		for (let i = css.indexOf("{", at); i < css.length; i++) {
+			if (css[i] === "{") depth++;
+			else if (css[i] === "}" && --depth === 0) return css.slice(at, i + 1);
+		}
+		return css.slice(at);
+	};
+
+	it("fades without travelling", () => {
+		for (const name of ["rise", "page", "page-leave", "notice-in", "notice-out"]) {
+			expect(frames(name), `${name} moves`).not.toMatch(/transform|translate|scale/);
+		}
+	});
+
+	it("arrives all at once rather than one card after another", () => {
+		const staggered = code.filter((file) => /\[animation-delay:\d+m?s\]/.test(file.text)).map((file) => file.path);
+		expect(staggered).toEqual([]);
+	});
+});

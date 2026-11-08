@@ -7,12 +7,16 @@
 package room
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/livekit/protocol/auth"
 )
 
@@ -207,6 +211,9 @@ type Grant struct {
 	// Identity is what the client will be known as, to be sent back on the next
 	// join so a reload keeps the same one.
 	Identity string
+	// Proof is what the client must send back with an issued identity for it
+	// to be kept: see GuestProof. Empty for the other kinds.
+	Proof string
 }
 
 // Request is what a caller asks to be authorised for.
@@ -215,6 +222,8 @@ type Request struct {
 	Room string
 	// Identity they were given previously, if any.
 	Identity string
+	// IdentityProof is what they were given with it, where it was issued.
+	IdentityProof string
 	// Display is what they would like to be called.
 	Display string
 	// Passphrase signs the display name, when they gave one.
@@ -238,10 +247,10 @@ type Request struct {
 // deliberately absent, so a leaked token cannot be used to inspect or close
 // anything.
 //
-// The display name is signed in rather than set by the client after connecting.
-// Two things follow: nobody can rename themselves to somebody else mid-call, and
-// the name is there in the first roster update, so no one is ever briefly
-// labelled with a raw identity.
+// The display name is signed in rather than set by the client after connecting,
+// so the name is there in the first roster update and no one is ever briefly
+// labelled with a raw identity. It is not, as this comment once said, beyond
+// changing mid-call: see the attributes grant below.
 func Authorise(key, secret string, req Request) (Grant, error) {
 	if !ValidName(req.Room) {
 		return Grant{}, fmt.Errorf("invalid room name")
@@ -266,8 +275,28 @@ func Authorise(key, secret string, req Request) (Grant, error) {
 	}
 
 	identity := req.Identity
-	if !ValidIdentity(identity) || provenTrip(identity) != trip ||
-		accountMark(identity) != (req.Account != "") {
+	keep := ValidIdentity(identity) && provenTrip(identity) == trip &&
+		accountMark(identity) == (req.Account != "")
+
+	// An issued identity is kept only for the tab it was issued to.
+	//
+	// Nothing else about it is a secret: the whole identity is on every roster
+	// in the room. So anybody in the call could send a guest's identity back as
+	// their own, and the media server, finding the identity already present,
+	// removed the guest and seated the copy — same name, same mark, same
+	// picture. The two could evict each other indefinitely, the host's
+	// "remove" put the guest back for whoever rejoined next, and a pin an
+	// administrator set for the guest went to whoever arrived first. A
+	// passphrase or a session guards the other two kinds; this proof, handed
+	// to the tab beside the identity and never shown to anybody else, guards
+	// this one. Without it the identity is re-issued rather than refused, which
+	// costs a reload a fresh mark and costs a copy everything.
+	if keep && trip == "" {
+		want := GuestProof(req.TripKey, identity)
+		keep = want != "" && hmac.Equal([]byte(req.IdentityProof), []byte(want))
+	}
+
+	if !keep {
 		if req.Account != "" {
 			identity = MintAccountIdentity(trip)
 		} else {
@@ -301,16 +330,143 @@ func Authorise(key, secret string, req Request) (Grant, error) {
 			// The grant is for their own record. It does not admit them to
 			// anybody else's, and the media server enforces that rather than
 			// this server hoping for it.
+			//
+			// What it does admit them to is their own name: the media server
+			// has one permission for name, metadata and attributes together,
+			// so whoever may raise a hand may also rename themselves mid-call,
+			// to anything, past the forty characters the join allows. Kept
+			// anyway, for now. The hand and the watching list are set this way
+			// by the browser and by every app already installed, and taking
+			// the grant away would silently stop both on every one of those
+			// until each moved to a server endpoint that writes the attributes
+			// with RoomAdmin. Filtering renames out of the signalling instead
+			// would mean decoding the media server's compressed WebSocket
+			// frames in the relay's proxy, on the path every call depends on.
+			// What the room does about a rename meanwhile is say so: the web's
+			// impersonation mark compares names as they read (live/name.ts).
 			CanUpdateOwnMetadata: ptr(true),
-		}).
-		SetValidFor(req.TTL)
+		})
 
-	signed, err := token.ToJWT()
+	signed, err := sign(key, secret, token.GetGrants(), req.TTL, req.TripKey)
 	if err != nil {
 		return Grant{}, fmt.Errorf("sign a join token: %w", err)
 	}
 
-	return Grant{Token: signed, Identity: identity}, nil
+	grant := Grant{Token: signed, Identity: identity}
+	if trip == "" {
+		grant.Proof = GuestProof(req.TripKey, identity)
+	}
+
+	return grant, nil
+}
+
+// GuestProof is the proof that goes with an issued identity: a MAC of it under
+// a key from the tripcode key, which is this node's alone. Empty where there is
+// no key, which keeps nothing.
+func GuestProof(tripKey []byte, identity string) string {
+	if len(tripKey) == 0 {
+		return ""
+	}
+
+	mac := hmac.New(sha256.New, tripKey)
+	mac.Write([]byte("tomoshibi issued identity v1\x00" + identity))
+
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:18])
+}
+
+/*
+The control node's own mark on a join token.
+
+A join token is signed with the deployment's API key pair, and every relay holds
+that pair, because every relay has to verify the tokens clients bring it. So a
+relay can sign a token too, and the control node's host endpoints — close a
+room, remove somebody, move a meeting, mint a standing invitation into a scoped
+room — used to accept any token that verified. One relay broken into, in a
+place where the machine is rented from somebody else, was therefore every
+host's and every scope member's authority on every room, by writing their
+identity (shown beside their name in every call) into a token of its own.
+
+The proof is what tells this node's tokens from anybody else's: an HMAC over the
+identity, the room and the expiry, keyed from the tripcode key, which never
+leaves the control node. It travels as the token's `jti`, which the media
+server ignores — it reads a JWT ID only where there is no subject, and a join
+always has one — so clients, relays and the media server are untouched, and
+tokens minted before this existed simply carry none and are refused by the host
+endpoints for the five minutes they had left anyway.
+
+Per-relay key pairs were the other way to close this, and do not: the cluster
+trusts redis rather than keys between its nodes, so a relay holding only its own
+pair still reaches every room through the bus. RELAY.md has the argument.
+*/
+
+// proofKey is the key proofs are made with, kept apart from the tripcode key it
+// comes from so that a proof can never be mistaken for a signature.
+func proofKey(tripKey []byte) []byte {
+	mac := hmac.New(sha256.New, tripKey)
+	mac.Write([]byte("tomoshibi join token proof v1"))
+
+	return mac.Sum(nil)
+}
+
+func proof(tripKey []byte, identity, room string, expires int64) string {
+	mac := hmac.New(sha256.New, proofKey(tripKey))
+	fmt.Fprintf(mac, "%s\x00%s\x00%d", identity, room, expires)
+
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:18])
+}
+
+// Vouched reports whether a token's JWT ID is the proof this node would have
+// written for that identity, room and expiry: whether this node minted it.
+func Vouched(tripKey []byte, identity, room string, expires time.Time, id string) bool {
+	if len(tripKey) == 0 || id == "" || expires.IsZero() {
+		return false
+	}
+
+	return hmac.Equal([]byte(id), []byte(proof(tripKey, identity, room, expires.Unix())))
+}
+
+// joinClaims is the token's body, laid out as the media server's own library
+// lays it out — the registered claims and the grants side by side — with the
+// proof as its JWT ID.
+type joinClaims struct {
+	jwt.RegisteredClaims
+	auth.ClaimGrants
+}
+
+// sign is the media server library's ToJWT, with the proof added.
+//
+// Rewritten rather than wrapped because the library offers no way to set a JWT
+// ID. The layout is the library's, field for field, and a test decodes a token
+// from here with the library's own verifier.
+func sign(key, secret string, grants *auth.ClaimGrants, ttl time.Duration, tripKey []byte) (string, error) {
+	if key == "" || secret == "" {
+		return "", auth.ErrKeysMissing
+	}
+
+	// The library's default, for a caller that asks for nothing.
+	if ttl <= 0 {
+		ttl = 6 * time.Hour
+	}
+
+	now := time.Now()
+	expires := jwt.NewNumericDate(now.Add(ttl))
+
+	claims := joinClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    key,
+			Subject:   grants.Identity,
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			ExpiresAt: expires,
+		},
+		ClaimGrants: *grants,
+	}
+
+	if len(tripKey) > 0 {
+		claims.ID = proof(tripKey, grants.Identity, grants.Video.Room, expires.Unix())
+	}
+
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
 }
 
 // display cleans up what the caller asked to be called.
@@ -358,4 +514,46 @@ func provenTrip(identity string) string {
 
 func ptr[T any](value T) *T {
 	return &value
+}
+
+// Presented is what a join token says, once its signature and this node's
+// proof have been checked and its expiry has not.
+type Presented struct {
+	Identity string
+	Room     string
+	Issued   time.Time
+	Expires  time.Time
+}
+
+// Present reads a join token this node minted: signed with the key pair, and
+// carrying the proof only this node can write. The expiry is reported rather
+// than enforced, because one caller has a reason to accept a token past it (see
+// the host endpoints in internal/app/host.go) and decides that for itself.
+func Present(raw, key, secret string, tripKey []byte) (Presented, bool) {
+	claims := &joinClaims{}
+
+	token, err := jwt.ParseWithClaims(raw, claims,
+		func(*jwt.Token) (any, error) { return []byte(secret), nil },
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithoutClaimsValidation(),
+	)
+	if err != nil || !token.Valid || claims.Issuer != key || claims.ExpiresAt == nil || claims.Video == nil {
+		return Presented{}, false
+	}
+
+	identity := claims.Subject
+	if identity == "" {
+		identity = claims.ClaimGrants.Identity
+	}
+
+	if !Vouched(tripKey, identity, claims.Video.Room, claims.ExpiresAt.Time, claims.ID) {
+		return Presented{}, false
+	}
+
+	presented := Presented{Identity: identity, Room: claims.Video.Room, Expires: claims.ExpiresAt.Time}
+	if claims.IssuedAt != nil {
+		presented.Issued = claims.IssuedAt.Time
+	}
+
+	return presented, true
 }

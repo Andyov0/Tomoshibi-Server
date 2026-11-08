@@ -305,3 +305,52 @@ func TestTheAppsNoticeAndSwitchesAreRecordedAgainstWhoChangedThem(t *testing.T) 
 		t.Errorf("recorded\n%+v\nwant\n%+v", got, want)
 	}
 }
+
+// The sign-in page's notice is published, read and taken down at its own
+// address, behind the same capability, and neither notice touches the other:
+// the owner asked for the two to be set apart, and a page that wrote the one
+// over the other would put the lobby's words, meant for people signed in, back
+// on the sign-in page.
+func TestTheSignInNoticeIsItsOwnAndLeavesTheLobbysAlone(t *testing.T) {
+	api, mux, written, path := remoteMounted(t, `{"notice": {"id": "lobby", "text": {"en": "For members"}}}`)
+	keeper := signIn(t, api, "keeper")
+	body := `{"id": "2026-11-02-080000", "level": "info", "text": {"zh-Hans": "登录前请看", "en": "Read before signing in"}}`
+
+	if got := call(mux, http.MethodPut, "/api/admin/remote/signin-notice", signIn(t, api, "watcher"), body); got.Code != http.StatusForbidden {
+		t.Fatalf("somebody who may only watch published the sign-in notice: %d", got.Code)
+	}
+
+	if got := call(mux, http.MethodPut, "/api/admin/remote/signin-notice", keeper, body); got.Code != http.StatusOK {
+		t.Fatalf("publishing the sign-in notice answered %d %s", got.Code, got.Body.String())
+	}
+
+	var atSignIn, lobby noticeReading
+	_ = json.Unmarshal(call(mux, http.MethodGet, "/api/admin/remote/signin-notice", keeper, "").Body.Bytes(), &atSignIn)
+	_ = json.Unmarshal(call(mux, http.MethodGet, "/api/admin/remote/notice", keeper, "").Body.Bytes(), &lobby)
+
+	if atSignIn.Notice == nil || atSignIn.Notice.ID != "2026-11-02-080000" || atSignIn.Notice.Text["zh-Hans"] != "登录前请看" {
+		t.Errorf("the sign-in notice reads back as %+v", atSignIn)
+	}
+	if lobby.Notice == nil || lobby.Notice.ID != "lobby" {
+		t.Errorf("publishing the sign-in notice changed the lobby's to %+v", lobby)
+	}
+
+	if got := call(mux, http.MethodPut, "/api/admin/remote/signin-notice", keeper, ""); got.Code != http.StatusOK {
+		t.Fatalf("taking the sign-in notice down answered %d", got.Code)
+	}
+
+	after := fileAt(t, path)
+	if strings.Contains(after, `"signin_notice"`) || !strings.Contains(after, `"id": "lobby"`) {
+		t.Errorf("taking the sign-in notice down left\n%s", after)
+	}
+
+	var actions []string
+	for _, entry := range written.recorded() {
+		if strings.Contains(entry.Action, "sign-in notice") {
+			actions = append(actions, entry.Action)
+		}
+	}
+	if !reflect.DeepEqual(actions, []string{"publish the sign-in notice", "take down the sign-in notice"}) {
+		t.Errorf("the management log has %v", actions)
+	}
+}

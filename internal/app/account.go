@@ -11,9 +11,11 @@ import (
 	"time"
 	"tomoshibi/internal/admin"
 	"tomoshibi/internal/limit"
+	"tomoshibi/internal/lockout"
 
 	"tomoshibi/internal/room"
 	"tomoshibi/internal/store"
+	"tomoshibi/internal/turnstile"
 )
 
 /*
@@ -84,6 +86,34 @@ func (a *App) mountAccounts(mux *http.ServeMux) {
 }
 
 func (a *App) accountSignIn(w http.ResponseWriter, r *http.Request) {
+	// Only from this deployment's own pages, or from something that is not a
+	// browser at all, as the join is (admin.FromHere).
+	//
+	// Any page anywhere can make its visitors' browsers post here, no-cors,
+	// with a text/plain body this reads as JSON. That used to buy it a minute
+	// of the visitor's guessing budget. With the sign-in lockout it bought
+	// half an hour: a review's page posted eleven wrong passphrases from its
+	// visitor's browser, six here and five at the management sign-in, and the
+	// visitor was then refused with their own right passphrase on this
+	// deployment's own page — the owner as easily as anybody, and everybody
+	// behind the same address with the same browser with them. Refused first,
+	// so such a request is never counted, spends nothing and is not compared
+	// with anything. The apps send no Sec-Fetch-Site and are let through, as
+	// the join, which refuses the same requests, has always let them.
+	if !admin.FromHere(r) {
+		fail(w, http.StatusForbidden, reasonCrossSite)
+		return
+	}
+
+	// Then, before the limits below, the body, and whatever this door is ever
+	// given to ask in front of the passphrase: a caller shut out of signing
+	// in, here and at the management sign-in together, is answered and
+	// nothing is spent or judged. See internal/lockout.
+	who := lockout.Of(r, a.conf.Meet.Hops())
+	if a.admin.Lockout().Shut(w, who, reasonRateLimited) {
+		return
+	}
+
 	// Two limits, because this door does two jobs.
 	//
 	// The join's limiter bounds how often anybody may ask, which is what stops
@@ -99,18 +129,71 @@ func (a *App) accountSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	attempt, allowed := a.admin.Guessing().Take(limit.Caller(r, a.conf.Meet.Hops()))
+	var body struct {
+		Name       string          `json:"name"`
+		Passphrase room.Passphrase `json:"passphrase"`
+		// Turnstile is the token the page's widget was given, where the
+		// deployment asks for a human check.
+		Turnstile string `json:"turnstile"`
+	}
+	// A body that could not be read whole is refused here, before the check
+	// and the budget, and nothing in it is compared with anything.
+	//
+	// It used to be judged like any other. A field of the wrong type does not
+	// stop the decoder: it fills the fields it can and reports the one it
+	// could not, so {"name":"boss","passphrase":"…","turnstile":5} reached the
+	// comparison whole and signed in when the passphrase was right. Such a
+	// body was not counted towards a lockout, since it was not meant to be a
+	// guess, and those two together were a way to guess for ever: a review
+	// added "turnstile":5 to every attempt, guessed sixteen times in under a
+	// minute from one address and one device, and was never shut out, with the
+	// right passphrase signing it in the same way. Refused unread, it is
+	// neither a guess nor a way in, so there is nothing to count and nothing
+	// to charge. No client of this server sends such a body; the pages and
+	// the apps write the three fields as strings.
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body) != nil {
+		fail(w, http.StatusBadRequest, reasonUnreadable)
+		return
+	}
+
+	// And between the two limits, a human check where one is configured.
+	//
+	// After the request limit, and after a second one charged to the
+	// subscriber and shared with the management sign-in (admin.API.MayAsk),
+	// so that how often this asks Cloudflare is bounded however many
+	// addresses a caller sends from: the join's limiter counts an IPv6
+	// address alone, and a review had Cloudflare asked once for each of three
+	// hundred addresses in one /64. Before the guessing budget, so that a
+	// request without a good token is not charged as a guess and is not held
+	// against the budget's ceiling while Cloudflare answers.
+	// Before anything about the name is looked at, too: the refusal is the same
+	// for a name that has an account and one that does not.
+	//
+	// Never asked of the native apps (humanExempt), whoever is signing in to
+	// them, administrators included; nor of a program on this machine that
+	// connected to it directly, such as an operations script on a control
+	// node, which the management sign-in spares in the same words
+	// (turnstile.FromThisMachine). Both still meet everything else here.
+	human := a.admin.HumanCheck()
+	if !a.humanExempt(r) && !human.Spares(r) {
+		if !a.admin.MayAsk(r) {
+			fail(w, http.StatusTooManyRequests, reasonRateLimited)
+			return
+		}
+
+		if err := human.Check(r, body.Turnstile, turnstile.SignIn); err != nil {
+			status, reason, _ := admin.HumanRefusal(err)
+			fail(w, status, reason)
+			return
+		}
+	}
+
+	attempt, allowed := a.admin.Guessing().Account.Take(limit.Caller(r, a.conf.Meet.Hops()))
 	if !allowed {
 		fail(w, http.StatusTooManyRequests, reasonRateLimited)
 		return
 	}
 	defer attempt.Settled()
-
-	var body struct {
-		Name       string          `json:"name"`
-		Passphrase room.Passphrase `json:"passphrase"`
-	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body)
 
 	// The signature is derived whether or not the name exists, so that a name
 	// nobody has does not answer faster than one somebody does. Enumerating
@@ -123,6 +206,13 @@ func (a *App) accountSignIn(w http.ResponseWriter, r *http.Request) {
 		// Charged on the way out rather than on the way in, so that somebody
 		// signing in correctly does not spend from a budget meant for guesses.
 		attempt.Failed()
+
+		// Counted only where the body offered a passphrase; one that said
+		// none is not a guess at one, though it is refused and charged to the
+		// budget as it always was.
+		if !body.Passphrase.Empty() && a.admin.Lockout().Failed(w, who, lockout.Account, reasonRateLimited) {
+			return
+		}
 
 		fail(w, http.StatusUnauthorized, reasonNotYours)
 		return
@@ -155,6 +245,48 @@ func (a *App) accountSignIn(w http.ResponseWriter, r *http.Request) {
 	})
 
 	respond(w, a.accountOf(account))
+}
+
+// humanExempt is whether this sign-in is let through without a human check
+// because it comes from one of the native apps, while the configuration says
+// the apps are.
+//
+// The owner's decision, and not a stopgap: the apps are never asked for a
+// human check, for any account, administrators included. What protects a
+// sign-in from an app is what protects every sign-in here without the check —
+// the sign-in lockout (internal/lockout), which shuts an address and a device
+// out of both sign-ins for half an hour after more than ten failures in five
+// minutes and is lifted from the accounts page, and the guessing budget behind
+// it, shared with the management sign-in. Both count an app's failures exactly
+// as they count a browser's.
+//
+// The apps are recognised as the join recognises them for the management
+// pages (device.go): the user agent the core sets, Tomoshibi/<version>
+// (<platform>; ...), or none at all — empty or blank, which is what an app
+// from before the core set one sends and no browser does. A user agent is
+// whatever the caller writes, so a script that writes the apps' is not asked
+// for a token here either; it meets the lockout and the budget instead, which
+// is the bargain the owner chose.
+//
+// The management sign-in has no such way through and needs none: the apps
+// never call it, and nothing but a browser opens those pages. Behind one
+// switch, meet.turnstile.exempt_native_apps, on unless it is set to false.
+func (a *App) humanExempt(r *http.Request) bool {
+	if !a.conf.Meet.Turnstile.ExemptsNativeApps() {
+		return false
+	}
+
+	// By what an agent is not, a browser or something else, rather than by a
+	// list of the platforms: the Linux app arrived after this was written, and
+	// a list of the kinds there were then would have asked it for a token it
+	// has no widget to earn, with every test that names a phone still green.
+	// TestEveryAppSignsInWithNoTokenTheLinuxAppAmongThem holds it.
+	switch clientOf(r.Header.Get("User-Agent")).Kind {
+	case "web", "other":
+		return false
+	}
+
+	return true
 }
 
 // whoever finds the person a name and a signature belong to, in either list.
@@ -288,7 +420,18 @@ func (a *App) accountPassphrase(w http.ResponseWriter, r *http.Request) {
 	// session proves somebody signed in; this asks whether the person at the
 	// keyboard now is that person, which is the question an unattended laptop
 	// raises.
+	// Charged like the sign-in it amounts to: a session found on an unattended
+	// laptop could otherwise try passphrases here without limit, and the one
+	// it finds outlives the session.
+	attempt, allowed := a.admin.Guessing().Account.Take(limit.Caller(r, a.conf.Meet.Hops()))
+	if !allowed {
+		fail(w, http.StatusTooManyRequests, reasonRateLimited)
+		return
+	}
+	defer attempt.Settled()
+
 	if room.Trip(a.tripKey, strings.TrimSpace(string(body.Current))) != account.Trip {
+		attempt.Failed()
 		fail(w, http.StatusForbidden, reasonNotYours)
 		return
 	}

@@ -18,15 +18,23 @@ import type { Arrangement } from "./meeting";
  * the calendar to show in whatever zone it is opened in, which is the one
  * convention every calendar agrees on.
  *
- * The event has a start and no end. An arrangement is a moment, not a span;
- * nothing here knows how long the meeting will be, and writing an hour into
- * the file would be inventing it. The RFC allows exactly this and treats such
- * an event as ending when it starts. If somebody wants a length, that is a
- * choice to offer, not a default to assume.
+ * The event ends an hour after it starts. An arrangement is a moment rather
+ * than a span, and nothing on the site knows how long a meeting will be, so
+ * this used to write a start and no end, which the RFC allows and reads as an
+ * event that ends when it begins. Calendars draw that as a sliver of nothing
+ * or as zero minutes, and some leave it off a day's view altogether, which
+ * for a meeting somebody added on purpose is worse than any length (the
+ * health check of 2026-10-29). An hour is the length every common calendar
+ * gives an event made without one, so it is the one people already expect to
+ * see and to drag; and the site has no length of its own to offer instead —
+ * the card arranges a time on the quarter hour and nothing else.
  *
  * The UID is the meeting's own id under a fixed domain, so exporting the same
  * meeting twice makes the same event twice rather than two events.
  */
+/** What a calendar is told a meeting lasts, the length it gives one made without any. */
+export const ASSUMED_LENGTH = 60 * 60_000;
+
 export function icsFor(meeting: Arrangement, link: string, now: Date = new Date()): string {
 	const lines = [
 		"BEGIN:VCALENDAR",
@@ -38,6 +46,7 @@ export function icsFor(meeting: Arrangement, link: string, now: Date = new Date(
 		`UID:${meeting.id}@tomoshibi`,
 		`DTSTAMP:${stamp(now)}`,
 		`DTSTART:${stamp(new Date(meeting.at))}`,
+		`DTEND:${stamp(new Date(new Date(meeting.at).getTime() + ASSUMED_LENGTH))}`,
 		`SUMMARY:${escapeText(meeting.room)}`,
 		`URL:${link}`,
 		`DESCRIPTION:${escapeText(link)}`,

@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -30,6 +31,7 @@ import (
 	"tomoshibi/internal/app"
 	"tomoshibi/internal/config"
 	"tomoshibi/internal/dns"
+	"tomoshibi/internal/logring"
 	"tomoshibi/internal/room"
 	"tomoshibi/internal/rtc"
 	"tomoshibi/internal/store"
@@ -289,6 +291,10 @@ func serve(args []string) error {
 			probe.Announce()
 		}
 
+		if err := rtc.RestrictTurnPeers(conf.LiveKit, conf.Meet.TurnPeers); err != nil {
+			return err
+		}
+
 		if media, err = rtc.Start(conf.LiveKit); err != nil {
 			return err
 		}
@@ -347,6 +353,12 @@ func serve(args []string) error {
 		// headers are still bounded, which is what protects against a client
 		// that connects and says nothing.
 		ReadHeaderTimeout: 10 * time.Second,
+		// And a connection left idle between requests is closed after two
+		// minutes. Without it a keep-alive connection that never sent a second
+		// request was held for ever, and a relay faces the internet with a
+		// file-descriptor limit. A WebSocket is not affected: once upgraded it
+		// is handed over by the server and no longer counted as idle.
+		IdleTimeout: 2 * time.Minute,
 	}
 
 	// Read before anything is opened, so a missing file or a key that does not
@@ -383,6 +395,12 @@ func serve(args []string) error {
 			// certs.go: a restart here drops every call on the machine, and
 			// the fleet renews four times a year.
 			server.TLSConfig = &tls.Config{GetCertificate: pair.certificate}
+
+			// A silent relay does not hand its certificate to a handshake that
+			// names nothing it answers for (certs.go, named).
+			if conf.Meet.Role == config.RoleRelay && conf.Meet.Silent {
+				server.TLSConfig.GetCertificate = pair.named
+			}
 
 			err = server.ServeTLS(listener, "", "")
 		} else {
@@ -546,12 +564,41 @@ func listRooms(args []string) error {
 // none of its own, and one serving TLS directly has exactly the pair every
 // relay needs.
 func enrolFrom(conf *config.Config) *admin.Enrolment {
-	if conf.Meet.Enrol.Secret == "" || conf.Meet.Enrol.Domain == "" {
+	if conf.Meet.Enrol.Domain == "" {
 		return nil
+	}
+
+	// The control node's own name may not be one a prefix can make. With the
+	// pages at meet.example.com and relays enrolled under example.com, the
+	// prefix "meet" is this machine, its certificate already covers it, and
+	// enrolling a relay by that name would point the deployment's own address
+	// at whatever machine asked. Enrolment is turned off rather than the server
+	// refused: the calls on this deployment have nothing to do with it.
+	control := ""
+	if parsed, err := url.Parse(conf.Meet.Enrol.PublicURL); err == nil {
+		control = parsed.Hostname()
+	}
+
+	if dns.Clashes(conf.Meet.Enrol.Domain, control) {
+		slog.Error("meet.enrol.domain is this control node's own name or the domain directly above "+
+			"it, so a relay's prefix could take this node's name: enrolment is off until "+
+			"meet.enrol.domain is a subdomain of its own (relays.example.com for a control node at "+
+			"meet.example.com)", "domain", conf.Meet.Enrol.Domain, "control", control)
+
+		return nil
+	}
+
+	// Said once at startup, because a deployment upgraded with the old secret
+	// still written down has just stopped accepting it, and the first anybody
+	// would otherwise hear of that is a machine refused half way through.
+	if conf.Meet.Enrol.Secret != "" && !conf.Meet.Enrol.AcceptSecret {
+		slog.Warn("meet.enrol.secret is set and no longer accepted: relays enrol with a token minted " +
+			"for each machine on the relays page. Remove the secret from the configuration")
 	}
 
 	enrolment := &admin.Enrolment{
 		Secret:        conf.Meet.Enrol.Secret,
+		AcceptSecret:  conf.Meet.Enrol.AcceptSecret,
 		Domain:        conf.Meet.Enrol.Domain,
 		PublicURL:     conf.Meet.Enrol.PublicURL,
 		RedisAddr:     relayRedis(conf),
@@ -564,7 +611,8 @@ func enrolFrom(conf *config.Config) *admin.Enrolment {
 		ProbePort:     conf.Meet.Enrol.ProbePort,
 	}
 
-	if cf := dns.NewCloudflare(conf.Meet.Enrol.CloudflareToken, conf.Meet.Enrol.CloudflareZone); cf.Configured() {
+	if cf := dns.NewCloudflare(conf.Meet.Enrol.CloudflareToken, conf.Meet.Enrol.CloudflareZone).
+		Within(conf.Meet.Enrol.Domain, control); cf.Configured() {
 		enrolment.Naming = cf
 	} else {
 		slog.Warn("no cloudflare credentials for enrolment: a relay will install itself and " +
@@ -907,7 +955,23 @@ func announce(addr net.Addr, secure bool) {
 
 	slog.Info("client", "url", fmt.Sprintf("%s://localhost:%d/", scheme, tcp.Port))
 
-	for _, ip := range outward() {
+	// Bound to a loopback address, nothing on the network can reach it, and
+	// saying it was reachable sent whoever read the log looking for a door
+	// that is not there: every local deployment warned that it was reachable
+	// at the machine's LAN address and should be put behind HTTPS (the health
+	// check of 2026-10-29). Bound to one address, that address is the one
+	// worth printing, rather than whichever one the routing table would use
+	// to go outward.
+	if tcp.IP.IsLoopback() {
+		return
+	}
+
+	reach := outward()
+	if !tcp.IP.IsUnspecified() {
+		reach = []net.IP{tcp.IP}
+	}
+
+	for _, ip := range reach {
 		if secure {
 			slog.Info("reachable on the network", "url", fmt.Sprintf("https://%s:%d/", ip, tcp.Port))
 			continue
@@ -949,7 +1013,12 @@ func logging(level string) {
 		parsed = slog.LevelInfo
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parsed})))
+	// Copied into the ring the management pages read as well as written out
+	// (internal/logring), so the log can be read on a page while something
+	// else on this server is failing.
+	slog.SetDefault(slog.New(logring.Recent.Handler(
+		slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parsed}),
+	)))
 
 	// Said after the handler is in place, because before it there is nothing to
 	// say it with.

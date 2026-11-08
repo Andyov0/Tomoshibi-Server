@@ -1,6 +1,6 @@
 import { useLingering } from "@/hooks/useLingering";
 import { cn } from "@/lib/utils";
-import { Loader2 } from "lucide-react";
+import { Check, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 
 /*
@@ -40,23 +40,19 @@ export function Box({
 	children?: ReactNode;
 	className?: string;
 }) {
+	// The box drawn as every box on the redrawn pages is (Tick, below), on the
+	// platform's own input, so the relay settings, the administrators and the
+	// apps' switches tick the same square as the accounts table.
 	return (
 		<div className={cn("flex min-w-0 flex-col gap-0.5", className)}>
 			<label
 				className={cn(
-					"flex items-center gap-1.5 text-[12px]",
-					tone === "tally" ? "text-tally" : "text-fg",
-					disabled && "opacity-60",
+					"flex min-h-8 items-center gap-2.5 text-[13.5px] pointer-coarse:min-h-11",
+					tone === "tally" ? "text-tally-ink" : "text-fg",
+					disabled ? "opacity-60" : "cursor-pointer",
 				)}
 			>
-				<input
-					type="checkbox"
-					checked={checked}
-					disabled={disabled}
-					aria-busy={saving || undefined}
-					onChange={(event) => onChange(event.target.checked)}
-					className="size-3.5 shrink-0 accent-tally"
-				/>
+				<Tick label={label} checked={checked} disabled={disabled} saving={saving} tone={tone} onChange={onChange} />
 				{label}
 				<Working on={saving ?? false} />
 			</label>
@@ -79,7 +75,7 @@ export function Hint({ show = true, children }: { show?: boolean; children: Reac
 	return (
 		<p
 			className={cn(
-				"pl-5 text-[11px] text-fg-muted leading-relaxed",
+				"pl-7 text-[12px] text-fg-muted leading-relaxed",
 				leaving ? "animate-fade-out" : "animate-fade-in",
 			)}
 		>
@@ -165,6 +161,69 @@ export function Swap({
 					{children[1]}
 				</span>
 			)}
+		</span>
+	);
+}
+
+/**
+ * A checkbox drawn at the size the rest of the redrawn pages are, on the
+ * platform's own input.
+ *
+ * The native box is kept underneath — keyboard, state, label and all — and
+ * made invisible and larger than what is drawn, so a finger has forty-four
+ * pixels to land in around an eighteen-pixel square. The square is drawn
+ * beside it from the input's own state, so the picture cannot disagree with
+ * what a screen reader is told.
+ *
+ * Ticked is the foreground, filled, as the platforms draw a ticked box in a
+ * neutral palette. The one box that spends money is the amber, as it was:
+ * Emby is the grant that sends films through the CDN, and it is the one whose
+ * column somebody runs an eye down.
+ */
+export function Tick({
+	label,
+	checked,
+	disabled,
+	saving,
+	onChange,
+	tone,
+	describedBy,
+	className,
+}: {
+	label: string;
+	checked: boolean;
+	disabled?: boolean;
+	saving?: boolean;
+	onChange: (checked: boolean) => void;
+	tone?: "tally";
+	describedBy?: string;
+	className?: string;
+}) {
+	return (
+		<span className={cn("relative inline-flex size-[18px] shrink-0", className)}>
+			<input
+				type="checkbox"
+				aria-label={label}
+				aria-describedby={describedBy}
+				aria-busy={saving || undefined}
+				checked={checked}
+				disabled={disabled}
+				onChange={(event) => onChange(event.target.checked)}
+				className="peer absolute -inset-[13px] z-10 m-0 cursor-pointer appearance-none rounded-[10px] opacity-0 disabled:cursor-not-allowed"
+			/>
+			<span
+				aria-hidden
+				className={cn(
+					"flex size-[18px] items-center justify-center rounded-[5px] border transition-[background-color,border-color,opacity] duration-150",
+					"border-fg-muted/70 bg-surface peer-hover:border-fg peer-checked:border-transparent",
+					tone === "tally" ? "text-tally-fg peer-checked:bg-tally" : "text-bg peer-checked:bg-fg",
+					"peer-focus-visible:ring-2 peer-focus-visible:ring-fg/70 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-surface",
+					"peer-disabled:opacity-40 peer-checked:[&>svg]:scale-100 peer-checked:[&>svg]:opacity-100",
+					saving && "opacity-70",
+				)}
+			>
+				<Check strokeWidth={3} className="size-3 scale-50 opacity-0 transition-[opacity,transform] duration-150" />
+			</span>
 		</span>
 	);
 }

@@ -28,6 +28,8 @@ const AGENTS = {
 	android:
 		"Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
 	linux: "Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0",
+	linuxArm: "Mozilla/5.0 (X11; Linux aarch64; rv:143.0) Gecko/20100101 Firefox/143.0",
+	freeBSD: "Mozilla/5.0 (X11; FreeBSD amd64; rv:143.0) Gecko/20100101 Firefox/143.0",
 	chromeOS:
 		"Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
 	nonsense: "curl/8.7.1",
@@ -42,6 +44,9 @@ describe("from the user agent alone", () => {
 		["Chrome on a Mac", AGENTS.chromeOnMac, 0, "mac"],
 		["Windows", AGENTS.windows, 0, "windows"],
 		["Android", AGENTS.android, 5, "android"],
+		// Android says Linux too, and is asked first.
+		["Linux", AGENTS.linux, 0, "linux"],
+		["Linux on ARM", AGENTS.linuxArm, 0, "linux"],
 	] as const)("%s", (_, userAgent, maxTouchPoints, want) => {
 		expect(guessPlatform({ userAgent, maxTouchPoints })).toBe(want);
 	});
@@ -55,8 +60,8 @@ describe("from the user agent alone", () => {
 	});
 
 	it.each([
-		["Linux", AGENTS.linux],
 		["ChromeOS", AGENTS.chromeOS],
+		["a BSD, which says X11 but is not Linux", AGENTS.freeBSD],
 		["something that is not a browser", AGENTS.nonsense],
 		["nothing at all", ""],
 	])("promotes nothing for %s", (_, userAgent) => {
@@ -78,8 +83,12 @@ describe("from the client hint, where there is one", () => {
 	});
 
 	it("is an answer when it names a platform with no app", () => {
-		expect(guessPlatform({ userAgent: AGENTS.windows, hint: "Linux" })).toBeUndefined();
 		expect(guessPlatform({ userAgent: AGENTS.windows, hint: "Chrome OS" })).toBeUndefined();
+		expect(guessPlatform({ userAgent: AGENTS.linux, hint: "Chromium OS" })).toBeUndefined();
+	});
+
+	it("names Linux, which has an app", () => {
+		expect(guessPlatform({ userAgent: AGENTS.windows, hint: "Linux" })).toBe("linux");
 	});
 
 	it("is passed over when empty or unknown", () => {

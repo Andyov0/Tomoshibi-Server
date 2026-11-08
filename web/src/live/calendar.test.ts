@@ -49,12 +49,16 @@ describe("the calendar file", () => {
 		expect(lines[lines.length - 1]).toBe("END:VCALENDAR");
 	});
 
-	it("writes the arranged time in UTC, and no end", () => {
+	// An end, an hour on. With none, the RFC reads the event as ending when it
+	// begins, and calendars drew a meeting somebody added on purpose as zero
+	// minutes or left it off the day (the health check of 2026-10-29). Once,
+	// as an end rather than a duration, which is the form every calendar reads.
+	it("writes the arranged time in UTC, and an end an hour later", () => {
 		const lines = unfold(icsFor(meeting, link, new Date("2026-09-01T00:00:00Z")));
 
 		expect(lines).toContain("DTSTART:20260905T021500Z");
 		expect(lines).toContain("DTSTAMP:20260901T000000Z");
-		expect(lines.some((l) => l.startsWith("DTEND"))).toBe(false);
+		expect(lines.filter((l) => l.startsWith("DTEND"))).toEqual(["DTEND:20260905T031500Z"]);
 		expect(lines.some((l) => l.startsWith("DURATION"))).toBe(false);
 	});
 

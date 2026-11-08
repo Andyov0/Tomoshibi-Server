@@ -21,10 +21,10 @@ was written.
 func TestTheAppleIdentifiersAndThePublicLinkAreRead(t *testing.T) {
 	conf, err := Load(write(t, androidDocument("control", `
     apple_app_ids:
-      - SM86NB3CPZ.app.tomoshibi.ios
-      - "SM86NB3CPZ.app.tomoshibi.mac"
+      - A1B2C3D4E5.app.tomoshibi.ios
+      - "A1B2C3D4E5.app.tomoshibi.mac"
     testflight:
-      public_link: https://testflight.apple.com/join/1DFSjfsK
+      public_link: https://testflight.apple.com/join/Xq7Lm2Pz
 `)))
 	if err != nil {
 		t.Fatalf("an Apple claim and a public link were refused: %v", err)
@@ -32,7 +32,7 @@ func TestTheAppleIdentifiersAndThePublicLinkAreRead(t *testing.T) {
 
 	apps := conf.Meet.Apps
 
-	if got := strings.Join(apps.AppleAppIDs, ","); got != "SM86NB3CPZ.app.tomoshibi.ios,SM86NB3CPZ.app.tomoshibi.mac" {
+	if got := strings.Join(apps.AppleAppIDs, ","); got != "A1B2C3D4E5.app.tomoshibi.ios,A1B2C3D4E5.app.tomoshibi.mac" {
 		t.Errorf("the identifiers were read as %q", got)
 	}
 
@@ -40,7 +40,7 @@ func TestTheAppleIdentifiersAndThePublicLinkAreRead(t *testing.T) {
 		t.Error("identifiers given do not count as claiming the Apple apps")
 	}
 
-	if apps.TestFlight.PublicLink != "https://testflight.apple.com/join/1DFSjfsK" {
+	if apps.TestFlight.PublicLink != "https://testflight.apple.com/join/Xq7Lm2Pz" {
 		t.Errorf("the public link was read as %q", apps.TestFlight.PublicLink)
 	}
 
@@ -67,14 +67,14 @@ func TestAnAppleIdentifierThatIsNotOneIsRefusedByName(t *testing.T) {
 		{"the bundle id alone", "app.tomoshibi.ios"},
 		{"a team id in lower case", "sm86nb3cpz.app.tomoshibi.ios"},
 		{"a team id a character short", "SM86NB3CP.app.tomoshibi.ios"},
-		{"a team id a character long", "SM86NB3CPZX.app.tomoshibi.ios"},
-		{"a team id and nothing after it", "SM86NB3CPZ."},
-		{"the team id alone", "SM86NB3CPZ"},
-		{"a space", "SM86NB3CPZ.app.tomoshibi ios"},
-		{"an underscore", "SM86NB3CPZ.app.tomoshibi_ios"},
-		{"an empty part", "SM86NB3CPZ.app..ios"},
-		{"a trailing dot", "SM86NB3CPZ.app.tomoshibi."},
-		{"a wildcard", "SM86NB3CPZ.app.tomoshibi.*"},
+		{"a team id a character long", "A1B2C3D4E5X.app.tomoshibi.ios"},
+		{"a team id and nothing after it", "A1B2C3D4E5."},
+		{"the team id alone", "A1B2C3D4E5"},
+		{"a space", "A1B2C3D4E5.app.tomoshibi ios"},
+		{"an underscore", "A1B2C3D4E5.app.tomoshibi_ios"},
+		{"an empty part", "A1B2C3D4E5.app..ios"},
+		{"a trailing dot", "A1B2C3D4E5.app.tomoshibi."},
+		{"a wildcard", "A1B2C3D4E5.app.tomoshibi.*"},
 		{"nothing", ""},
 	} {
 		_, err := Load(write(t, androidDocument("control", "    apple_app_ids:\n      - \""+tc.id+"\"\n")))
@@ -95,7 +95,7 @@ func TestAnAppleIdentifierThatIsNotOneIsRefusedByName(t *testing.T) {
 
 	// The second of two, named by its own place in the list.
 	_, err := Load(write(t, androidDocument("control",
-		"    apple_app_ids:\n      - SM86NB3CPZ.app.tomoshibi.ios\n      - app.tomoshibi.mac\n")))
+		"    apple_app_ids:\n      - A1B2C3D4E5.app.tomoshibi.ios\n      - app.tomoshibi.mac\n")))
 	if err == nil || !strings.Contains(err.Error(), "meet.apps.apple_app_ids[1]") {
 		t.Errorf("a wrong second identifier was not refused by its place: %v", err)
 	}
@@ -104,15 +104,15 @@ func TestAnAppleIdentifierThatIsNotOneIsRefusedByName(t *testing.T) {
 func TestAPublicLinkThatIsNotTestFlightsIsRefusedByName(t *testing.T) {
 	for _, tc := range []struct{ name, link string }{
 		{"the App Store", "https://apps.apple.com/app/testflight/id899247664"},
-		{"plain http", "http://testflight.apple.com/join/1DFSjfsK"},
-		{"another host", "https://testflight.example.com/join/1DFSjfsK"},
-		{"a host ending in Apple's", "https://evil.testflight.apple.com.example/join/1DFSjfsK"},
+		{"plain http", "http://testflight.apple.com/join/Xq7Lm2Pz"},
+		{"another host", "https://testflight.example.com/join/Xq7Lm2Pz"},
+		{"a host ending in Apple's", "https://evil.testflight.apple.com.example/join/Xq7Lm2Pz"},
 		{"no code", "https://testflight.apple.com/join/"},
-		{"a query pasted after it", "https://testflight.apple.com/join/1DFSjfsK?ref=chat"},
-		{"a trailing slash", "https://testflight.apple.com/join/1DFSjfsK/"},
-		{"a path beyond the code", "https://testflight.apple.com/join/1DFSjfsK/more"},
-		{"the code alone", "1DFSjfsK"},
-		{"a space", "https://testflight.apple.com/join/1DFS jfsK"},
+		{"a query pasted after it", "https://testflight.apple.com/join/Xq7Lm2Pz?ref=chat"},
+		{"a trailing slash", "https://testflight.apple.com/join/Xq7Lm2Pz/"},
+		{"a path beyond the code", "https://testflight.apple.com/join/Xq7Lm2Pz/more"},
+		{"the code alone", "Xq7Lm2Pz"},
+		{"a space", "https://testflight.apple.com/join/Xq7L m2Pz"},
 	} {
 		_, err := Load(write(t, androidDocument("control", "    testflight:\n      public_link: \""+tc.link+"\"\n")))
 		if err == nil {

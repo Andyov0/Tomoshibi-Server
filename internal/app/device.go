@@ -20,6 +20,7 @@ The apps say who they are in their own words. Their requests carry a user agent
 of the form
 
 	Tomoshibi/0.1.0.8 (iPhone; iOS 27.0.1; iPhone17,1)
+	Tomoshibi/0.1.7 (Linux; Ubuntu 24.04.4 LTS; LENOVO 21K5 x86_64)
 
 set in the core they share (core/protocol/src/api/mod.rs in the native
 repository), so that one change names every platform the core runs on. An app
@@ -40,6 +41,22 @@ answer to "what were they using", which is the question it is kept for.
 // agentKept is how much of a user agent is kept as sent, past which it is
 // somebody's extension list rather than anything an operator reads.
 const agentKept = 256
+
+// partKept is how much is kept of each thing an app's agent says: its
+// version, its system and its model. The agent as sent was cut short and
+// these were not, so an agent of the apps' shape with a megabyte between its
+// semicolons kept the megabyte three times over, in every arrival and every
+// sign-in lockout, and in every listing a page polled of either.
+//
+// A hundred and twenty-eight rather than the sixty-four it was set at when the
+// longest any app said was a dozen characters. The Linux app's model is what
+// the firmware calls the machine, its maker and its product, with the
+// processor after them (linux/src/app/client.rs in the native repository), and
+// a maker's name alone can be thirty-four characters ("Micro-Star
+// International Co., Ltd."): cut at sixty-four, the part an operator asks for
+// first, x86_64 or aarch64, which decides the build somebody needs, was the
+// part cut off. Still a bound, which is all the cut is for.
+const partKept = 128
 
 var (
 	appAgent = regexp.MustCompile(`^Tomoshibi/(.+?) \(([^()]*)\)\s*$`)
@@ -69,11 +86,7 @@ var (
 // clientOf is what a join's request says it came from.
 func clientOf(agent string) *store.Client {
 	agent = strings.TrimSpace(agent)
-	kept := agent
-	if len(kept) > agentKept {
-		// Cut at a byte count, then rid of any character the cut split.
-		kept = strings.ToValidUTF8(kept[:agentKept], "")
-	}
+	kept := cut(agent, agentKept)
 
 	if agent == "" {
 		return &store.Client{Kind: "app"}
@@ -109,7 +122,7 @@ func appClient(version, detail, kept string) *store.Client {
 		parts[i] = strings.TrimSpace(parts[i])
 	}
 
-	client := &store.Client{Kind: "app", App: strings.TrimSpace(version), Agent: kept}
+	client := &store.Client{Kind: "app", App: cut(strings.TrimSpace(version), partKept), Agent: kept}
 
 	switch strings.ToLower(parts[0]) {
 	case "iphone":
@@ -122,16 +135,27 @@ func appClient(version, detail, kept string) *store.Client {
 		client.Kind = "android"
 	case "windows":
 		client.Kind = "windows"
+	case "linux":
+		client.Kind = "linux"
 	}
 
 	if len(parts) > 1 {
-		client.System = parts[1]
+		client.System = cut(parts[1], partKept)
 	}
 	if len(parts) > 2 {
-		client.Device = parts[2]
+		client.Device = cut(parts[2], partKept)
 	}
 
 	return client
+}
+
+// cut is said cut to at most n bytes, rid of any character the cut split.
+func cut(said string, n int) string {
+	if len(said) <= n {
+		return said
+	}
+
+	return strings.ToValidUTF8(said[:n], "")
 }
 
 // systemOf names the system under a browser. A phone's version is kept,

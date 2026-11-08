@@ -21,18 +21,28 @@ const installTemplate = `#!/bin/sh
 # and certificate, write the configuration, point a DNS name at this machine,
 # and start the service.
 #
-#     bash <(curl -fLSs https://example/install) <prefix> <secret>
+#     bash <(curl -fLSs https://example/install) <prefix>
 #
-# The prefix may be left off, in which case it is asked for.
+# It then asks for the enrolment token, which the relays page mints for this
+# one prefix: it works once, for half an hour. The prefix may be left off, in
+# which case it is asked for too.
 #
-# The copy downloaded from the management pages carries the enrolment secret, and
-# anybody holding that copy can add a relay to this deployment — treat it as the
-# credential it is. The copy served at the public address carries none, and reads
-# the secret from ENROL instead.
+# Nothing in this script is a secret, and that is the point of it being public.
 set -eu
 
+# Everything written from here on is readable by root alone until it is
+# deliberately opened up. The certificate's key and the configuration holding
+# the deployment's credentials were written under the default mask and then
+# narrowed, which left both readable by every user on the machine for the
+# moments in between -- on a first install, whenever those moments happened to
+# include somebody looking.
+umask 077
+
 CONTROL="%s"
-DOMAIN="%s"
+# The zone relays are named in is not written here. This script is served to
+# anybody, and the domain is the one thing in it that ties every relay's name to
+# this deployment; the machine learns its full name from the control node once
+# its token has been accepted.
 
 # Both of the things this needs, in the order somebody would type them:
 #
@@ -44,12 +54,10 @@ DOMAIN="%s"
 # looks like the prompt was skipped. This way stdin is still the terminal, which
 # is what makes the interactive form work at all.
 #
-# The secret falls back to what was built in. The copy downloaded from the
-# management pages has it, because those are behind a session; the copy served
-# at the public address does not, so it travels in the operator's own command
-# and nothing that logs a URL ever sees it.
+# The token is not one of them. It used to be the second argument, which put it
+# in the shell's history on every relay ever brought up and in the process list
+# for as long as the install ran -- and it was a secret that never expired.
 PREFIX="${1:-${PREFIX:-}}"
-SECRET="${2:-${ENROL:-%s}}"
 LISTEN_PORT=%d
 UDP_PORT=%d
 TCP_PORT=%d
@@ -72,7 +80,55 @@ die() { printf '\nerror: %%s\n' "$1" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "run this as root"
 command -v curl >/dev/null 2>&1 || die "curl is needed and is not installed"
-[ -n "$SECRET" ] || die "this needs the deployment's enrolment secret as its second argument; the management pages print the whole command"
+
+# Refused rather than read, so that nobody's history gains a token because an
+# old command said to type it there.
+[ -z "${2:-}" ] || die "the enrolment token is no longer an argument: run the command without it and paste the token when asked"
+
+# Somewhere for the control node's answers that is not a shell variable printed
+# on the way out. Removed however this ends.
+# And the terminal's echo given back, in case this was interrupted at the
+# prompt that turns it off.
+work=$(mktemp -d)
+trap 'stty echo </dev/tty 2>/dev/null || true; rm -rf "$work"' EXIT
+trap 'exit 130' INT TERM
+
+# The token: from ENROL if somebody set it, from standard input when that is
+# not a terminal (bash <(...) <prefix> < token-file), and otherwise asked for on
+# the terminal with the echo off.
+SECRET="${ENROL:-}"
+if [ -z "$SECRET" ]; then
+    if [ ! -t 0 ]; then
+        IFS= read -r SECRET || true
+    elif [ -r /dev/tty ]; then
+        printf 'Enrolment token (from the relays page; it is not shown as you type): ' >/dev/tty
+        stty -echo </dev/tty 2>/dev/null || true
+        IFS= read -r SECRET </dev/tty || true
+        stty echo </dev/tty 2>/dev/null || true
+        printf '\n' >/dev/tty
+    fi
+fi
+SECRET=$(printf '%%s' "$SECRET" | tr -d '[:space:]')
+[ -n "$SECRET" ] || die "this needs an enrolment token: mint one for this prefix on the relays page"
+
+# Whatever the shell, the body goes to curl on its standard input rather than
+# as an argument, which is how a token stays out of the process list: printf is
+# built into every shell this runs under, so the only command line holding the
+# token is the shell's own memory.
+#
+# Answers the HTTP status, 000 where nothing answered, and never fails: under
+# set -e an assignment from a command that fails ends the script on the spot.
+ask() {
+    rm -f "$work/answer"
+    printf '%%s' "$2" | curl -sS --max-time 30 -o "$work/answer" -w '%%{http_code}' \
+        -X POST "$CONTROL$1" -H 'Content-Type: application/json' --data-binary @- 2>/dev/null \
+        || true
+}
+
+# Only the reason the control node gave, never its whole answer. An answer
+# printed in full is a terminal's scrollback holding the deployment's
+# credentials, and the code is all anybody needs to act on.
+reason() { sed -n 's/.*"error":"\([a-z_]*\)".*/\1/p' "$work/answer" 2>/dev/null; }
 
 # The prefix names this relay: in the zone above, and on the management pages.
 #
@@ -87,7 +143,7 @@ ask_prefix() {
         if [ -n "${PREFIX:-}" ]; then
             prefix="$PREFIX"
         else
-            printf 'Prefix for this relay (it becomes <prefix>.%%s): ' "$DOMAIN"
+            printf 'Prefix for this relay: '
             read -r prefix </dev/tty
         fi
 
@@ -108,54 +164,42 @@ ask_prefix() {
             continue
         fi
 
-        answer=$(curl -fsS --max-time 15 -X POST "$CONTROL/api/enrol/taken"             -H 'Content-Type: application/json'             -d "{\"secret\":\"$SECRET\",\"prefix\":\"$prefix\"}" 2>/dev/null || true)
+        code=$(ask /api/enrol/taken "{\"secret\":\"$SECRET\",\"prefix\":\"$prefix\"}")
 
         # An unquoted body made this JSON the shell had already eaten, so the
         # check answered nothing every time and every duplicate reached the
         # control node as a 409 with advice to try another name. The quoting is
         # fixed; the point of the check is that a prefix already in use would
         # otherwise move an existing relay's name onto this machine.
-        case "$answer" in
-            *'"taken":true'*)
-                printf '
-  %%s.%%s is already in use by another relay.
-' "$prefix" "$DOMAIN"
-
-                if [ -n "${REPLACE:-}" ]; then
-                    printf '  REPLACE is set, so this machine will take it over.
-
-'
-                    replace=true
-                    return
-                fi
-
-                printf '  Type another prefix, or "replace" to take it over
-'
-                printf '  (only do that if this machine is a rebuild of that one).
-'
-                printf '  Replace %%s? [y/N] ' "$prefix"
-                read -r confirm </dev/tty
-
-                case "$confirm" in
-                    y|Y|yes|YES)
-                        replace=true
-                        return
-                        ;;
-                esac
-
-                unset PREFIX
-                continue
-                ;;
-            *'"taken":false'*)
+        #
+        # Whether this machine may take it over is no longer asked here. The
+        # administrator who minted the token decided that on the relays page,
+        # because the machine asking is the one party whose word on a takeover
+        # is worth nothing.
+        case "$code:$(cat "$work/answer" 2>/dev/null)" in
+            200:*'"replace":true'*)
+                printf '\n  %%s is in use, and this token was minted to take it over.\n\n' "$prefix"
+                replace=true
                 return
+                ;;
+            200:*'"taken":true'*)
+                die "$prefix is already in use by another relay, and this token does not take it over. Mint one that does, on the relays page, if this machine is a rebuild of that one"
+                ;;
+            200:*'"taken":false'*)
+                return
+                ;;
+            403:*)
+                case "$(reason)" in
+                    wrong_prefix) die "this token was minted for another prefix" ;;
+                    *) die "the control node did not accept the token: it may have been used, withdrawn, or have expired" ;;
+                esac
                 ;;
             *)
                 # The control node could not be asked. Carrying on rather than
                 # stopping: the enrolment below refuses a taken prefix anyway,
                 # and this check exists to ask nicely rather than to be the
                 # thing that enforces it.
-                printf '  (could not check whether %%s is free; carrying on)
-' "$prefix"
+                printf '  (could not check whether %%s is free; carrying on)\n' "$prefix"
                 return
                 ;;
         esac
@@ -231,10 +275,26 @@ else
 fi
 
 say "Claiming this deployment's configuration"
-package=$(curl -fsS --max-time 30 -X POST "$CONTROL/api/enrol" \
-    -H 'Content-Type: application/json' \
-    -d "{\"secret\":\"$SECRET\",\"prefix\":\"$prefix\",\"region\":\"$region\",\"address\":\"$address\",\"replace\":$replace}") \
-    || die "the control node refused this machine. If it said the prefix is in use, run this again and pick another"
+code=$(ask /api/enrol "{\"secret\":\"$SECRET\",\"prefix\":\"$prefix\",\"region\":\"$region\",\"address\":\"$address\",\"replace\":$replace}")
+
+case "$code" in
+    200) ;;
+    000|'') die "the control node could not be reached" ;;
+    *)
+        case "$(reason)" in
+            relay_exists) die "$prefix is already in use, and this token does not take it over" ;;
+            wrong_secret) die "the control node did not accept the token: it may have been used, withdrawn, or have expired" ;;
+            wrong_prefix) die "this token was minted for another prefix" ;;
+            wrong_source) die "this token was minted for a machine at another address" ;;
+            bad_address) die "the control node will not point a name at $address: it is not a public IPv4 address. Set ADDRESS to this machine's public address" ;;
+            too_many_attempts) die "too many attempts from here; wait a minute and run this again" ;;
+            *) die "the control node refused this machine ($code $(reason))" ;;
+        esac
+        ;;
+esac
+
+package=$(cat "$work/answer")
+rm -f "$work/answer"
 
 # Read with sed rather than a JSON parser, because a machine this new may have
 # neither python nor jq, and installing one to read six fields is a dependency
@@ -242,7 +302,7 @@ package=$(curl -fsS --max-time 30 -X POST "$CONTROL/api/enrol" \
 value() { printf '%%s' "$package" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"; }
 
 host=$(value host)
-[ -n "$host" ] || die "the control node's answer could not be read: $package"
+[ -n "$host" ] || die "the control node's answer could not be read"
 
 api_key=$(value apiKey)
 api_secret=$(value apiSecret)
@@ -260,13 +320,41 @@ selector=$(printf '%%s' "$package" | sed -n 's/.*"selector":"\([^"]*\)".*/\1/p' 
 printf '  name  %%s\n  host  %%s\n' "$prefix" "$host"
 
 say "Fetching the binary"
+want=$(value binarySha256)
+[ -n "$want" ] || die "the control node did not say what the binary should hash to, so it cannot be checked"
+
 curl -fsS --max-time 600 -o /usr/local/bin/tomoshibi.new "$CONTROL/download/tomoshibi" \
     || die "could not fetch the binary"
-chmod +x /usr/local/bin/tomoshibi.new
+
+# Checked before it is made executable, against what the control node said it
+# is serving. Whatever answered the download -- a proxy that cached an older
+# build, a transfer cut short -- used to be installed as a service and run.
+if command -v sha256sum >/dev/null 2>&1; then
+    got=$(sha256sum /usr/local/bin/tomoshibi.new | cut -d' ' -f1)
+elif command -v shasum >/dev/null 2>&1; then
+    got=$(shasum -a 256 /usr/local/bin/tomoshibi.new | cut -d' ' -f1)
+elif command -v openssl >/dev/null 2>&1; then
+    got=$(openssl dgst -sha256 /usr/local/bin/tomoshibi.new | sed 's/.*= *//')
+else
+    rm -f /usr/local/bin/tomoshibi.new
+    die "nothing here can check the binary (sha256sum, shasum or openssl)"
+fi
+
+if [ "$got" != "$want" ]; then
+    rm -f /usr/local/bin/tomoshibi.new
+    die "the binary downloaded is not the one the control node is serving (sha256 $got, expected $want)"
+fi
+
+chmod 755 /usr/local/bin/tomoshibi.new
 mv /usr/local/bin/tomoshibi.new /usr/local/bin/tomoshibi
 
 say "Writing the certificate"
+# Both directories are walked by the service, which runs as a user made up at
+# start and given the group below. Opened explicitly, because the mask above
+# would otherwise make them root's alone and the relay could not reach its own
+# certificate.
 mkdir -p /etc/tomoshibi/certs
+chmod 755 /etc/tomoshibi /etc/tomoshibi/certs
 
 # The PEM arrives with its newlines escaped, as JSON requires. Turned back with
 # sed rather than printf %%b, which would also interpret anything else that
@@ -385,6 +473,8 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 UNIT
+
+chmod 644 /etc/systemd/system/tomoshibi-relay.service
 
 systemctl daemon-reload
 systemctl enable --now tomoshibi-relay

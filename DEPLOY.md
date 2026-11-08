@@ -79,7 +79,7 @@ binary. There is no directory to ship beside it.
 | A wildcard certificate for the relays | Relays dialled by name over `wss://`. | Issued on the control node (an ACME client with DNS validation), handed to relays at enrolment and pushed hourly. |
 | Cloudflare API token (optional) | Creating and removing each relay's DNS record automatically. | Your Cloudflare account. |
 | Watch-together gateway, music gateway (optional) | Watching a video together; playing a music library into a call. | Separate programs, not in this repository. |
-| Native apps (optional) | The Mac, Windows, Android and iOS apps. | Built elsewhere; this server offers the builds, the update check, TestFlight invitations and a remote configuration file. |
+| Native apps (optional) | The Mac, Windows, Linux, Android and iOS apps. | Built elsewhere; this server offers the builds, the update check, TestFlight invitations and a remote configuration file. |
 | An alerting bot (optional) | Being told about faults that do not fix themselves. | `dev/watch/` posts to a small forwarder on the machine that holds the bot's token. |
 
 ### The shape of a fleet

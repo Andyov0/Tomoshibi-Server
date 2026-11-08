@@ -13,8 +13,8 @@ import (
 /*
 The apps asking for their own next version.
 
-The Mac, Android and Windows apps look for a newer build when they start and
-every few hours after, say so, and with the person's agreement download and
+The Mac, Android, Windows and Linux apps look for a newer build when they start
+and every few hours after, say so, and with the person's agreement download and
 install it. The owner decided these need no account (2026-10-20): an app
 somebody is using as a guest on an invitation has no session to show, and an
 update that only reaches people who happen to be signed in leaves the rest on
@@ -22,6 +22,10 @@ whatever they first installed.
 
 	GET /api/apps/latest/{platform}       the newest build's version, size, hash and notes
 	GET /api/apps/latest/{platform}/file  the build itself, in ranges
+
+The platform is a list's name in the manifest (apps.go): mac, android, windows,
+ios, and for the Linux app linux-x86_64 or linux-aarch64, the processor its
+core was built for, since one AppImage holds one processor's code.
 
 What stands in for the account is that the request comes from one of the
 apps: the user agent every app sends (core/protocol/src/api/agent.rs) begins
@@ -49,6 +53,19 @@ One thing in an answer depends on which app asks. A Mac from before 0.1.2
 checks a downloaded build by another rule from the Macs after it, and is told
 the version that rule will find in the build (versionFor); the size, the hash
 and the file are the same for both.
+
+The size and the hash come from this server, beside the file, so on their own
+they prove to an app only that the file is the one this server meant. Each
+file's line in the manifest may therefore carry a signature, sig, made by the
+deployment's release key where the build was made, which is kept on no server;
+an app built with the key's public half offers and installs nothing it did not
+sign (the native repository's core/protocol/src/api/updates.rs says what is
+signed). This server does not check it and has no key to check it with: it
+hands the line's sig on untouched, with the name the build is shelved under,
+which the signature covers, and an app from before signatures reads past both.
+What is signed is the version as versionFor tells it to every app from 0.1.4
+on, the build joined on; the Macs it tells otherwise are from before
+signatures, and ignore them.
 */
 
 // Refusals particular to updates. The spellings are the ones the apps were
@@ -74,6 +91,14 @@ type updateView struct {
 	Size     int64             `json:"size,omitempty"`
 	SHA256   string            `json:"sha256,omitempty"`
 	Notes    map[string]string `json:"notes,omitempty"`
+
+	// File is the name the build is shelved under and Sig the release key's
+	// signature of the line, both as the manifest has them and both left out
+	// for the iOS app and for a line that says none. Nothing here reads
+	// either: the app checks the signature, over the file's name among the
+	// rest.
+	File string `json:"file,omitempty"`
+	Sig  string `json:"sig,omitempty"`
 }
 
 // fromTheApp reports whether a request names itself as one of the apps.
@@ -126,6 +151,8 @@ func (a *App) latest(w http.ResponseWriter, r *http.Request) {
 		Size:     release.Size,
 		SHA256:   release.SHA256,
 		Notes:    notesOf(release.Notes),
+		File:     release.File,
+		Sig:      sigOf(release.Sig),
 	})
 }
 
@@ -265,7 +292,7 @@ func (a *App) latestFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", shelf.contentType)
-	w.Header().Set("Content-Disposition", `attachment; filename="Tomoshibi-`+release.Version+shelf.suffix+`"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="Tomoshibi-`+release.Version+shelf.savedAs()+`"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Vary", "User-Agent")
@@ -288,6 +315,26 @@ func (a *App) latestFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeContent(w, r, "", info.ModTime(), file)
+}
+
+// sigOf reads a line's signature as the text the release tooling wrote, and
+// passes it on unchanged. Read apart from the line, as the notes and the build
+// are: a signature typed as anything but a string would otherwise fail the
+// line's whole decode and take the build off the page and out of every update,
+// for the apps that never read it as much as for those that do. One that is not
+// text is said and dropped, which an app with the key takes for no signature.
+func sigOf(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var sig string
+	if err := json.Unmarshal(raw, &sig); err != nil {
+		slog.Warn("a line's sig is not text, so the apps are told none", "sig", string(raw))
+		return ""
+	}
+
+	return sig
 }
 
 // What a note may be keyed by: a language tag, as the apps' dictionaries are.

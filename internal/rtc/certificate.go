@@ -148,6 +148,24 @@ func CertificateHandler(certPath, keyPath, key, secret string) http.Handler {
 //
 // Only the certificate, which is all that carries a date or a name. Reading the
 // key as well would make this fail whenever the two are mid-replacement.
+// CertificateExpiry is when the certificate at path stops being good, or nil
+// where there is no path, no file, or nothing in it that parses: a reading
+// that cannot be taken is left out rather than reported as a date.
+func CertificateExpiry(path string) *time.Time {
+	if path == "" {
+		return nil
+	}
+
+	leaf, err := leafOfFile(path)
+	if err != nil {
+		return nil
+	}
+
+	at := leaf.NotAfter.UTC()
+
+	return &at
+}
+
 func leafOfFile(path string) (*x509.Certificate, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -255,4 +273,9 @@ func writeBeside(path string, content []byte, mode os.FileMode) error {
 	}
 
 	return os.Rename(temporary.Name(), path)
+}
+
+// Leaf is the certificate itself, parsed, for asking what it answers for.
+func (c Certificate) Leaf() (*x509.Certificate, error) {
+	return leafOf([]byte(c.Cert))
 }

@@ -1,3 +1,4 @@
+import { type Booster, booster } from "@/live/boost";
 import { musicArrived, musicFactor, musicLeft, subscribeDuck, watchSpeech } from "@/live/duck";
 import { SOUNDS, SOURCE, type Sound, settingFor, subscribe } from "@/live/hearing";
 import { holdsBack, receiveLossless } from "@/live/lossless-receiver";
@@ -5,7 +6,7 @@ import { audioBlocked } from "@/live/notices";
 import { isMusic } from "@/live/sound";
 import { sound, whenUnlocked } from "@/live/speakers";
 import { useAudioPlayback } from "@livekit/components-react";
-import { type RemoteParticipant, type Room, RoomEvent, Track } from "livekit-client";
+import { RemoteAudioTrack, type RemoteParticipant, type Room, RoomEvent } from "livekit-client";
 import { useEffect } from "react";
 
 /**
@@ -56,7 +57,9 @@ export function Audible({ room }: { room: Room }) {
 
 	// What anybody has decided about hearing other people, kept applied.
 	useEffect(() => {
-		const put = () => apply(room);
+		// The sounds turned up past how they were sent, played through a gain.
+		const boost = booster(room);
+		const put = () => apply(room, boost);
 
 		// At once, because a participant already in the room when this mounts
 		// announces nothing: the events below are all about things that change
@@ -79,7 +82,7 @@ export function Audible({ room }: { room: Room }) {
 		// live/duck.ts. Only the music's volume moves, many times a second while
 		// it does, so only that is put back then.
 		const unwatch = watchSpeech(room);
-		const unduck = subscribeDuck(() => applyMusic(room));
+		const unduck = subscribeDuck(() => applyMusic(room, boost));
 
 		return () => {
 			for (const event of HEARING_EVENTS) room.off(event, put);
@@ -88,6 +91,7 @@ export function Audible({ room }: { room: Room }) {
 			unlisten();
 			unwatch();
 			unduck();
+			boost.stop();
 		};
 	}, [room]);
 
@@ -121,18 +125,13 @@ const HEARING_EVENTS = [
  * empty; deciding which entry a given event invalidated would be more code than
  * this and would be wrong in the case nobody thought of.
  */
-function apply(room: Room): void {
+function apply(room: Room, boost: Booster): void {
 	for (const participant of room.remoteParticipants.values()) {
 		for (const sound of SOUNDS) {
 			const source = SOURCE[sound];
 			const setting = settingFor(participant.identity, sound);
 
-			// Kept on the participant rather than the track, so it is waiting
-			// for a microphone that has not been turned on yet. The SDK's type
-			// names two sources, but what it does -- file the volume by source
-			// and apply it to that source's track when one arrives -- is the same
-			// for any, and the music's is Unknown; see hearing.ts.
-			participant.setVolume(volumeOf(participant, sound), source as Parameters<typeof participant.setVolume>[1]);
+			put(participant, sound, boost);
 
 			const publication = participant.getTrackPublication(source);
 
@@ -165,8 +164,30 @@ function volumeOf(participant: RemoteParticipant, sound: Sound): number {
 }
 
 /** Only the music's volumes, for the many times a second they move. */
-function applyMusic(room: Room): void {
-	for (const participant of room.remoteParticipants.values()) {
-		participant.setVolume(volumeOf(participant, "music"), Track.Source.Unknown as Parameters<typeof participant.setVolume>[1]);
-	}
+function applyMusic(room: Room, boost: Booster): void {
+	for (const participant of room.remoteParticipants.values()) put(participant, "music", boost);
+}
+
+/**
+ * One sound from one person at its volume.
+ *
+ * Kept on the participant rather than the track, so it is waiting for a
+ * microphone that has not been turned on yet. The SDK's type names two sources,
+ * but what it does -- file the volume by source and apply it to that source's
+ * track when one arrives -- is the same for any, and the music's is Unknown;
+ * see hearing.ts.
+ *
+ * Never above one there: the library writes what it keeps for a source onto
+ * every element a new track of that source is attached to, and an element
+ * throws on more than one, inside the loop that hands out elements
+ * (speakers.ts, sound). What is above one is the booster's, on the track once
+ * it is here (live/boost.ts); a track that arrives is attached first and then
+ * settled, so it is turned up straight after.
+ */
+function put(participant: RemoteParticipant, sound: Sound, boost: Booster): void {
+	const volume = volumeOf(participant, sound);
+	const source = SOURCE[sound];
+	participant.setVolume(Math.min(1, volume), source as Parameters<typeof participant.setVolume>[1]);
+	const track = participant.getTrackPublication(source)?.track;
+	if (track instanceof RemoteAudioTrack) boost.set(track, volume);
 }

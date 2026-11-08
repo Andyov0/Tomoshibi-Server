@@ -9,12 +9,12 @@ them there.
 
 | Secret | Where | Whoever holds it can |
 | --- | --- | --- |
-| The API key pair (`keys`) | Every node's configuration | Sign a token for any room as anybody, and act on every relay's API. It is the deployment. |
+| The API key pair (`keys`) | Every node's configuration | Sign a token for any room as anybody (and join any unencrypted meeting unseen), and act on every relay's API. Not, any more, run rooms through the control node's host endpoints: those need the control node's proof in the token, and administrators need a session. Per-relay pairs would not narrow this, because the cluster trusts redis between nodes; see RELAY.md. |
 | The tripcode key | `meet.tripcode_key` on the control node | Derive every signature offline. Without it a passphrase can only be guessed through the rate-limited doors. |
-| The enrolment secret (`meet.enrol.secret`), and every copy of the install command | The control node's configuration; the management pages | Enrol a machine, and receive the API pair, the redis password and the certificate's private key. |
+| An enrolment token, until it is used | Minted on the relays page by a `moderate` administrator; pasted once into the install script | Enrol one machine under one prefix (taking over that prefix if minted to), within thirty minutes, once, and receive the API pair, the redis password and the certificate's private key. |
 | The relays' wildcard private key | The control node and every relay | Impersonate any relay name in that zone. |
-| The redis password | Every relay, the control node, redis | Join the cluster's internal traffic. |
-| Cloudflare token | The control node's configuration | Edit the zone's DNS records (scope it to that zone, DNS only). |
+| The redis password | Every relay, the control node, redis | Join the cluster's internal traffic, which carries every participant's grants between nodes unauthenticated: as good as the key pair. |
+| Cloudflare token | The control node's configuration | Edit the zone's DNS records (scope it to that zone, DNS only). The control node itself writes and deletes only A records at a single label under `meet.enrol.domain` whose comment begins `Tomoshibi relay.` — the comment it writes on every record it creates — and never its own name. A hand-made record for an older relay is handed over by giving it that comment. |
 | App Store Connect key (`.p8`) | The control node | Change the app's testers. |
 | Gateway tokens (`meet.music.token`, `meet.watch.token`) | The control node, the gateways | Use somebody's music subscription; relay video on the deployment's bandwidth. |
 | Bot token | The alert forwarder's machine only | Speak as the bot. |
@@ -31,9 +31,12 @@ them there.
   RFC 5737 reserves for documentation. A script
   that needs a real address reads it from an environment file on the machine
   (as `watch.sh` reads `SAY`), so the public copy never carries it.
-- **Do not paste the install command** into chats, tickets or shell history
-  you keep. The public `/install` script carries no secret precisely so that
-  the secret travels only in the operator's own command.
+- **Do not paste an enrolment token** into chats or tickets. The command
+  carries none; the script asks for the token and reads it with the echo
+  off, so it is in no shell history and no process list, and it is worth
+  nothing once used or half an hour old. `meet.enrol.secret`, the old
+  long-lived secret, is refused unless `accept_secret` is set: remove it from
+  the configuration.
 - **Logs are pasted into chats.** The server logs the API key and never the
   secret; keep it that way in anything you add.
 - Before publishing anything, search it: IPv4 addresses outside the
@@ -45,9 +48,19 @@ them there.
 - Administrator passphrases come from `tomoshibi admin new`, which generates
   them. A passphrase somebody thought of falls to a guesser using many
   addresses in about a quarter of an hour; a generated one does not.
-- Every passphrase door (join, account sign-in, management sign-in) shares one
-  budget per address, and the management sign-in asks for the name too, so a
-  guess has to be aimed at one person.
+- Every passphrase door (join, account sign-in, management sign-in, and the
+  two change-passphrase forms) is bounded: ten wrong answers a minute per
+  address (an IPv6 /64 is one address) and a ceiling per door — thirty a
+  minute, sixty at the join. The doors no longer share one budget: a spent
+  join used to shut the management sign-in too, and the join is where
+  ordinary traffic arrives. At the join, a passphrase this browser has used
+  before and an account's passphrase are not charged, and a request from
+  another site (`Sec-Fetch-Site` other than `same-origin`) is refused, so
+  neither a busy hour nor somebody else's page can spend the ceiling. An
+  attacker using every door at once gets their sum, which is a few times one
+  door's rate; generated passphrases are out of reach at any of them. The
+  management sign-in asks for the name too, so a guess has to be aimed at
+  one person.
 - Give administrators the narrowest capability that does their job
   (`rooms`, `accounts`, `relays`, `settings`); `moderate` is all of them plus
   the roster.
@@ -70,10 +83,19 @@ source wherever the other end is known:
 
 - **Control node**: 80 and 443 to the world; `meet.listen` on loopback.
 - **Relays**: the signalling, media, probe and TURN ports to the world; the
-  TURN relay range to the other relays; LiveKit's 7880 on loopback only.
+  TURN relay range to and from the other relays only, in both directions
+  (the nftables table in [chapter 5](relays.md#turn-forwarding)), and
+  `meet.turn_peers` listing the same relays; LiveKit's 7880 on loopback only.
 - **redis**: only from the relays. Without TLS (as in the reference
   deployment) its traffic, password included, is plain TCP: keep it on a
-  private network or a tunnel where the path allows.
+  private network or a tunnel where the path allows. It is also the
+  cluster's trust root — nodes hand each other participants' grants over it
+  unauthenticated (RELAY.md) — so across a border, where `viahk` rewrites
+  addresses and does not encrypt, the password and every signalling message
+  are readable and alterable on the path. Not fixed in code: the remedy is
+  TLS on redis (LiveKit's `redis.tls` block, and a `username` for an ACL user)
+  or a WireGuard tunnel between the relays and redis, and a redis ACL user
+  per relay limited to the commands the cluster uses.
 - **viahk hub ports**: only from the mainland relays.
 - **Gateways and the alert forwarder**: only from the control node, on a
   private network.
@@ -101,9 +123,30 @@ Worth knowing, so they are not undone by accident:
 - Session cookies are `HttpOnly`, `SameSite=Strict`, `Secure` behind TLS, and
   writes from another origin are refused.
 - Enrolment, TestFlight invitations and every passphrase door are rate
-  limited, and wrong enrolment secrets are logged.
+  limited. Enrolment tokens are one-time, per prefix and short-lived; a
+  takeover of a prefix in use must be chosen when the token is minted; the
+  address a name is pointed at must be public; every enrolment and refusal is
+  logged with its source address and target address.
 - A release build sends its App Store Connect token only to Apple.
 - A watch-together relay only carries videos named by tickets the gateway
   issued, and only as media types.
 - Rooms under a scope refuse everybody while the store is unavailable.
-- `meet.silent` relays answer no prober.
+- `meet.silent` relays answer no prober: only an upgrade to `/rtc` and a
+  bearer-token call to `/twirp/` get any reply, and a TLS handshake naming
+  nothing the certificate covers fails instead of returning the wildcard.
+- `/api/relays` tells a stranger only what measuring needs: no relay kept for
+  administrators, probes as addresses rather than names, and never the
+  address of a relay that signals through another.
+- A guest's identity (the `g` kind, drawn from nothing) is kept across a
+  reload only when the tab sends back the proof the join gave it with the
+  identity; anybody else sending a guest's identity read off the roster gets
+  a fresh one, so they cannot remove the guest by taking their place, and
+  cannot take a pin an operator set for them. Apps that do not send the proof
+  get a fresh guest identity on every join.
+- The control node's host endpoints accept only join tokens it minted itself
+  (a proof in the token's JWT ID), and treat nobody as an administrator
+  without a session. Past its five minutes a join token is still accepted
+  there while the identity it names is in that room (asked of the media
+  servers, remembered ten seconds) and for at most a day after it was minted,
+  so a host with only a passphrase runs the room for the whole meeting and a
+  copied token is worth nothing once its owner has left.

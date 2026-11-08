@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -429,5 +430,50 @@ func TestWhichRefusalsAreRoutine(t *testing.T) {
 		if routineRefusal(why) && why != "" {
 			t.Errorf("stayed quiet about a refusal that is not ordinary: %q", why)
 		}
+	}
+}
+
+/*
+What the relay says about its own certificate, which the control node's page
+reads beside the counters.
+
+The renewal is pushed to every relay and not tracked, so a relay that refused
+one carries on serving the old one until it expires on that relay alone. The
+expiry it reports is read from the file each time, which is what makes a
+renewal show at once: read once at start, it would report the old date until
+the next restart, and a page would show a relay about to expire that had in
+fact renewed. And where there is no certificate to read, nothing is reported —
+not a zero date, which a page would draw as long expired.
+*/
+func TestARelayReportsTheExpiryOfWhatItServesNow(t *testing.T) {
+	dir := t.TempDir()
+
+	first := time.Now().Add(20 * 24 * time.Hour).Truncate(time.Second)
+	certPath, _, _ := issued(t, dir, first)
+
+	got := CertificateExpiry(certPath)
+	if got == nil || !got.Equal(first) {
+		t.Fatalf("reported %v, want %v", got, first)
+	}
+
+	renewed := time.Now().Add(90 * 24 * time.Hour).Truncate(time.Second)
+	issued(t, dir, renewed)
+
+	if got := CertificateExpiry(certPath); got == nil || !got.Equal(renewed) {
+		t.Errorf("after the renewal reported %v, want %v", got, renewed)
+	}
+
+	for _, path := range []string{"", filepath.Join(dir, "none.pem")} {
+		if got := CertificateExpiry(path); got != nil {
+			t.Errorf("%q reported %v, want nothing", path, got)
+		}
+	}
+
+	quiet, err := json.Marshal(Stats{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(quiet), "certExpires") {
+		t.Errorf("a relay without a certificate said %s", quiet)
 	}
 }

@@ -3,29 +3,33 @@ import { Flagged } from "@/components/room/Flag";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useLingering } from "@/hooks/useLingering";
+import { say } from "@/live/i18n";
 import {
 	ArrowRight,
 	ChevronLeft,
-	Clock,
+	ChevronRight,
 	DoorClosed,
 	LogIn,
+	Mic,
 	MicOff,
 	Move,
 	Pin,
-	Server,
 	Trash2,
 	UserMinus,
+	Video,
 } from "lucide-react";
 import { useCallback, useState } from "react";
-import { type Participant, type Relay, type Track, api } from "./api";
+import { type Participant, type Relay, type Track, type Visit, api } from "./api";
 import { actionFailed } from "@/live/notices";
+import { DeviceLine } from "./Device";
+import { Choice, Group, Initial, Popover, Row, Section, field, quiet, quietIcon, usePresence } from "./Grouped";
+import { lasted } from "./health";
 import { JoiningCard, OpeningCard } from "./OpeningCard";
 import { usePoll } from "./poll";
+import { Live, Failed, Waiting } from "./Shell";
 import { useTwice } from "./twice";
-import { Card, Empty, Failed, Waiting } from "./Shell";
-import { bitrate, clock, day, since } from "./units";
+import { bitrate, clock, day } from "./units";
 import { WatchCard } from "./WatchCard";
-import { Device } from "./Device";
 
 /**
  * The rooms, and whoever is in the one selected.
@@ -36,6 +40,14 @@ import { Device } from "./Device";
  * known here all along and visible nowhere. Working out whether a shared screen
  * was actually being sent at full resolution previously meant reading the
  * client's source and reasoning about it.
+ *
+ * Redrawn with the rest of the management pages (2026-10-29) as groups of rows
+ * rather than bordered cards: the meetings in progress, then the names this
+ * server remembers, then the rules about who may open and enter a room; and
+ * beside them the room chosen — who is in it now, from what device, through
+ * which machine, sending what, and everybody who has been in it before. On a
+ * screen too narrow for both the list and the room, the room replaces the list
+ * and has a way back, rather than being pushed below a list nobody scrolls past.
  */
 export function RoomsPanel({
 	canRooms,
@@ -116,189 +128,196 @@ export function RoomsPanel({
 		[act],
 	);
 
+	const rooms = usePresence(live, (one) => one.name);
+
 	return (
-		<div
-			className={cn(
-				"mx-auto grid max-w-6xl gap-3 sm:gap-4 lg:grid-cols-[20rem_1fr]",
-				// A drill-down while narrow: the list, then the room, with a way
-				// back. Stacked, the list would push the detail below the fold and
-				// every tap would become a scroll back up.
-				open && "max-lg:block",
-			)}
-		>
-			<div className={cn("flex flex-col gap-3 sm:gap-4", open && "max-lg:hidden")}>
-				<Card title={t("In progress")} note={`${live.length}`}>
-					{error && <Failed>{error}</Failed>}
+		<div className="mx-auto flex max-w-[1180px] flex-col gap-6">
+			<header className={cn("flex flex-wrap items-baseline gap-x-3 gap-y-1 px-1", open && "max-xl:hidden")}>
+				<h1 className="font-semibold text-[22px] leading-tight tracking-[-0.01em]">{t("Rooms")}</h1>
+				{value && (
+					<span className="text-[14px] text-fg-muted">
+						{live.length === 0 ? t("No calls right now.") : t("{count} rooms", { count: live.length })}
+					</span>
+				)}
+			</header>
 
-					{live.length === 0 ? (
-						<Empty>
-							{value?.liveUnavailable
-								? t("The media servers did not answer, so what is happening now is unknown. What this server has written down is below.")
-								: t("No calls right now.")}
-						</Empty>
-					) : (
-						<ul>
-							{live.map((one) => (
-								<li key={one.sid}>
+			{error && <Failed>{error}</Failed>}
+
+			<div className="grid items-start gap-6 xl:grid-cols-[22rem_minmax(0,1fr)] xl:gap-8">
+				<div className={cn("flex min-w-0 flex-col gap-6", open && "max-xl:hidden")}>
+					<Section title={t("In progress")} note={live.length > 0 ? t("{count} people", { count: live.reduce((sum, one) => sum + one.participants, 0) }) : undefined}>
+						<Group>
+							{value && live.length === 0 && rooms.length === 0 && (
+								<p className="animate-fade-in px-4 py-5 text-fg-muted text-[13.5px]">
+									{value.liveUnavailable
+										? t("The media servers did not answer, so what is happening now is unknown. What this server has written down is below.")
+										: t("No calls right now.")}
+								</p>
+							)}
+
+							{rooms.map(({ item: one, leaving }) => (
+								<Row key={one.name} inset={44} leaving={leaving}>
 									<button
 										type="button"
 										onClick={() => setSelected(one.name)}
+										aria-current={one.name === open ? "true" : undefined}
 										className={cn(
-											"flex w-full flex-col gap-0.5 border-border border-b px-4 py-2.5 text-left last:border-0",
-											"transition-colors hover:bg-surface-hi",
-											one.name === open && "bg-surface-hi",
+											"flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors",
+											"hover:bg-wash active:bg-wash-press focus-visible:bg-wash",
+											one.name === open && "bg-surface-hi hover:bg-surface-hi",
 										)}
 									>
-										<span className="flex w-full items-baseline gap-2">
-											<span className="truncate text-[13px]">{one.name}</span>
-											{/* How many are in it, and how many of those are
-											    sending anything.
-											    Eight people with one of them publishing is a
-											    presentation; eight publishing is a meeting;
-											    eight with none publishing is eight people
-											    whose media never started, which is the one
-											    an operator is looking for. The second number
-											    has always been sent and only the first was
-											    drawn, so all three read the same.
-											    Only where they differ — on a room where
-											    everybody is publishing, which is most rooms,
-											    a second identical number is noise. */}
-											<span className="ml-auto shrink-0 text-fg-muted text-xs tabular-nums">
-												{one.publishers !== undefined && one.publishers !== one.participants
-													? `${one.participants} (${one.publishers} sending)`
-													: one.participants}{" "}
-												· {since(one.createdAt)}
-											</span>
-										</span>
-
-										{/* Which machine the meeting is actually on.
-										    Not asked of the media server, which reports a
-										    room from whichever node answered — every node
-										    answers for the whole cluster, so that field
-										    holds the machine that was asked rather than
-										    the machine holding the call. */}
-										{one.relay && (
-											<span className="flex items-center gap-1 truncate text-[11px] text-fg-muted">
-												{/* A placement does not expire and is not
-												    spent by being obeyed, so it has to be
-												    visible: a pin nobody remembers making
-												    is a room that ignores every later
+										<Live on />
+										<span className="min-w-0 flex-1">
+											<span className="readout block truncate font-medium text-[14px]">{one.name}</span>
+											<span className="flex flex-wrap items-center gap-x-2.5 text-[12.5px] text-fg-muted">
+												{/* Which machine the meeting is actually on. Not asked of
+												    the media server, which reports a room from whichever
+												    node answered. A placement does not expire and is not
+												    spent by being obeyed, so it is drawn: a pin nobody
+												    remembers making is a room that ignores every later
 												    choice with nothing to say why. */}
-												{one.placed && <Pin className="size-2.5 shrink-0" />}
-												<Flagged text={one.relay} />
+												{one.relay && (
+													<span className="flex items-center gap-1">
+														{one.placed && <Pin className="size-3 shrink-0" aria-label={t("Placed here")} />}
+														<Flagged text={say(one.relay)} />
+													</span>
+												)}
+												{/* How many are in it, and how many of those are
+												    sending anything, where the two differ: eight with
+												    none sending is eight people whose media never
+												    started, which is the room an operator is looking for. */}
+												<span>
+													{t("{count} people", { count: one.participants })}
+													{one.publishers !== undefined && one.publishers !== one.participants && (
+														<> {t("{count} sending", { count: one.publishers })}</>
+													)}
+												</span>
+												<span>{lasted(one.createdAt)}</span>
 											</span>
-										)}
-									</button>
-								</li>
-							))}
-						</ul>
-					)}
-				</Card>
-
-				<Card title={t("Known")} note={t("Rooms this server has seen")}>
-					{known.length === 0 ? (
-						<Empty>{t("None yet.")}</Empty>
-					) : (
-						<ul className="max-h-80 overflow-y-auto">
-							{known.map((one) => (
-								<li key={one.name} className="group relative">
-									{/* Opens the same panel a live room opens.
-
-									    It was a plain list item, which made the most
-									    interesting rooms on the page the only ones that
-									    could not be looked at: what an operator asks about a
-									    meeting — who was in it, from where, through which
-									    machine — is asked after it has ended, and the only
-									    rooms that answered were the ones still running. */}
-									<button
-										type="button"
-										onClick={() => setSelected(one.name)}
-										className={cn(
-											"flex w-full items-baseline gap-2 border-border border-b px-4 py-2 text-left last:border-0",
-											"transition-colors hover:bg-surface-hi",
-											one.name === open && "bg-surface-hi",
-										)}
-									>
-										<span className="truncate text-[13px]">{one.name}</span>
-
-										{one.placed && one.relay && (
-											<span className="flex shrink-0 items-center gap-1 text-[11px] text-fg-muted">
-												<Pin className="size-2.5 shrink-0" />
-												<Flagged text={one.relay} />
-											</span>
-										)}
-
-										<span className="ml-auto shrink-0 text-fg-muted text-xs">
-											{day(one.lastSeen)}
 										</span>
+										<ChevronRight className="size-4 shrink-0 text-fg-muted" />
 									</button>
-
-									{/* Beside the row rather than inside it: a button inside
-									    a button is not a thing, and the row is a button
-									    because the whole of it opens the history. */}
-									{canModerate && (
-										<Forget
-											room={one.name}
-											acting={acting}
-											onForget={() => onForget(one.name)}
-										/>
-									)}
-								</li>
+								</Row>
 							))}
-						</ul>
-					)}
-				</Card>
+						</Group>
+					</Section>
 
-				{/* Last of the three, and the order is the argument: what is
-				    happening, what has happened, and what may happen next. Put
-				    above the live rooms it would push the reason anybody opened
-				    this panel below the fold. */}
-				<OpeningCard canSettings={canSettings} onSignedOut={onSignedOut} />
-				<JoiningCard canSettings={canSettings} onSignedOut={onSignedOut} />
-				<WatchCard canSettings={canSettings} onSignedOut={onSignedOut} />
+					<Section title={t("Known")} note={t("Rooms this server has seen")}>
+						<Group>
+							{known.length === 0 ? (
+								<p className="px-4 py-5 text-fg-muted text-[13.5px]">{t("None yet.")}</p>
+							) : (
+								<ul className="max-h-[26rem] overflow-y-auto">
+									{known.map((one) => (
+										<li
+											key={one.name}
+											className="group relative before:absolute before:top-0 before:right-0 before:left-4 before:h-px before:bg-border first:before:hidden"
+										>
+											{/* Opens the same panel a live room opens: what an
+											    operator asks about a meeting is asked after it has
+											    ended. The forget control sits beside the row rather
+											    than inside it, because a button inside a button is
+											    not a thing. */}
+											<button
+												type="button"
+												onClick={() => setSelected(one.name)}
+												aria-current={one.name === open ? "true" : undefined}
+												className={cn(
+													"flex w-full items-center gap-2 py-2.5 pr-12 pl-4 text-left outline-none transition-colors",
+													"hover:bg-wash focus-visible:bg-wash",
+													one.name === open && "bg-surface-hi hover:bg-surface-hi",
+												)}
+											>
+												<span className="readout min-w-0 truncate text-[13.5px]">{one.name}</span>
+
+												{one.placed && one.relay && (
+													<span className="flex shrink-0 items-center gap-1 text-[12px] text-fg-muted">
+														<Pin className="size-3 shrink-0" />
+														<Flagged text={say(one.relay)} />
+													</span>
+												)}
+
+												<span className="ml-auto flex shrink-0 flex-col items-end text-[12px] text-fg-muted tabular-nums">
+													<span>{day(one.lastSeen)}</span>
+													{/* What the server has always sent about a name and no page
+													    drew: since when it has been used, and how often. */}
+													{one.joins !== undefined && (
+														<span className="text-[11.5px]">{t("{count} joins", { count: one.joins })}</span>
+													)}
+												</span>
+											</button>
+
+											{canModerate && (
+												<Forget room={one.name} acting={acting} onForget={() => onForget(one.name)} />
+											)}
+										</li>
+									))}
+								</ul>
+							)}
+						</Group>
+					</Section>
+
+					{/* Last, and the order is the argument: what is happening, what
+					    has happened, and what may happen next. Above the live rooms
+					    they would push the reason anybody opened this panel below
+					    the fold. */}
+					<OpeningCard canSettings={canSettings} onSignedOut={onSignedOut} />
+					<JoiningCard canSettings={canSettings} onSignedOut={onSignedOut} />
+					<WatchCard canSettings={canSettings} onSignedOut={onSignedOut} />
+				</div>
+
+				{open ? (
+					<People
+						key={open}
+						room={open}
+						onBack={() => setSelected(undefined)}
+						canModerate={canModerate}
+						acting={acting}
+						relays={relays}
+						onSignedOut={onSignedOut}
+						live={live.some((one) => one.name === open)}
+						// Read off the listing rather than asked for again: the room
+						// being looked at is one of the rows behind this panel, and
+						// a second request for a boolean already on screen is a
+						// second thing that can be out of date with the first.
+						placed={live.find((one) => one.name === open)?.placed ?? false}
+						relay={live.find((one) => one.name === open)?.relay}
+						createdAt={live.find((one) => one.name === open)?.createdAt}
+						onClose={() => act(() => api.closeRoom(open))}
+						onPlace={(relay, now) => {
+							void act(async () => {
+								await api.placeRoom(open, relay, now);
+							});
+						}}
+						onFree={() => {
+							void act(async () => {
+								await api.freeRoom(open);
+							});
+						}}
+						onPlacePerson={(identity, relay) => {
+							void act(async () => {
+								await api.placePerson(open, identity, relay);
+							});
+						}}
+						onRemove={(identity) => act(() => api.remove(open, identity))}
+						onMute={(identity, track) => act(() => api.mute(open, identity, track))}
+					/>
+				) : (
+					<div className="hidden xl:block">
+						<Section title={t("Participants")}>
+							<Group>
+								<p className="px-4 py-10 text-center text-fg-muted text-[13.5px]">{t("Choose a room.")}</p>
+							</Group>
+						</Section>
+					</div>
+				)}
 			</div>
-
-			{open ? (
-				<People
-					room={open}
-					onBack={() => setSelected(undefined)}
-					canModerate={canModerate}
-					acting={acting}
-					relays={relays}
-					onSignedOut={onSignedOut}
-					// Read off the listing rather than asked for again: the room
-					// being looked at is one of the rows behind this panel, and
-					// a second request for a boolean already on screen is a
-					// second thing that can be out of date with the first.
-					placed={live.find((one) => one.name === open)?.placed ?? false}
-					onClose={() => act(() => api.closeRoom(open))}
-					onPlace={(relay, now) => {
-						void act(async () => {
-							await api.placeRoom(open, relay, now);
-						});
-					}}
-					onFree={() => {
-						void act(async () => {
-							await api.freeRoom(open);
-						});
-					}}
-					onPlacePerson={(identity, relay) => {
-						void act(async () => {
-							await api.placePerson(open, identity, relay);
-						});
-					}}
-					onRemove={(identity) => act(() => api.remove(open, identity))}
-					onMute={(identity, track) => act(() => api.mute(open, identity, track))}
-				/>
-			) : (
-				<Card title={t("Participants")}>
-					<Empty>{t("Choose a room.")}</Empty>
-				</Card>
-			)}
 		</div>
 	);
 }
 
+/** One room, opened: who is in it now, and who has been. */
 function People({
 	room,
 	onBack,
@@ -307,7 +326,10 @@ function People({
 	relays,
 	onSignedOut,
 	onClose,
+	live,
 	placed,
+	relay,
+	createdAt,
 	onPlace,
 	onFree,
 	onPlacePerson,
@@ -321,7 +343,10 @@ function People({
 	relays: Relay[];
 	onSignedOut: () => void;
 	onClose: () => void;
+	live: boolean;
 	placed: boolean;
+	relay?: string;
+	createdAt?: string;
 	onPlace: (relay: string, now: boolean) => void;
 	onFree: () => void;
 	onPlacePerson: (identity: string, relay: string) => void;
@@ -333,171 +358,118 @@ function People({
 	const ask = useCallback(() => api.participants(room), [room]);
 	const { value, error, loading } = usePoll(ask, { onSignedOut, about: room });
 
-	// Asked once rather than done at once. Nothing else on this panel ends a call
-	// for everybody in it, and it used to be one press away from a list somebody
-	// is scrolling.
 	const [ending, setEnding] = useState(false);
+	const asking = useLingering(ending, 160);
 
 	const people = value ?? [];
+	const present = usePresence(people, (one) => one.identity);
 
-	// Read off whoever is in the room rather than passed down. The list beside
-	// this one holds the same two facts and would have to thread them through
-	// two components to say them here, and they are the same answer either way:
-	// everybody in one room is on one machine, because a meeting lives on one.
-	const held = people.find((one) => one.holding || one.relay)?.holding ?? people[0]?.relay;
-	const started = people.reduce<string | undefined>(
-		(first, one) => (!first || one.joinedAt < first ? one.joinedAt : first),
-		undefined,
-	);
+	// Where the meeting is held, as the people in it report it, falling back to
+	// the listing's relay: a room just emptied has nobody to ask.
+	const held = people.find((one) => one.holding || one.relay)?.holding ?? people[0]?.relay ?? relay;
 
 	return (
-		<Card
-			title={room}
-			// Two phrases rather than a word chosen in code and glued to a number.
-			// The English plural was picked here and the whole thing never went
-			// through the dictionary, so a page translated everywhere else said
-			// "0 people" in the middle of it.
-			note={people.length === 1 ? t("1 person") : t("{count} people", { count: people.length })}
-			className="self-start"
-			actions={
-				// The way back, carrying nothing but its own arrow: the room's
-				// name is already the title beside it.
-				<Button variant="ghost" size="sm" onClick={onBack} className="gap-1 lg:hidden">
-					<ChevronLeft className="size-3.5" />{t("Rooms")}</Button>
-			}
-		>
+		<div className="flex min-w-0 animate-arrive flex-col gap-6">
+			<header className="flex flex-col gap-3 px-1">
+				<button type="button" onClick={onBack} className={cn(quiet, "-ml-2.5 self-start xl:hidden")}>
+					<ChevronLeft />
+					{t("Rooms")}
+				</button>
+
+				<div className="flex flex-wrap items-end gap-x-4 gap-y-2">
+					<div className="flex min-w-0 flex-col gap-1">
+						<h1 className="readout break-all font-semibold text-[22px] leading-tight">{room}</h1>
+						<p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-fg-muted">
+							<span className={cn("flex items-center gap-2", live && "text-tally-ink")}>
+								<Live on={live} />
+								{live ? t("In progress") : t("Nobody is here.")}
+							</span>
+							{held && (
+								<span className="flex items-center gap-1">
+									{placed && <Pin className="size-3" />}
+									<Flagged text={say(held)} />
+								</span>
+							)}
+							{live && createdAt && <span>{t("Going for {time}", { time: lasted(createdAt) })}</span>}
+						</p>
+					</div>
+
+					{canModerate && live && (
+						<div className="ml-auto flex flex-wrap items-center gap-2">
+							{relays.length > 0 && (
+								<Moving relays={relays} acting={acting} placed={placed} onPlace={onPlace} onFree={onFree} />
+							)}
+
+							{asking.mounted ? (
+								<span className={cn("flex items-center gap-2", asking.leaving ? "animate-fade-out" : "animate-fade-in")}>
+									<span className="text-[13px]">{t("Everybody is disconnected.")}</span>
+									<Button variant="danger" size="sm" disabled={acting} onClick={onClose}>
+										{t("Close it")}
+									</Button>
+									<Button variant="ghost" size="sm" onClick={() => setEnding(false)}>
+										{t("Cancel")}
+									</Button>
+								</span>
+							) : (
+								// Away from the moves and quieter than them, because it
+								// is the press that cannot be taken back.
+								<button type="button" onClick={() => setEnding(true)} className={cn(quiet, "hover:text-danger-ink")}>
+									<DoorClosed />
+									{t("Close this room")}
+								</button>
+							)}
+						</div>
+					)}
+				</div>
+			</header>
+
 			{error && <Failed>{error}</Failed>}
 
-			{/*
-			 * What this room is, before what can be done to it.
-			 *
-			 * The panel used to open with a red button and a list of names. The
-			 * button was the loudest thing on the page and the one nobody wants to
-			 * press by accident, and the two facts an operator actually came for —
-			 * which machine is carrying this and how long it has been going — were
-			 * nowhere at all: they had to be read off a row in the list beside,
-			 * one participant at a time.
-			 */}
-			<div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-border border-b px-4 py-2.5 text-[11.5px] text-fg-muted">
-				{held && (
-					<span className="flex items-center gap-1.5">
-						<Server className="size-3" />
-						<Flagged text={held} />
-					</span>
-				)}
-
-				{/*
-				 * Where the next call under this name is held, and — separately —
-				 * moving the one in progress.
-				 *
-				 * A meeting lives on one machine and the media server has no way
-				 * to hand it to another while it runs, so those are two different
-				 * actions rather than one with a caveat. Choosing a relay sets
-				 * where the next one goes; moving it now ends this call so
-				 * everybody comes back to the machine that was chosen, and says so
-				 * before it does.
-				 */}
-				{canModerate && relays.length > 0 && (
-					<Moving
-						relays={relays}
-						acting={acting}
-						placed={placed}
-						onPlace={(relay, now) => onPlace(relay, now)}
-						onFree={onFree}
-					/>
-				)}
-
-				{started && (
-					<span className="flex items-center gap-1.5">
-						<Clock className="size-3" />
-						{since(started)}
-					</span>
-				)}
-
-				{canModerate && (
-					<span className="ml-auto">
-						{ending ? (
-							<span className="flex items-center gap-2">
-								<span className="text-fg">{t("Everybody is disconnected.")}</span>
-
-								<button
-									type="button"
-									disabled={acting}
-									onClick={onClose}
-									className={cn(
-										"rounded-md bg-danger px-2 py-1 text-[11px] text-danger-fg",
-										"transition-opacity hover:opacity-90 disabled:opacity-40",
-									)}
-								>{t("Close it")}</button>
-
-								<button
-									type="button"
-									onClick={() => setEnding(false)}
-									className="rounded-md border border-border px-2 py-1 text-[11px] hover:bg-surface-hi"
-								>{t("Cancel")}</button>
-							</span>
+			{(live || people.length > 0) && (
+				<Section title={t("Participants")} note={people.length === 1 ? t("1 person") : t("{count} people", { count: people.length })}>
+					<Group>
+						{loading ? (
+							<Waiting />
+						) : present.length === 0 ? (
+							<p className="px-4 py-5 text-fg-muted text-[13.5px]">{t("Nobody is here.")}</p>
 						) : (
-							/*
-							 * Quiet until it is asked for. Ending a call for eleven
-							 * people is not undoable and had no step in front of it,
-							 * sitting where a press meant for the list would land.
-							 */
-							<button
-								type="button"
-								onClick={() => setEnding(true)}
-								className={cn(
-									"flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px]",
-									"text-fg-muted transition-colors hover:bg-danger/10 hover:text-fg",
-								)}
-							>
-								<DoorClosed className="size-3" />{t("Close this room")}</button>
+							<ul>
+								{present.map(({ item: one, leaving }) => (
+									<Person
+										key={one.identity}
+										leaving={leaving}
+										relays={relays}
+										onPlace={(to) => onPlacePerson(one.identity, to)}
+										person={one}
+										canModerate={canModerate}
+										acting={acting}
+										onRemove={() => onRemove(one.identity)}
+										onMute={(track) => onMute(one.identity, track)}
+									/>
+								))}
+							</ul>
 						)}
-					</span>
-				)}
-			</div>
-
-			{loading ? (
-				<Waiting />
-			) : people.length === 0 ? (
-				<Empty>{t("Nobody is here.")}</Empty>
-			) : (
-				<ul>
-					{people.map((one) => (
-						<Person
-							key={one.sid}
-							relays={relays}
-							onPlace={(relay) => onPlacePerson(one.identity, relay)}
-							person={one}
-							canModerate={canModerate}
-							acting={acting}
-							onRemove={() => onRemove(one.identity)}
-							onMute={(track) => onMute(one.identity, track)}
-						/>
-					))}
-				</ul>
+					</Group>
+				</Section>
 			)}
 
 			<History room={room} onSignedOut={onSignedOut} />
-		</Card>
+		</div>
 	);
 }
 
 /**
- * Who has been in this room, as against who is in it.
+ * Who has been in this room, newest first.
  *
- * The list above asks the media server, so it answers nothing at all about a
- * meeting that has ended — and the questions an operator actually has about a
- * meeting are asked afterwards. Where somebody came from and which machine they
- * came in through are seen once, by this server, at the join, and are not
- * recoverable from anywhere else.
+ * Asked of this server rather than the media server, so it answers for a room
+ * nobody is in — which is the room most of these questions are about: what an
+ * operator asks after a meeting is who was in it, from where, on what, and
+ * through which machine. Polled slowly; a history does not need to be live to
+ * the second.
  *
- * Under the live list rather than instead of it, because both are true at once
- * during a call and the second explains the first: somebody in the room twice
- * over is one row above and two below, which is what a reconnect looks like.
- *
- * Bounded by the room's own life. A name nobody has joined for as long as the
- * deployment keeps names is forgotten whole and this goes with it, so the
- * addresses are not kept after the last thing that referred to them has gone.
+ * Rows rather than a table of five columns. The table ran off a phone sideways
+ * and, on a laptop, put the device of each person in its own narrow column two
+ * columns from their name.
  */
 function History({ room, onSignedOut }: { room: string; onSignedOut: () => void }) {
 	const t = useT();
@@ -512,141 +484,103 @@ function History({ room, onSignedOut }: { room: string; onSignedOut: () => void 
 	const visits = value?.visits ?? [];
 
 	return (
-		<div className="border-border border-t">
-			<div className="flex items-baseline gap-2 px-4 py-2.5">
-				<h3 className="font-medium text-[13px]">{t("Who has been here")}</h3>
-				{/* And how many there were, where the page is not showing all of
-				    them. A list cut at five hundred with nothing said reads as
-				    the whole history — which is the same fault as a history that
-				    stops at twelve hours, arrived at from the other end. */}
-				<span className="text-fg-muted text-xs">
-					{visits.length === 0
-						? ""
-						: value?.total
-							? t("most recent {count} of {total} joins", {
-									count: visits.length,
-									total: value.total,
-								})
-							: t("{count} joins", { count: visits.length })}
-				</span>
-			</div>
-
+		<Section
+			title={t("Who has been here")}
+			// And how many there were, where the page is not showing all of
+			// them. A list cut at five hundred with nothing said reads as the
+			// whole history.
+			note={
+				visits.length === 0
+					? undefined
+					: value?.total
+						? t("most recent {count} of {total} joins", { count: visits.length, total: value.total })
+						: t("{count} joins", { count: visits.length })
+			}
+		>
 			{error && <Failed>{error}</Failed>}
 
-			{loading ? (
-				<Waiting rows={4} />
-			) : visits.length === 0 ? (
-				<Empty>{t("Nothing recorded for this name.")}</Empty>
-			) : (
-				<div className="overflow-x-auto">
-					<table className="w-full min-w-[42rem] border-collapse text-sm">
-						<thead>
-							<tr className="border-border border-b text-[11px] text-fg-muted">
-								<th className="px-4 py-2 text-left font-normal">{t("when")}</th>
-								<th className="px-2 py-2 text-left font-normal">{t("who")}</th>
-								<th className="px-2 py-2 text-left font-normal">{t("device")}</th>
-								<th className="px-2 py-2 text-left font-normal">{t("from")}</th>
-								<th className="px-4 py-2 text-left font-normal">{t("through")}</th>
-							</tr>
-						</thead>
-
-						<tbody>
-							{visits.map((one) => (
-								<tr
-									key={`${one.at}-${one.identity}`}
-									className="border-border border-b align-top last:border-0"
-								>
-									<td className="px-4 py-2 text-[12px] text-fg-muted tabular-nums">
-										{clock(one.at)}
-										<span className="block text-[11px] opacity-70">{day(one.at)}</span>
-									</td>
-
-									{/* The name they were showing as, and what kind of mark
-									    they were showing it with.
-
-									    Their own name first. A history of a meeting is a
-									    list of who was in it, and who somebody was in a
-									    meeting is what everybody in the room saw — putting
-									    the account name over the top of it answers a
-									    question nobody asked and loses the one thing the row
-									    is a record of.
-
-									    The account is not thrown away: it goes on the line
-									    below, beside the mark, where it belongs — it is who
-									    this deployment knows the mark to be rather than what
-									    they called themselves, and the two are worth telling
-									    apart. It is also the only thing that names anybody on
-									    a row written before the typed name was recorded.
-
-									    Where there is neither, the name was not kept. It said
-									    "(no name)", which reads as somebody having had none —
-									    nobody can join without one, so what is true is that
-									    it was not written down. */}
-									<td className="px-2 py-2">
-										{one.name ? (
-											<span className="block truncate text-[12.5px]">{one.name}</span>
-										) : one.account ? (
-											<span className="block truncate text-[12.5px]">{one.account}</span>
-										) : (
-											<span className="block truncate text-[12.5px] text-fg-muted italic">
-												{t("name not kept then")}
-											</span>
-										)}
-
-										<span className="readout block truncate text-[11px] text-fg-muted">
-											{one.trip ?? one.identity.split("-")[0]}
-											{one.kind && (
-												<span className="opacity-70">
-													{" "}
-													{one.kind === "account"
-														? t("account")
-														: one.kind === "passphrase"
-															? t("passphrase")
-															: t("guest")}
-												</span>
-											)}
-											{/* Who the deployment knows that mark to be, when it
-											    knows and they are showing as something else. */}
-											{one.account && one.account !== one.name && (
-												<span className="opacity-70"> · {one.account}</span>
-											)}
-										</span>
-									</td>
-
-									{/* Blank for a join from before this was kept, which is
-									    not the same as one that came from nothing. */}
-									<td className="w-[13rem] px-2 py-2 text-[11.5px] text-fg-muted">
-										<Device client={one.client} />
-									</td>
-
-									<td className="readout px-2 py-2 text-[12px] text-fg-muted">
-										{one.address || "\u2014"}
-									</td>
-
-									<td className="px-4 py-2 text-[11.5px] text-fg-muted">
-										{one.relay ? <Flagged text={one.relay} /> : "\u2014"}
-										{/* Where the meeting was, when that was somewhere
-										    else. Said only then: on a call held on the
-										    machine somebody dialled, a second identical name
-										    is noise. */}
-										{one.holding && one.holding !== one.relay && (
-											<span className="block opacity-70">
-												{t("held on")} <Flagged text={one.holding} />
-											</span>
-										)}
-									</td>
-								</tr>
-							))}
-						</tbody>
-					</table>
-				</div>
-			)}
-		</div>
+			<Group>
+				{loading ? (
+					<Waiting rows={4} />
+				) : visits.length === 0 ? (
+					<p className="px-4 py-5 text-fg-muted text-[13.5px]">{t("Nothing recorded for this name.")}</p>
+				) : (
+					<ul>
+						{visits.map((one) => (
+							<Visited key={`${one.at}-${one.identity}`} visit={one} />
+						))}
+					</ul>
+				)}
+			</Group>
+		</Section>
 	);
 }
 
+/** One join. */
+function Visited({ visit: one }: { visit: Visit }) {
+	const t = useT();
+
+	const kind =
+		one.kind === "account" ? t("account") : one.kind === "passphrase" ? t("passphrase") : one.kind ? t("guest") : undefined;
+
+	return (
+		<li className="relative flex gap-3 px-4 py-3 before:absolute before:top-0 before:right-0 before:left-4 before:h-px before:bg-border first:before:hidden">
+			<span className="w-[4.75rem] shrink-0 text-[12.5px] text-fg-muted tabular-nums">
+				{clock(one.at)}
+				<span className="block text-[11.5px]">{day(one.at)}</span>
+			</span>
+
+			<div className="flex min-w-0 flex-1 flex-col gap-0.5">
+				{/* Their own name first: who somebody was in a meeting is what
+				    everybody in the room saw. The account goes beside the mark,
+				    where it is who this deployment knows the mark to be. Where
+				    there is neither, the name was not kept — nobody can join
+				    without one, so "no name" would be untrue. */}
+				<p className="flex flex-wrap items-baseline gap-x-2 text-[13.5px]">
+					{one.name ? (
+						<span className="font-medium">{one.name}</span>
+					) : one.account ? (
+						<span className="font-medium">{one.account}</span>
+					) : (
+						<span className="text-fg-muted">{t("name not kept then")}</span>
+					)}
+					{kind && <span className="text-[12px] text-fg-muted">{kind}</span>}
+					{one.account && one.account !== one.name && <span className="text-[12px] text-fg-muted">{one.account}</span>}
+					<span className="readout text-[11.5px] text-fg-muted">{one.trip ?? one.identity.split("-")[0]}</span>
+				</p>
+
+				<div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12.5px] text-fg-muted">
+					{one.client && <DeviceLine client={one.client} />}
+					{one.address && <span className="readout">{one.address}</span>}
+					{one.relay && (
+						<span className="flex items-center gap-1">
+							<LogIn className="size-3.5" />
+							<Flagged text={say(one.relay)} />
+						</span>
+					)}
+					{/* Where the meeting was, when that was somewhere else. On a call
+					    held on the machine somebody dialled, a second identical name
+					    is noise. */}
+					{one.holding && one.holding !== one.relay && (
+						<span className="flex items-center gap-1">
+							{t("held on")} <Flagged text={say(one.holding)} />
+							{/* Whether the media went through the relay they entered
+							    by, which the history has kept and no page drew. */}
+							{one.forwarded && (
+								<span className="rounded-full bg-tally/15 px-2 py-px text-[11px] text-tally-ink">{t("forwarded")}</span>
+							)}
+						</span>
+					)}
+				</div>
+			</div>
+		</li>
+	);
+}
+
+/** Somebody in the call, what they are sending, and what can be done about them. */
 function Person({
 	person,
+	leaving,
 	canModerate,
 	acting,
 	relays,
@@ -655,6 +589,7 @@ function Person({
 	onMute,
 }: {
 	person: Participant;
+	leaving: boolean;
 	canModerate: boolean;
 	acting: boolean;
 	relays: Relay[];
@@ -664,151 +599,140 @@ function Person({
 }) {
 	const t = useT();
 	const removing = useTwice(onRemove);
-	// The words that say a second press will remove them, faded in and out
-	// rather than snapped, like everything else that comes and goes here.
 	const asking = useLingering(removing.armed, 160);
 
 	return (
-		<li className="border-border border-b px-4 py-3 last:border-0">
-			<div className="flex items-baseline gap-2">
-				<span className="font-medium text-[13px]">{person.name || person.identity}</span>
+		<li
+			className={cn(
+				"relative px-4 py-3 before:absolute before:top-0 before:right-0 before:left-[60px] before:h-px before:bg-border first:before:hidden",
+				leaving ? "animate-depart" : "animate-fade-in",
+			)}
+		>
+			<div className="flex items-start gap-3">
+				<Initial name={person.name || person.identity} guest={!person.trip.proven} />
 
-				{/* The mark, and which kind. An earned one is the same person as
-				    last time; an issued one is only a way to tell two people
-				    with one name apart for the length of a call. */}
-				<span
-					className={cn("readout text-[11px]", person.trip.proven ? "text-fg-muted" : "text-fg-muted/50")}
-					title={
-						person.trip.proven
-							? t("Earned from a passphrase")
-							: t("Issued for this call, and says nothing about who they are")
-					}
-				>
-					{person.trip.proven ? "·" : ""}
-					{person.trip.mark}
-				</span>
+				<div className="flex min-w-0 flex-1 flex-col gap-1">
+					<p className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+						<span className="font-medium text-[14px]" title={person.identity}>
+							{person.name || person.identity}
+						</span>
 
-				{/* Only where somebody is not through yet.
-				    ACTIVE is everybody in an ordinary room, so drawing it would
-				    be a label on every row saying nothing — and the one person
-				    stuck part-way through a handshake looked exactly like the
-				    people around them, which is the state an operator is looking
-				    at this list to find. */}
-				{person.state && person.state !== "ACTIVE" && (
-					<span
-						className="rounded-full bg-surface-hi px-1.5 py-0.5 text-[10.5px] text-fg-muted"
-						title={t("Not through yet: still setting up their connection")}
-					>
-						{person.state.toLowerCase()}
-					</span>
-				)}
+						{/* The mark, and which kind. An earned one is the same person
+						    as last time; an issued one is only a way to tell two
+						    people with one name apart for the length of a call. */}
+						<span
+							className="readout text-[11.5px] text-fg-muted"
+							title={
+								person.trip.proven
+									? t("Earned from a passphrase")
+									: t("Issued for this call, and says nothing about who they are")
+							}
+						>
+							{person.trip.mark}
+						</span>
 
-				<span className="ml-auto text-fg-muted text-xs tabular-nums">
-					{since(person.joinedAt)}
-				</span>
-
-				{canModerate && relays.length > 0 && (
-					<Sending relays={relays} acting={acting} onPlace={onPlace} />
-				)}
-
-				{canModerate && (
-					// An icon with a name on it, matching every other row on these
-					// pages. A word floating at the end of a line reads as part of
-					// the line rather than as something to press, which is how a
-					// list of people came to look like it could not be acted on.
-					<button
-						type="button"
-						disabled={acting}
-						onClick={removing.press}
-						onBlur={removing.disarm}
-						aria-label={removing.armed ? t("Press again to remove") : t("Remove from the call")}
-						title={removing.armed ? t("Press again to remove") : t("Remove from the call")}
-						className={cn(
-							"flex items-center gap-1.5 rounded-md border border-border p-1.5 text-fg-muted transition-colors duration-150",
-							"hover:bg-surface-hi hover:text-danger disabled:opacity-40",
-							removing.armed && "border-danger/60 bg-danger/10 text-danger",
-						)}
-					>
-						<UserMinus className="size-3.5" />
-						{asking.mounted && (
-							<span className={cn("text-[11px]", asking.leaving ? "animate-fade-out" : "animate-fade-in")}>
-								{t("Press again to remove")}
+						{/* Only where somebody is not through yet. ACTIVE is everybody
+						    in an ordinary room, and the one person stuck part-way
+						    through a handshake is who this list is read to find. */}
+						{person.state && person.state !== "ACTIVE" && (
+							<span
+								className="rounded-full bg-tally/15 px-2 py-px text-[11.5px] text-tally-ink"
+								title={t("Not through yet: still setting up their connection")}
+							>
+								{person.state.toLowerCase()}
 							</span>
 						)}
-					</button>
-				)}
-			</div>
 
-			{/*
-			  * Where this person came from and how they got here.
-			  *
-			  * None of it is knowable from the media server. It sees each
-			  * participant over a signalling socket opened by a relay, so the
-			  * address it holds is the relay's and the machine it names is
-			  * whichever node was asked. This deployment saw the real address and
-			  * chose the machine, once, at the join, and wrote both down — which
-			  * is the only record of either.
-			  *
-			  * Absent for anybody who joined before this existed, and left absent
-			  * rather than filled with a dash: a blank says nothing was recorded,
-			  * and a dash reads as a value.
-			  */}
-			{(person.address || person.relay || person.client) && (
-				<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-muted">
-					{/* What they came in with first: of the three, it is the one
-					    somebody helping them asks before anything else. */}
-					<Device client={person.client} />
+						<span className="ml-auto text-[12px] text-fg-muted tabular-nums max-sm:hidden">{lasted(person.joinedAt)}</span>
+					</p>
 
-					{person.address && <span className="readout">{person.address}</span>}
+					{(person.address || person.relay || person.client) && (
+						<div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12.5px] text-fg-muted">
+							{/* How long they have been in, here on a phone, where the
+							    line above has no room left for it at its end. */}
+							<span className="tabular-nums sm:hidden">{lasted(person.joinedAt)}</span>
+							{/* What they came in with first: of the three, it is the one
+							    somebody helping them asks before anything else. */}
+							{person.client && <DeviceLine client={person.client} />}
 
-					{person.relay && (
-						<span className="flex items-center gap-1">
-							<LogIn className="size-3" />
-							<Flagged text={person.relay} />
-						</span>
-					)}
+							{person.address && <span className="readout">{person.address}</span>}
 
-					{/* Two machines and an arrow, only where there are two. A call
-					    entering one relay and being carried by another is the thing
-					    an operator most wants to see at a glance, and the thing
-					    they cannot see anywhere else. */}
-					{person.holding && (
-						<span className="flex items-center gap-1">
-							<ArrowRight className="size-3" />
-							<Flagged text={person.holding} />
-							{person.forwarded && (
-								<span className="rounded bg-tally/15 px-1.5 py-px text-[10px] text-fg">
-									forwarded
+							{person.relay && (
+								<span className="flex items-center gap-1">
+									<LogIn className="size-3.5" />
+									<Flagged text={say(person.relay)} />
 								</span>
 							)}
-						</span>
+
+							{/* Two machines and an arrow, only where there are two: a
+							    call entering one relay and carried by another is the
+							    thing an operator most wants to see at a glance. */}
+							{person.holding && (
+								<span className="flex items-center gap-1">
+									<ArrowRight className="size-3.5" />
+									<Flagged text={say(person.holding)} />
+									{person.forwarded && (
+										<span className="rounded-full bg-tally/15 px-2 py-px text-[11px] text-tally-ink">{t("forwarded")}</span>
+									)}
+								</span>
+							)}
+						</div>
+					)}
+
+					{person.tracks.length > 0 && (
+						<ul className="mt-1.5 flex flex-col gap-1">
+							{person.tracks.map((track) => (
+								<TrackRow
+									key={track.sid}
+									track={track}
+									canModerate={canModerate}
+									acting={acting}
+									onMute={() => onMute(track.sid)}
+								/>
+							))}
+						</ul>
 					)}
 				</div>
-			)}
 
-			{person.tracks.length > 0 && (
-				<ul className="mt-2 flex flex-col gap-1.5">
-					{person.tracks.map((track) => (
-						<TrackRow
-							key={track.sid}
-							track={track}
-							canModerate={canModerate}
-							acting={acting}
-							onMute={() => onMute(track.sid)}
-						/>
-					))}
-				</ul>
-			)}
+				{canModerate && (
+					<div className="flex shrink-0 items-center gap-0.5">
+						{relays.length > 0 && <Sending relays={relays} acting={acting} onPlace={onPlace} />}
+
+						<button
+							type="button"
+							disabled={acting}
+							onClick={removing.press}
+							onBlur={removing.disarm}
+							aria-label={removing.armed ? t("Press again to remove") : t("Remove from the call")}
+							title={removing.armed ? t("Press again to remove") : t("Remove from the call")}
+							className={cn(
+								asking.mounted ? quiet : quietIcon,
+								"hover:text-danger-ink",
+								removing.armed && "bg-danger/10 text-danger-ink hover:bg-danger/15",
+							)}
+						>
+							<UserMinus />
+							{asking.mounted && (
+								<span className={cn("text-[12.5px]", asking.leaving ? "animate-fade-out" : "animate-fade-in")}>
+									{t("Press again to remove")}
+								</span>
+							)}
+						</button>
+					</div>
+				)}
+			</div>
 		</li>
 	);
 }
 
 /**
- * One published track, with what it actually settled on.
- *
- * The layers are the point. A publisher asking for 1080p and a subscriber being
- * sent 540p look identical from every other angle, and the difference is the
- * whole of why a shared screen can look soft while every setting says otherwise.
+ * One track, on a line of its own: what it is, the codec, the size it settled
+ * on, whether it is sent in layers, and each layer's height and the rate it is
+ * allowed — written out, as the panel before the redesign had them. The
+ * redesign made each track a chip and put the layers in a tooltip, which a
+ * finger cannot open and which nobody reading the page for the rate a share
+ * is being sent at thinks to point at (2026-11-01). A track somebody may mute
+ * carries the button for it.
  */
 function TrackRow({
 	track,
@@ -824,69 +748,69 @@ function TrackRow({
 	const t = useT();
 
 	const codec = track.mime.replace(/^(video|audio)\//i, "").toLowerCase();
+	const Icon = track.kind === "AUDIO" ? Mic : Video;
 
 	return (
-		// Two lines rather than one. What it is and how it is encoded is one
-		// thought; the layers underneath are another, and together they wanted
-		// four hundred and thirty points on a screen with three hundred.
-		<li className="rounded-md bg-surface-hi/50 px-2.5 py-1.5">
-			<div className="flex items-baseline gap-x-3 text-xs">
-				<span className="shrink-0 text-fg-muted">{source(track.source)}</span>
-				<span className="readout text-[11px]">{codec || "—"}</span>
-
-				{track.width > 0 && (
-					<span className="readout text-[11px] tabular-nums">
-						{track.width}×{track.height}
-					</span>
-				)}
-
-				{track.muted && <span className="text-fg-muted text-[11px]">muted</span>}
-
-				{canModerate && !track.muted && (
-					// The same shape as every other action on these pages: an icon
-					// that says what it does when pointed at. A bare word at the end
-					// of a line of figures reads as another figure.
-					<button
-						type="button"
-						disabled={acting}
-						onClick={onMute}
-						aria-label={t("Mute this")}
-						title={t("Mute this")}
-						className={cn(
-							"ml-auto shrink-0 rounded p-1 text-fg-muted transition-colors",
-							"hover:bg-surface-hi hover:text-fg disabled:opacity-40",
-						)}
-					>
-						<MicOff className="size-3.5" />
-					</button>
-				)}
-			</div>
-
+		<li
+			title={track.sid}
+			className={cn(
+				"flex min-h-8 flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-[10px] bg-surface-hi/60 py-1 pr-1 pl-2.5 text-[12.5px] day:bg-bg",
+				track.muted && "text-fg-muted",
+			)}
+		>
+			<span className="flex items-center gap-1.5 font-medium">
+				<Icon className="size-3.5 shrink-0 text-fg-muted" />
+				{source(track.source, t)}
+			</span>
+			<span className="readout text-[11.5px] text-fg-muted">{codec || "—"}</span>
+			{track.width > 0 && (
+				<span className="readout text-[11.5px] tabular-nums">
+					{track.width}×{track.height}
+				</span>
+			)}
+			{track.simulcast && <span className="text-[12px] text-fg-muted">{t("in layers")}</span>}
 			{track.layers.length > 0 && (
-				<p className="readout mt-0.5 text-[11px] text-fg-muted tabular-nums">
-					{track.layers.map((layer) => `${layer.height}p ${bitrate(layer.bitrate)}`).join("  ·  ")}
-				</p>
+				<span className="readout text-[11.5px] text-fg-muted tabular-nums">
+					{track.layers.map((layer) => `${layer.height}p ${bitrate(layer.bitrate)}`).join(", ")}
+				</span>
+			)}
+			{track.muted && <span className="rounded-full bg-surface-hi px-2 text-[11.5px]">{t("muted")}</span>}
+
+			{canModerate && !track.muted && (
+				<button
+					type="button"
+					disabled={acting}
+					onClick={onMute}
+					aria-label={t("Mute this")}
+					title={t("Mute this")}
+					className={cn(
+						"ml-auto grid size-7 place-items-center rounded-full text-fg-muted outline-none transition-colors",
+						"hover:bg-wash hover:text-fg focus-visible:ring-2 focus-visible:ring-fg/70 disabled:opacity-40",
+						"pointer-coarse:size-9",
+					)}
+				>
+					<MicOff className="size-3.5" />
+				</button>
 			)}
 		</li>
 	);
 }
 
 /** The server's own names for these are shouted; these are the ones people use. */
-function source(name: string): string {
+function source(name: string, t: ReturnType<typeof useT>): string {
 	switch (name) {
 		case "CAMERA":
-			return "camera";
+			return t("Camera");
 		case "MICROPHONE":
-			return "microphone";
+			return t("Microphone");
 		case "SCREEN_SHARE":
-			return "screen";
+			return t("Screen");
 		case "SCREEN_SHARE_AUDIO":
-			return "screen audio";
+			return t("Screen audio");
 		default:
 			return name.toLowerCase().replace(/_/g, " ");
 	}
 }
-
 
 /**
  * Moving a meeting to a different machine.
@@ -896,10 +820,6 @@ function source(name: string): string {
  * choice and the disruption are separate: picking a relay settles where the next
  * call under this name goes, and moving it now ends the one in progress so
  * everybody comes back to the machine that was picked.
- *
- * Said in the button rather than in a warning beside it. A control that ends a
- * call must not be pressed by somebody who thought it would not, and the place
- * they are certainly reading is the thing they are about to press.
  */
 function Moving({
 	relays,
@@ -918,100 +838,67 @@ function Moving({
 
 	const [open, setOpen] = useState(false);
 	const [wanted, setWanted] = useState("");
-	const { mounted, leaving } = useLingering(open, 160);
 
 	return (
-		<span className="relative">
-			<button
-				type="button"
-				onClick={() => setOpen((was) => !was)}
-				className={cn(
-					"flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px]",
-					"text-fg-muted transition-colors hover:bg-surface-hi hover:text-fg",
-				)}
+		<Popover
+			open={open}
+			onClose={() => setOpen(false)}
+			align="right"
+			trigger={
+				<Button variant="secondary" size="sm" aria-expanded={open} onClick={() => setOpen((was) => !was)}>
+					<Move />
+					{t("Move")}
+				</Button>
+			}
+		>
+			<select value={wanted} onChange={(event) => setWanted(event.target.value)} className={cn(field, "mb-1")}>
+				<option value="">{t("Choose a machine")}</option>
+				{relays.map((relay) => (
+					<option key={relay.name} value={relay.name}>
+						{say(relay.label || relay.name)}
+					</option>
+				))}
+			</select>
+
+			<Choice
+				disabled={!wanted || acting}
+				onClick={() => {
+					onPlace(wanted, false);
+					setOpen(false);
+				}}
 			>
-				<Move className="size-3" />{t("Move")}</button>
+				{t("Hold the next call here")}
+			</Choice>
 
-			{mounted && (
-				<div
-					className={cn(
-						"absolute top-full left-0 z-20 mt-1.5 flex w-64 flex-col gap-1.5",
-						"rounded-xl border border-border bg-surface-hi p-2 shadow-2xl ring-1 ring-black/40",
-						"origin-top",
-						leaving ? "animate-depart" : "animate-arrive",
-					)}
+			<Choice
+				danger
+				disabled={!wanted || acting}
+				onClick={() => {
+					onPlace(wanted, true);
+					setOpen(false);
+				}}
+			>
+				{t("Move now, ending this call")}
+			</Choice>
+
+			{/* Only where there is a choice to give back. Offered on a room nobody
+			    has placed, it would read as a third way of moving one. */}
+			{placed && (
+				<Choice
+					disabled={acting}
+					onClick={() => {
+						onFree();
+						setOpen(false);
+					}}
 				>
-					<select
-						value={wanted}
-						onChange={(event) => setWanted(event.target.value)}
-						className="rounded-md border border-border bg-surface-hi px-2 py-1.5 text-[12px] outline-none"
-					>
-						<option value="">{t("Choose a machine")}</option>
-						{relays.map((relay) => (
-							<option key={relay.name} value={relay.name}>
-								{relay.label || relay.name}
-							</option>
-						))}
-					</select>
-
-					<button
-						type="button"
-						disabled={!wanted || acting}
-						onClick={() => {
-							onPlace(wanted, false);
-							setOpen(false);
-						}}
-						className={cn(
-							"rounded-md border border-border px-2 py-1.5 text-left text-[11.5px]",
-							"transition-colors hover:bg-surface-hi disabled:opacity-40",
-						)}
-					>{t("Hold the next call here")}</button>
-
-					<button
-						type="button"
-						disabled={!wanted || acting}
-						onClick={() => {
-							onPlace(wanted, true);
-							setOpen(false);
-						}}
-						className={cn(
-							"rounded-md border border-danger/40 bg-danger/10 px-2 py-1.5 text-left text-[11.5px]",
-							"transition-colors hover:bg-danger/20 disabled:opacity-40",
-						)}
-					>{t("Move now, ending this call")}</button>
-
-					{/* Only where there is a choice to give back. Offered on a
-					    room nobody has placed, it would read as a third way of
-					    moving one. */}
-					{placed && (
-						<button
-							type="button"
-							disabled={acting}
-							onClick={() => {
-								onFree();
-								setOpen(false);
-							}}
-							className={cn(
-								"rounded-md px-2 py-1.5 text-left text-[11.5px] text-fg-muted",
-								"transition-colors hover:bg-surface-hi hover:text-fg disabled:opacity-40",
-							)}
-						>{t("Choose automatically again")}</button>
-					)}
-				</div>
+					{t("Choose automatically again")}
+				</Choice>
 			)}
-		</span>
+		</Popover>
 	);
 }
 
-/**
- * Sending one person in through a different relay.
- *
- * Where somebody enters is theirs — their browser measures and picks — and this
- * takes it over for one join, which is the whole of what an operator can
- * honestly do: a browser holds its connection to the machine it dialled, and
- * nothing in the protocol asks it to move. So they are let go of, and the door
- * they come back through is the one chosen here.
- */
+/** Sending one person in through another relay, which drops them and brings them back there. */
 function Sending({
 	relays,
 	acting,
@@ -1024,67 +911,47 @@ function Sending({
 	const t = useT();
 
 	const [open, setOpen] = useState(false);
-	const { mounted, leaving } = useLingering(open, 160);
 
 	return (
-		<span className="relative">
-			<button
-				type="button"
-				disabled={acting}
-				onClick={() => setOpen((was) => !was)}
-				aria-label={t("Send in through another relay")}
-				title={t("Send in through another relay")}
-				className={cn(
-					"rounded-md border border-border p-1.5 text-fg-muted transition-colors",
-					"hover:bg-surface-hi hover:text-fg disabled:opacity-40",
-				)}
-			>
-				<Move className="size-3.5" />
-			</button>
-
-			{mounted && (
-				<div
-					className={cn(
-						"absolute top-full right-0 z-20 mt-1.5 flex w-56 flex-col gap-1.5",
-						"rounded-xl border border-border bg-surface-hi p-2 shadow-2xl ring-1 ring-black/40",
-						"origin-top",
-						leaving ? "animate-depart" : "animate-arrive",
-					)}
+		<Popover
+			open={open}
+			onClose={() => setOpen(false)}
+			align="right"
+			className="w-60"
+			trigger={
+				<button
+					type="button"
+					disabled={acting}
+					onClick={() => setOpen((was) => !was)}
+					aria-label={t("Send in through another relay")}
+					title={t("Send in through another relay")}
+					aria-expanded={open}
+					className={quietIcon}
 				>
-					<p className="px-0.5 text-[10.5px] text-fg-muted leading-snug">{t("They are dropped from the call and come back in through this one.")}</p>
+					<Move />
+				</button>
+			}
+		>
+			<p className="px-2.5 pt-1 pb-1.5 text-[12px] text-fg-muted leading-snug">
+				{t("They are dropped from the call and come back in through this one.")}
+			</p>
 
-					{relays.map((relay) => (
-						<button
-							key={relay.name}
-							type="button"
-							onClick={() => {
-								onPlace(relay.name);
-								setOpen(false);
-							}}
-							className="rounded-md px-2 py-1 text-left text-[12px] transition-colors hover:bg-surface-hi"
-						>
-							<Flagged text={relay.label || relay.name} />
-						</button>
-					))}
-				</div>
-			)}
-		</span>
+			{relays.map((relay) => (
+				<Choice
+					key={relay.name}
+					onClick={() => {
+						onPlace(relay.name);
+						setOpen(false);
+					}}
+				>
+					<Flagged text={say(relay.label || relay.name)} />
+				</Choice>
+			))}
+		</Popover>
 	);
 }
 
-/**
- * Removing a name from the list this server has seen.
- *
- * Two presses, because it cannot be undone and because it sits in a list people
- * click through: the row it is on opens a history, and a single-press delete
- * beside that is one slip away from taking a name and its history with it.
- *
- * What it is for is the placement. A name carries where an operator said it
- * goes and that now stands until somebody says otherwise, so a name used once
- * for a test keeps a machine assigned to it until it ages out — and until this
- * existed there was no way to be rid of it but waiting. Clearing the placement
- * alone is a different control, on the panel the row opens.
- */
+/** Forgetting a name this server remembers, after asking. */
 function Forget({
 	room,
 	acting,
@@ -1104,46 +971,43 @@ function Forget({
 			{mounted ? (
 				<span
 					className={cn(
-						"flex items-center gap-1 rounded-md bg-surface px-1 py-0.5",
+						"flex items-center gap-1.5 rounded-[10px] bg-surface py-0.5 pl-2",
 						leaving ? "animate-depart" : "animate-arrive",
 					)}
 				>
-					<span className="pr-1 text-[11px] text-fg-muted">{t("Forget it?")}</span>
-
-					<button
-						type="button"
+					<span className="text-[12.5px] text-fg-muted">{t("Forget it?")}</span>
+					<Button
+						variant="danger"
+						size="sm"
 						disabled={acting}
 						onClick={() => {
 							setAsking(false);
 							onForget();
 						}}
-						className={cn(
-							"rounded-md bg-danger px-2 py-0.5 text-[11px] text-danger-fg",
-							"transition-opacity hover:opacity-90 disabled:opacity-40",
-						)}
-					>{t("Forget")}</button>
-
-					<button
-						type="button"
-						onClick={() => setAsking(false)}
-						className="rounded-md border border-border px-2 py-0.5 text-[11px] hover:bg-surface-hi"
-					>{t("Cancel")}</button>
+					>
+						{t("Forget")}
+					</Button>
+					<Button variant="ghost" size="sm" onClick={() => setAsking(false)}>
+						{t("Cancel")}
+					</Button>
 				</span>
 			) : (
 				/* Quiet until the row is under the pointer, because a column of
-				   crosses down a list reads as a list of things to get rid of. */
+				   bins down a list reads as a list of things to get rid of. Always
+				   there for a finger, which has no hover. */
 				<button
 					type="button"
 					aria-label={t("Forget {room}", { room })}
 					onClick={() => setAsking(true)}
 					className={cn(
-						"rounded-md p-1 text-fg-muted opacity-0 transition-opacity",
-						"hover:bg-surface-hi hover:text-fg focus-visible:opacity-100 group-hover:opacity-100",
+						quietIcon,
+						"opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100",
 					)}
 				>
-					<Trash2 className="size-3.5" />
+					<Trash2 />
 				</button>
 			)}
 		</span>
 	);
 }
+

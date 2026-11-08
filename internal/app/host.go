@@ -1,14 +1,14 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
-
-	"github.com/livekit/protocol/auth"
 
 	"tomoshibi/internal/admin"
 	"tomoshibi/internal/config"
@@ -69,29 +69,118 @@ type bearer struct {
 // a field the caller filled in. The room is taken from the grant rather than
 // from the path: a token for one meeting must not act on another, and comparing
 // the two is the whole of that guarantee.
+//
+// And it must be one this node minted. The signature alone does not say so:
+// every relay holds the key pair, because every relay verifies the tokens
+// clients bring it, so a relay can write a token for anybody. The proof in its
+// JWT ID is keyed from the tripcode key, which no relay has (room.Present).
+//
+// Past its expiry it is still good here on two conditions, and not otherwise.
+// A join token lives five minutes because it is for joining, and the page and
+// the apps hold it for the whole meeting as the only thing that says who they
+// are: so somebody who opened a room with a passphrase, and has no session
+// anywhere, lost every host control five minutes in — and once tokens had to
+// carry the proof, so did the apps, which had been presenting the token the
+// media server refreshes, which carries none. So an expired token is accepted
+// while the identity it names is in that room now, as the media servers see it,
+// and for no more than a day after it was minted. A copy of it is then worth
+// nothing to anybody but the person still sitting in the call under it.
 func (a *App) whoIs(r *http.Request) (bearer, bool) {
 	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if raw == "" || raw == r.Header.Get("Authorization") {
 		return bearer{}, false
 	}
 
-	verifier, err := auth.ParseAPIToken(raw)
-	if err != nil {
+	presented, ok := room.Present(raw, a.conf.Key, a.conf.Secret, a.tripKey)
+	if !ok {
 		return bearer{}, false
 	}
 
-	if verifier.APIKey() != a.conf.Key {
-		return bearer{}, false
+	now := a.now()
+	if now.After(presented.Expires.Add(tokenLeeway)) {
+		if presented.Issued.IsZero() || now.Sub(presented.Issued) > hostTokenFor {
+			return bearer{}, false
+		}
+
+		if !a.inTheRoom(r.Context(), presented.Room, presented.Identity) {
+			return bearer{}, false
+		}
 	}
 
-	_, grants, err := verifier.Verify(a.conf.Secret)
-	if err != nil || grants == nil || grants.Video == nil {
-		return bearer{}, false
+	mark, _ := room.SignatureOf(presented.Identity)
+
+	return bearer{Identity: presented.Identity, Room: presented.Room, Mark: mark}, true
+}
+
+const (
+	// tokenLeeway is the clock skew allowed either side of an expiry, the same
+	// minute the media server's own verifier allows.
+	tokenLeeway = time.Minute
+
+	// hostTokenFor is the most a join token is good for at the host endpoints,
+	// however long its holder stays in the room: a day from when it was minted.
+	hostTokenFor = 24 * time.Hour
+
+	// presenceFor is how long the answer to who is in a room is reused. The
+	// panel asks whether it may act on every roster change, and each answer
+	// would otherwise be a call to a relay.
+	presenceFor = 10 * time.Second
+)
+
+// presence is who was in each room when last asked.
+type presence struct {
+	mu   sync.Mutex
+	seen map[string]presenceReading
+}
+
+type presenceReading struct {
+	identities map[string]bool
+	at         time.Time
+}
+
+// inTheRoom reports whether an identity is a participant of a room now, asked
+// of the media servers and remembered for a few seconds. Anything that cannot
+// be asked answers no: this is the condition that keeps an old token from
+// being anybody's, and it does not give way when it cannot be checked.
+func (a *App) inTheRoom(ctx context.Context, name, identity string) bool {
+	now := a.now()
+
+	a.presence.mu.Lock()
+	reading, known := a.presence.seen[name]
+	a.presence.mu.Unlock()
+
+	if !known || now.Sub(reading.at) > presenceFor {
+		identities := map[string]bool{}
+
+		err := a.acting(nil, func(control admin.Control) error {
+			people, err := control.Participants(ctx, name)
+			for _, one := range people {
+				identities[one.Identity] = true
+			}
+			return err
+		})
+		if err != nil {
+			return false
+		}
+
+		reading = presenceReading{identities: identities, at: now}
+
+		a.presence.mu.Lock()
+		if a.presence.seen == nil {
+			a.presence.seen = map[string]presenceReading{}
+		}
+		// Swept as it is written, so a deployment of many short meetings does
+		// not keep every room it was ever asked about.
+		for room, held := range a.presence.seen {
+			if now.Sub(held.at) > presenceFor {
+				delete(a.presence.seen, room)
+			}
+		}
+		a.presence.seen[name] = reading
+		a.presence.mu.Unlock()
 	}
 
-	mark, _ := room.SignatureOf(grants.Identity)
-
-	return bearer{Identity: grants.Identity, Room: grants.Video.Room, Mark: mark}, true
+	return reading.identities[identity]
 }
 
 // mayHost reports whether this request may act on this room.
@@ -174,6 +263,8 @@ func (a *App) mayHost(r *http.Request, name string) (bearer, bool) {
 		return bearer{}, false
 	}
 
+	// A session saying this is an administrator, beside whatever the token
+	// says; never the token saying so (administrating).
 	if a.administrating(r, who.Mark) {
 		return who, true
 	}
@@ -195,25 +286,23 @@ func (a *App) mayHost(r *http.Request, name string) (bearer, bool) {
 	return who, who.Mark.Proven && host != "" && host == who.Mark.Trip
 }
 
-// administrating reports whether this request is an administrator's, by any of
-// the three ways somebody can be one.
+// administrating reports whether this request is an administrator's, by a
+// session: the management one, or an account's where that account is an
+// administrator who may act on rooms.
 //
-// The mark alone was the whole test, and it is the one that fails in the case
-// that matters. It only says what the identity was minted from: somebody who
-// followed an invitation is a guest by design and carries a mark drawn from
-// nothing, and somebody who joined without typing their passphrase carries
-// nothing either. Both of them can be sitting in the management pages in the
-// next tab, and both were told a room they administer was not theirs.
+// Not by the mark a join token carries, which it once was. The mark was the
+// whole test first, and failed somebody who followed an invitation or joined
+// without typing their passphrase; sessions were added beside it. It then
+// turned out to be the one way in that a relay could forge: every relay holds
+// the key pair join tokens are signed with, and an administrator's signature is
+// on screen beside their name in every call, so any relay could write itself a
+// token as an administrator and close, empty, move or hand out standing
+// invitations into every room on the deployment. A session is held by this
+// node alone.
 //
-// So a session counts as well — the management one, and an account's where that
-// account is an administrator. All three answer the same question and no two of
-// them answer it in the same place, which is precisely why one of them was
-// missed.
-func (a *App) administrating(r *http.Request, mark room.Signature) bool {
-	if a.mayModerate(mark) {
-		return true
-	}
-
+// The mark argument is kept for the callers that pass the one they read from a
+// session, and is not consulted: the session it came from is.
+func (a *App) administrating(r *http.Request, _ room.Signature) bool {
 	// A management session, and only one that may act on rooms.
 	//
 	// The management pages are careful about the difference: closing a room,
@@ -537,7 +626,9 @@ func (a *App) moveRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if wanted.AdminOnly && !a.administrating(r, who.Mark) {
+	// And not onto a relay that is somebody else's own (own.go), which is the
+	// same rule for the same reason.
+	if !a.mayHoldOn(r, who.Mark, wanted) {
 		fail(w, http.StatusForbidden, reasonRelayNotAllowed)
 		return
 	}

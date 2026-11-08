@@ -39,7 +39,9 @@ meet:
   listen: "127.0.0.1:8080"
 
   # Behind nginx, which is behind a CDN: two proxies append to X-Forwarded-For.
-  # Without a CDN this is 1.
+  # Without a CDN this is 1. With one, nginx must take connections from the
+  # CDN alone; reached directly, the address the limits and the sign-in
+  # lockout count is whatever the caller writes.
   trust_proxy: true
   proxies: 2
 
@@ -53,7 +55,7 @@ meet:
   # At least one entry is REQUIRED on every start of a control node, even
   # though the list is read into the store only on the first start and the
   # management pages are the authority afterwards. Enrolling a relay with the
-  # same prefix later takes this entry over (the script asks, or REPLACE=1).
+  # same prefix later takes this entry over, with a token minted to do so.
   relays:
     - name: hk
       url: wss://hk.relay.example.com:13377
@@ -83,13 +85,11 @@ meet:
     joined_by: invited
     remember: 72h
 
-  # Relays bring themselves up from one command. Absent (no secret or no
-  # domain), /install, /download/tomoshibi and /api/enrol do not exist.
+  # Relays bring themselves up from one command and a one-time token minted
+  # on the relays page. Absent a domain, /install, /download/tomoshibi and
+  # /api/enrol do not exist. There is no enrolment secret to set: the old
+  # `secret` key is refused unless `accept_secret: true`.
   enrol:
-    # Long random string, for example `openssl rand -hex 32`. Anybody holding
-    # it can add a relay and receive the API secret, the redis password and the
-    # certificate key. Treat it as the credential it is.
-    secret: "<long random string>"
     # New relays become <prefix>.<domain>. Must not be (or sit under) a name
     # that carries a CNAME.
     domain: relay.example.com
@@ -144,3 +144,35 @@ meet:
   #     key_file: /etc/tomoshibi/asc-testflight.p8
   #     group: "<external beta group id>"
   #     public_link: https://testflight.apple.com/join/<code>
+
+  # Optional. Cloudflare Turnstile in front of the account and management
+  # sign-ins. Both keys come from one widget in Cloudflare's dashboard; the
+  # secret never leaves this server. Unset, neither sign-in asks for a check.
+  # turnstile:
+  #   site_key: "<the widget's site key>"
+  #   secret_key: "<the widget's secret key>"
+  #   # Where the sign-in pages are served. Set it, above all where the widget
+  #   # is shared with another site: empty holds a token to the Host each
+  #   # request names, which a script writes for itself.
+  #   hostnames: [meet.example.com]
+  #   # The native apps are never asked for the check, administrators
+  #   # included, while this is true (the default), by the owner's decision.
+  #   # The sign-in lockout and the guessing budget protect a sign-in from an
+  #   # app. The management sign-in is never exempt; the apps never call it.
+  #   exempt_native_apps: true
+  #   # A program on this machine that connects over loopback and sends none
+  #   # of X-Forwarded-For, X-Real-IP and Forwarded signs in at either door
+  #   # without the check while this is true (the default): a cron health
+  #   # check or an operations script at http://127.0.0.1:8080. Only the check
+  #   # is spared; the lockout and the limits still apply. A proxy in front
+  #   # MUST always set X-Forwarded-For or X-Real-IP (the nginx example sets
+  #   # X-Forwarded-For $proxy_add_x_forwarded_for), or every caller it passes
+  #   # on is spared too, and counted as 127.0.0.1 with the tools themselves.
+  #   # In nginx that is every location that passes to this server: one that
+  #   # sets any proxy_set_header of its own inherits none from the server
+  #   # block, and proxy_pass alone sends none. And nothing that forwards
+  #   # below HTTP may point at this server's port while this is true, since
+  #   # it cannot add the header: HAProxy in mode tcp, socat, frp, a port
+  #   # forward in sing-box or xray, ssh -L or -R, DNAT with route_localnet.
+  #   # Where any of those is needed, set this false.
+  #   exempt_local: true

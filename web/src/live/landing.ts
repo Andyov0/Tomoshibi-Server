@@ -44,7 +44,10 @@
  * answered there by Windows itself, with a dialog offering to look for an app
  * that opens the link, and by Firefox with an error in place of the page;
  * asked on arrival, that would be the first thing everybody without the app
- * saw. So there, too, it is a button, beside the download.
+ * saw. So there, too, it is a button, beside the download. And on Linux,
+ * where Chrome asks to hand the link to xdg-open whether or not anything will
+ * open it, and the Linux app registers the scheme only once its first start
+ * has been allowed to add it to the desktop's apps.
  *
  * Not inside WeChat, QQ and the other apps whose built-in browser will open no
  * app and download nothing: there the page says to open the link in the
@@ -73,7 +76,7 @@
  * never over a call, which App.tsx draws before anything else.
  */
 
-import type { Offered } from "@/components/apps/shelves";
+import { type Offered, offersLinux } from "@/components/apps/shelves";
 import { keepForTab, recallForTab } from "@/lib/storage";
 import type { Platform } from "./platform";
 
@@ -149,6 +152,7 @@ export type Offer =
 	| { kind: "mac" }
 	| { kind: "android" }
 	| { kind: "windows" }
+	| { kind: "linux" }
 	| { kind: "ios-invite" }
 	| { kind: "ios-link"; link: string }
 	| { kind: "windows-soon" };
@@ -167,6 +171,10 @@ export function offerFor(device: Platform | undefined, offered: Offered): Offer 
 		case "ios":
 			if (offered.ios.invites) return { kind: "ios-invite" };
 			return offered.ios.link ? { kind: "ios-link", link: offered.ios.link } : undefined;
+		// Either processor's build. Nothing where there is neither: unlike
+		// Windows, nobody on Linux was told an app was coming.
+		case "linux":
+			return offersLinux(offered) ? { kind: "linux" } : undefined;
 		default:
 			return undefined;
 	}

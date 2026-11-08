@@ -63,8 +63,8 @@ logging:
 # Optional: the media server's own TURN server, so this relay can carry a call
 # that is held on another relay ("Forwards through" / "Forwards other rooms"
 # on the relay page). UDP only, so no domain or certificate is needed. The
-# enrolment does not write this section, and re-enrolling with REPLACE=1
-# removes it.
+# enrolment does not write this section, and re-enrolling with a takeover
+# token removes it.
 # turn:
 #   enabled: true
 #   udp_port: 13381
@@ -77,6 +77,9 @@ meet:
   # The certificate every relay serves for wss://<prefix>.relay.example.com.
   # The control node pushes renewals here hourly; it is re-read on the next
   # TLS handshake without a restart.
+  # With turn enabled above: the other relays' media addresses, the only
+  # peers its TURN server forwards to. Left out, it forwards to anywhere.
+  # turn_peers: [198.51.100.7, 198.51.100.8]
   tls_cert: /etc/tomoshibi/certs/relay.fullchain.pem
   tls_key: /etc/tomoshibi/certs/relay.key
   # Where this relay answers STUN so browsers can time one round trip.

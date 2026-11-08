@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"tomoshibi/internal/dns"
 	"tomoshibi/internal/store"
 )
 
@@ -59,12 +60,22 @@ type relayView struct {
 	Enabled   bool     `json:"enabled"`
 	Added     string   `json:"added,omitempty"`
 
+	// Owners are the accounts holding this relay as their own, by name: the
+	// only people besides administrators it is offered to. See store/own.go.
+	Owners []string `json:"owners,omitempty"`
+
 	// Reachable and Latency are measured when the page is drawn, from this
 	// machine. A client's own measurement may differ and usually will — this is
 	// whether the relay is up, not whether it is near anybody.
 	Reachable bool   `json:"reachable"`
 	LatencyMS int64  `json:"latencyMs,omitempty"`
 	Detail    string `json:"detail,omitempty"`
+
+	// Unavailable says why a relay is offered to nobody even though it is in
+	// service: "no_signalling" for one that carries media only while no relay
+	// that signals for itself is answering to carry it. The page says so on
+	// the row, because otherwise the only sign is that nobody lands there.
+	Unavailable string `json:"unavailable,omitempty"`
 }
 
 // listRelays draws the relay list, checking each one as it goes.
@@ -85,10 +96,12 @@ func (a *API) listRelays(_ Session, w http.ResponseWriter, r *http.Request) {
 	}
 
 	views := make([]relayView, len(list))
+	owners := a.owners()
 
 	var wait sync.WaitGroup
 	for i, relay := range list {
-		views[i] = viewOf(relay)
+		views[i] = a.viewOf(relay)
+		views[i].Owners = owners[relay.Name]
 
 		if a.probe == nil {
 			continue
@@ -137,7 +150,8 @@ func (a *API) checkRelay(_ Session, w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		view := viewOf(relay)
+		view := a.viewOf(relay)
+		view.Owners = a.owners()[relay.Name]
 		a.measure(r.Context(), &view, relay.URL)
 
 		respond(w, view)
@@ -147,7 +161,41 @@ func (a *API) checkRelay(_ Session, w http.ResponseWriter, r *http.Request) {
 	refuse(w, http.StatusNotFound, "no_such_relay")
 }
 
+// owners is whose own each relay is, read from the accounts. Nothing where
+// there are no accounts to read, which leaves every relay nobody's.
+func (a *API) owners() map[string][]string {
+	owners := map[string][]string{}
+	if a.ledger == nil {
+		return owners
+	}
+
+	accounts, err := a.ledger.Accounts()
+	if err != nil {
+		return owners
+	}
+
+	for _, account := range accounts {
+		for _, name := range account.Relays {
+			owners[name] = append(owners[name], account.Name)
+		}
+	}
+
+	return owners
+}
+
 // viewOf is a stored relay as a page reads it, before anything is measured.
+// viewOf is viewOf with what only the choosing side knows: whether the relay
+// is stranded.
+func (a *API) viewOf(relay store.Relay) relayView {
+	view := viewOf(relay)
+
+	if relay.Enabled && a.stranded != nil && a.stranded(relay) {
+		view.Unavailable = "no_signalling"
+	}
+
+	return view
+}
+
 func viewOf(relay store.Relay) relayView {
 	view := relayView{
 		Name: relay.Name, URL: relay.URL, Region: relay.Region,
@@ -456,7 +504,7 @@ func (a *API) dropRelay(session Session, w http.ResponseWriter, r *http.Request)
 		})
 		// Said as itself, since the way on is to change another relay; every
 		// other refusal here is a relay that has already gone.
-		if errors.Is(err, store.ErrRelaySignalledThrough) {
+		if errors.Is(err, store.ErrRelaySignalledThrough) || errors.Is(err, store.ErrRelayIsSomebodys) {
 			refuse(w, http.StatusConflict, relayReason(err))
 			return
 		}
@@ -490,10 +538,19 @@ func (a *API) dropRelay(session Session, w http.ResponseWriter, r *http.Request)
 	//
 	// The address is the one thing that cannot drift: it is what clients dial.
 	if host := hostOf(removed.URL); host != "" && a.enrolment != nil && a.enrolment.Naming != nil {
-		if err := a.enrolment.Naming.Unpoint(host); err != nil {
+		switch err := a.enrolment.Naming.Unpoint(host); {
+		case errors.Is(err, dns.ErrOutsideDomain):
+			// A relay added by address, under some other name. Its record, if
+			// it has one, is somebody's to remove by hand.
+			slog.Info("a removed relay's name is not one this deployment writes, so its DNS "+
+				"record was left alone", "host", host)
+		case errors.Is(err, dns.ErrNotOurs):
+			slog.Warn("a removed relay's name has a DNS record this deployment did not create, "+
+				"and it was left in place", "host", host, "error", err)
+		case err != nil:
 			slog.Error("failed to remove the DNS record for a relay that was removed",
 				"host", host, "error", err)
-		} else {
+		default:
 			slog.Info("unpointed a removed relay's name", "host", host)
 		}
 	}
@@ -544,6 +601,10 @@ func relayReason(err error) string {
 		return "relay_long_region"
 	case errors.Is(err, store.ErrRelaySignalledThrough):
 		return "relay_signalled_through"
+	case errors.Is(err, store.ErrRelayNeedsProbe):
+		return "relay_needs_probe"
+	case errors.Is(err, store.ErrRelayIsSomebodys):
+		return "relay_is_somebodys"
 	default:
 		return "relay_refused"
 	}

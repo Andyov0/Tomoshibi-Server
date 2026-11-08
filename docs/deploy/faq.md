@@ -32,8 +32,8 @@ NAT, list the public address under `meet.public_addresses`.
 **How do I upgrade a relay?**
 Replace the binary and restart, with the fleet idle:
 `dev/watch/update-relay.sh`, or [upgrade-relays.sh](examples/upgrade-relays.sh)
-for many. Re-enrolling with `REPLACE=1` also works but rewrites the relay's
-configuration.
+for many. Re-enrolling with a takeover token also works but rewrites the
+relay's configuration.
 
 **Does restarting the control node drop calls?**
 No. Nobody can join while it is down. Restarting a relay, or a single

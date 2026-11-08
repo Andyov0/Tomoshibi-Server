@@ -1,5 +1,17 @@
+import { LinuxCommand } from "@/components/apps/LinuxCommand";
 import { Invite, PublicLink } from "@/components/apps/Invite";
-import { ANDROID_APP, Figures, MAC, type Offered, WINDOWS_APP } from "@/components/apps/shelves";
+import {
+	ANDROID_APP,
+	Figures,
+	LINUX_APP,
+	MAC,
+	type Offered,
+	PROCESSORS,
+	WINDOWS_APP,
+	linuxFigures,
+	linuxOf,
+	offers,
+} from "@/components/apps/shelves";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Phrased, useT } from "@/hooks/useT";
 import { cn } from "@/lib/utils";
@@ -208,15 +220,14 @@ export function Landing({ link, room, offered, device, ipad, inApp, onBrowser }:
 					{/*
 					 * The app's own mark, large, in the place the camera
 					 * preview has on the screen after this: the one thing the
-					 * page is about. The glow is the lobby's, from underneath.
+					 * page is about.
 					 */}
-					<div className="relative">
-						<div
-							aria-hidden
-							className="-inset-6 absolute rounded-full bg-[radial-gradient(closest-side,var(--color-tally)_0%,transparent_100%)] opacity-[0.16]"
-						/>
-						<img src="/favicon.svg" alt="" className="relative size-16 rounded-[18px] shadow-2xl" />
-					</div>
+					{/* Without the glow it had behind it at night: a gradient, and
+					    the owner's rule is that there are none. And without its
+					    shadow by day, where a dark mark needs nothing to stand off
+					    a pale page and the night's deep shadow spread a grey halo
+					    half again as wide as the mark around it. */}
+					<img src="/favicon.svg" alt="" className="size-16 rounded-[18px] shadow-2xl day:shadow-none" />
 
 					<p className="text-[13px] text-fg-muted leading-snug">
 						<Phrased
@@ -270,7 +281,15 @@ export function Landing({ link, room, offered, device, ipad, inApp, onBrowser }:
 					)}
 
 					{swap.shown === "offer" && offer && (
-						<Offering offer={offer} offered={offered} ipad={ipad} href={href} started={started} again={again}>
+						<Offering
+							offer={offer}
+							offered={offered}
+							ipad={ipad}
+							href={href}
+							hrefOf={(path) => downloadHref(path, link)}
+							started={started}
+							again={again}
+						>
 							{offer.kind === "ios-invite" && (
 								<div className="flex w-full flex-col gap-2.5 text-left">
 									{/* A session that ended under the form leaves somebody who
@@ -338,6 +357,7 @@ function Offering({
 	offered,
 	ipad,
 	href,
+	hrefOf,
 	started,
 	again,
 	children,
@@ -346,6 +366,8 @@ function Offering({
 	offered: Offered;
 	ipad: boolean;
 	href: string;
+	/** Where a build at a path is downloaded from with the link: Linux has two. */
+	hrefOf: (path: string) => string;
 	started: boolean;
 	again: () => void;
 	children?: ReactNode;
@@ -371,7 +393,7 @@ function Offering({
 							role="status"
 							className="animate-arrive flex w-full items-center gap-2.5 rounded-lg bg-surface px-3 py-2.5 text-left"
 						>
-							<Download className="size-4 shrink-0 text-tally" />
+							<Download className="size-4 shrink-0 text-tally-ink" />
 							<p className="min-w-0 text-[12.5px] text-fg leading-snug">{t("Your download has started.")}</p>
 						</div>
 					)}
@@ -456,6 +478,37 @@ function Offering({
 					{reopen}
 				</State>
 			);
+
+		// One button for each processor's build there is, the usual one first
+		// and amber, the other beside it in the plain style (shelves.tsx says
+		// why the page does not choose).
+		case "linux": {
+			const linux = linuxOf(offered);
+			return (
+				<State icon={<LINUX_APP.icon className="size-5" />} title={t("Get the Linux app")} line={<Figures build={linuxFigures(offered)} />}>
+					<div className="flex w-full flex-col gap-2">
+						{PROCESSORS.filter((one) => offers(linux[one.key])).map((one, index) => (
+							<a
+								key={one.key}
+								href={hrefOf(one.href)}
+								download
+								className={cn(buttonVariants({ variant: index === 0 ? "primary" : "outline" }), "w-full")}
+							>
+								<Download />
+								{t(LINUX_APP.take, { architecture: one.name })}
+							</a>
+						))}
+					</div>
+
+					<p className="text-pretty text-[11.5px] text-fg-muted leading-snug">{t(LINUX_APP.install)}</p>
+					<p className="text-pretty text-[11.5px] text-fg-muted leading-snug">{t(LINUX_APP.caution)}</p>
+
+					<LinuxCommand />
+
+					{reopen}
+				</State>
+			);
+		}
 
 		case "windows-soon":
 			return (

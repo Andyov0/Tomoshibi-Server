@@ -42,6 +42,17 @@ it("refuses the side on a window the column would run off", () => {
 	expect(result.current).toBe(false);
 });
 
+// The column grew when its buttons did, to eleven at forty-four: about 570
+// tall. A window that held the old column of forty-pixel buttons with room to
+// spare would now cut off the microphone at the top and leaving at the foot.
+it("refuses the side on a window that only the older, smaller column fitted", () => {
+	tall(560);
+
+	const { result } = renderHook(() => useRoomForSide());
+
+	expect(result.current).toBe(false);
+});
+
 it("changes its mind when the window does", () => {
 	tall(900);
 

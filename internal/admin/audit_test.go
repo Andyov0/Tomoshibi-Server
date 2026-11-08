@@ -21,6 +21,15 @@ not.
 type kept struct {
 	mu      sync.Mutex
 	entries []Entry
+	lines   []keptLine
+}
+
+// keptLine is a record as written: its level, its message and every attribute
+// as text.
+type keptLine struct {
+	level   slog.Level
+	message string
+	attrs   map[string]string
 }
 
 func (k *kept) Enabled(context.Context, slog.Level) bool { return true }
@@ -31,8 +40,11 @@ func (k *kept) WithGroup(string) slog.Handler { return k }
 
 func (k *kept) Handle(_ context.Context, record slog.Record) error {
 	entry := Entry{Failed: record.Level >= slog.LevelWarn}
+	line := keptLine{level: record.Level, message: record.Message, attrs: map[string]string{}}
 
 	record.Attrs(func(attr slog.Attr) bool {
+		line.attrs[attr.Key] = attr.Value.String()
+
 		switch attr.Key {
 		case "action":
 			entry.Action = attr.Value.String()
@@ -57,8 +69,17 @@ func (k *kept) Handle(_ context.Context, record slog.Record) error {
 	defer k.mu.Unlock()
 
 	k.entries = append(k.entries, entry)
+	k.lines = append(k.lines, line)
 
 	return nil
+}
+
+// written is every record kept so far, as written.
+func (k *kept) written() []keptLine {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	return append([]keptLine(nil), k.lines...)
 }
 
 // recorded is everything kept so far.

@@ -3,6 +3,7 @@ package app
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -75,6 +76,55 @@ func TestOnlyTheSignedInPagesRefuseToBeFramed(t *testing.T) {
 	for _, path := range []string{"/", "/some/room"} {
 		if got := ask(path).Get("Content-Security-Policy"); got != "" {
 			t.Errorf("the meeting page at %s refuses to be framed: Content-Security-Policy is %q", path, got)
+		}
+	}
+}
+
+// Each of the three documents has a sign-in form that may draw Cloudflare's
+// widget, and a policy that kept its script or its frame out would leave the
+// form waiting for a token that never comes. Whatever the policy says about
+// where scripts and frames may come from, if it says anything, has to include
+// Cloudflare's origin; a policy that says nothing about either allows it
+// already, which is what these pages send now.
+func TestEverySignInPageMayLoadTheHumanCheck(t *testing.T) {
+	web := Web(fstest.MapFS{
+		"index.html":   {Data: []byte("<!doctype html>")},
+		"admin.html":   {Data: []byte("<!doctype html>")},
+		"account.html": {Data: []byte("<!doctype html>")},
+	})
+
+	const cloudflare = "https://challenges.cloudflare.com"
+
+	for _, path := range []string{"/", "/admin.html", "/account.html"} {
+		recorder := httptest.NewRecorder()
+		web.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+
+		directives := map[string][]string{}
+		for _, header := range recorder.Header().Values("Content-Security-Policy") {
+			for _, directive := range strings.Split(header, ";") {
+				if fields := strings.Fields(directive); len(fields) > 0 {
+					directives[strings.ToLower(fields[0])] = fields[1:]
+				}
+			}
+		}
+
+		// Where a browser looks for each, in the order it looks.
+		for _, chain := range [][]string{
+			{"script-src-elem", "script-src", "default-src"},
+			{"frame-src", "child-src", "default-src"},
+		} {
+			for _, name := range chain {
+				sources, ok := directives[name]
+				if !ok {
+					continue
+				}
+
+				if !slices.Contains(sources, cloudflare) && !slices.Contains(sources, "https:") && !slices.Contains(sources, "*") {
+					t.Errorf("%s's policy says %s %v, which keeps the human check out", path, name, sources)
+				}
+
+				break
+			}
 		}
 	}
 }

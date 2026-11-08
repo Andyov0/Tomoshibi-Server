@@ -1,7 +1,9 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -502,5 +504,34 @@ func TestAnotherSiteCannotArrangeAsSomebody(t *testing.T) {
 		if code := arranging(site); code == http.StatusUnauthorized {
 			t.Errorf("Sec-Fetch-Site %q was treated as signed out", site)
 		}
+	}
+}
+
+/*
+A signed-in person joining a room somebody else opened, where nobody arranged
+anything, was logged as an arranged meeting failing to begin: the host check
+and its warning came before anybody asked whether a meeting was arranged at
+all, on every verified join into every room (the health check of 2026-10-29).
+*/
+func TestAJoinWithNothingArrangedSaysNothingAboutAMeeting(t *testing.T) {
+	mux, st := hosted(t)
+	bob := signedInAs(t, st, "bob", "bobbobbobb")
+	ada := signedInAs(t, st, "ada", "adaadaadaa")
+
+	if answer := joinArranged(t, mux, "daily", "Bob", bob, ""); answer.Code != http.StatusOK {
+		t.Fatalf("bob opening the room: %d %s", answer.Code, answer.Body)
+	}
+
+	var logged bytes.Buffer
+	was := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(was) })
+
+	if answer := joinArranged(t, mux, "daily", "Ada", ada, ""); answer.Code != http.StatusOK {
+		t.Fatalf("ada joining bob's room: %d %s", answer.Code, answer.Body)
+	}
+
+	if strings.Contains(logged.String(), "arranged meeting") {
+		t.Errorf("a join into a room with nothing arranged was logged as a meeting:\n%s", logged.String())
 	}
 }

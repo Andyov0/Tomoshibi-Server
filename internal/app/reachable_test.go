@@ -487,3 +487,155 @@ func TestTheMediaCheckSkipsARelayReachedThroughThisMachine(t *testing.T) {
 			"carrying calls, and it never recovers because there is nothing there to recover")
 	}
 }
+
+/*
+ * Half a fleet dying is not this machine's line going out.
+ *
+ * On 2026-11-08 nine relays in mainland China died together a little after
+ * midnight, and two more went with them because their route out ran through the
+ * nine. Eleven of twenty not answering was read, correctly at first, as the
+ * shape a line outage here has — and then for an hour and seven minutes, since
+ * nothing ever let go of that reading and the relays that had died were counted
+ * as failing on every sweep. All eleven went on being offered as answering.
+ *
+ * Two rules, and these hold both. Most of the fleet failing is believed after
+ * blindFor sweeps, so a genuine collapse is withdrawn in minutes; and only the
+ * relays that were answering when a sweep began are counted, so once the dead
+ * are withdrawn the rest are what the rule watches — and the next real outage of
+ * this line is still caught, rather than being swallowed by a count that never
+ * cleared.
+ */
+func TestHalfTheFleetDyingIsBelievedAfterAFewSweeps(t *testing.T) {
+	fleet := make([]store.Relay, 0, 20)
+	for i := range 20 {
+		fleet = append(fleet, store.Relay{
+			Name: fmt.Sprintf("relay%02d", i), URL: fmt.Sprintf("wss://r%02d.invalid", i), Enabled: true,
+		})
+	}
+
+	dead := map[string]bool{}
+	for _, relay := range fleet[:11] {
+		dead[relay.URL] = true
+	}
+
+	lineOut := false
+	watch := newReach(func(_ context.Context, url string) (bool, time.Duration, string) {
+		return !lineOut && !dead[url], time.Millisecond, "timed out"
+	})
+
+	// The first minute is put down to this end, as it should be: a line outage
+	// here looks exactly like this, and lasts twenty to forty seconds.
+	//
+	// Counted in sweeps written out rather than in blindFor, which is the
+	// constant under test: a loop that ran blindFor times passed with the limit
+	// removed, because removing it made the loop as long as the limit.
+	for range 2 {
+		watch.look(context.Background(), fleet)
+	}
+
+	if got := len(watch.only(fleet)); got != 20 {
+		t.Fatalf("%d answering after a minute of eleven failing, want all 20 still", got)
+	}
+
+	// Five minutes in, they are gone.
+	for range 8 {
+		watch.look(context.Background(), fleet)
+	}
+
+	if got := len(watch.only(fleet)); got != 9 {
+		t.Fatalf("%d answering after eleven of twenty had failed for five minutes, want 9: "+
+			"a reading that is never believed kept eleven dead relays on offer for an hour", got)
+	}
+
+	// The fleet that is left is fine, so the sweep after is not read as blind.
+	watch.look(context.Background(), fleet)
+	if watch.blind != 0 {
+		t.Fatalf("still counting %d blind sweeps once the dead were withdrawn: they failed "+
+			"again, as they will every sweep, and counting them keeps the rule tripped for "+
+			"as long as they stay listed", watch.blind)
+	}
+
+	// And then this line goes out, which must still be read as this end.
+	lineOut = true
+	for range withdrawAfter {
+		watch.look(context.Background(), fleet)
+	}
+
+	if got := len(watch.only(fleet)); got != 9 {
+		t.Errorf("%d answering after this machine's line went out, want the 9 that were: "+
+			"the next outage here was taken for the nine relays dying", got)
+	}
+}
+
+/*
+ * A relay out of service is shown, greyed, and only while it answers.
+ *
+ * Relays out of service used not to be asked, so each kept whatever it had been
+ * found to be when somebody disabled it. Two disabled while they worked and
+ * switched off afterwards were shown for days, greyed and answering, after they
+ * had died; seven disabled after being found dead would not have been shown had
+ * they come back. They are asked on the side now, and the asking is not counted
+ * towards whether this machine's line is out.
+ */
+func TestARelayOutOfServiceIsShownOnlyWhileItAnswers(t *testing.T) {
+	working := store.Relay{Name: "working", URL: "wss://w.invalid", Enabled: true}
+	gone := store.Relay{Name: "gone", URL: "wss://g.invalid"}
+	resting := store.Relay{Name: "resting", URL: "wss://r.invalid"}
+
+	up := map[string]bool{working.URL: true, resting.URL: true}
+
+	conf := &config.Config{}
+	conf.Meet.RelayPolicy = config.PickSticky
+
+	chosen := newRelays(conf, &listed{relays: []store.Relay{working, gone, resting}})
+	chosen.reach = newReach(func(_ context.Context, url string) (bool, time.Duration, string) {
+		return up[url], time.Millisecond, "timed out"
+	})
+	node := &App{relays: chosen, reach: chosen.reach}
+
+	for range withdrawAfter {
+		node.lookAround(context.Background())
+	}
+
+	if got := names(chosen.offered()); len(got) != 2 || got[0] != "working" || got[1] != "resting" {
+		t.Fatalf("shown %v, want working and resting: a relay out of service that has gone "+
+			"was shown greyed as though it could be come back to", got)
+	}
+
+	// Back, and shown again at once.
+	up[gone.URL] = true
+	node.lookAround(context.Background())
+
+	if got := len(chosen.offered()); got != 3 {
+		t.Errorf("shown %d of 3 after the gone relay answered again", got)
+	}
+}
+
+// Asked on the side means not counted. Three relays out of service that have
+// all gone, beside two in service that answer, is not this machine's outage —
+// and were they counted it would read as one, and freeze every reading.
+func TestRelaysOutOfServiceDoNotCountTowardsThisMachinesOutage(t *testing.T) {
+	list := []store.Relay{
+		{Name: "a", URL: "wss://a.invalid", Enabled: true},
+		{Name: "b", URL: "wss://b.invalid", Enabled: true},
+		{Name: "x", URL: "wss://x.invalid"},
+		{Name: "y", URL: "wss://y.invalid"},
+		{Name: "z", URL: "wss://z.invalid"},
+	}
+
+	conf := &config.Config{}
+	conf.Meet.RelayPolicy = config.PickSticky
+
+	chosen := newRelays(conf, &listed{relays: list})
+	chosen.reach = newReach(func(_ context.Context, url string) (bool, time.Duration, string) {
+		return url == "wss://a.invalid" || url == "wss://b.invalid", time.Millisecond, ""
+	})
+	node := &App{relays: chosen, reach: chosen.reach}
+
+	node.lookAround(context.Background())
+
+	if chosen.reach.blind != 0 {
+		t.Errorf("a sweep of two relays that both answered read as blind, because three "+
+			"relays out of service were counted with them (%d)", chosen.reach.blind)
+	}
+}

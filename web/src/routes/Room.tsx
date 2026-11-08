@@ -32,6 +32,7 @@ import { isMusic } from "@/live/sound";
 import { SaidInCorner } from "@/components/room/Said";
 import { StageControls } from "@/components/room/StageControls";
 import { SurfaceTile } from "@/components/room/SurfaceTile";
+import { useNight } from "@/hooks/useAppearance";
 import { useChat } from "@/hooks/useChat";
 import { useFullscreen } from "@/hooks/useFullscreen";
 import { useHearing } from "@/hooks/useHearing";
@@ -61,6 +62,7 @@ import { ConnectionState, type Room as LiveRoom } from "livekit-client";
 import { useRoomForSide } from "@/hooks/useRoomFor";
 import { placement, remember as rememberPlacement } from "@/live/controls";
 import { cn } from "@/lib/utils";
+import { hush } from "@/live/progress";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 export interface RoomProps {
@@ -71,6 +73,13 @@ export interface RoomProps {
 	carrying?: string;
 	/** The region of the relay this browser chose, where known; see live/api.ts and live/relays.ts, mainland. */
 	entry?: string;
+	/**
+	 * Whether this page knows nobody is signed in: false only where it asked
+	 * and was told so. Music and watching together are for signed-in people,
+	 * and asking about them without a session is a refusal the browser prints
+	 * in red in the console, on every call of every guest.
+	 */
+	signedIn?: boolean;
 	onLeave: () => void;
 }
 
@@ -85,7 +94,7 @@ export interface RoomProps {
  * bar where it is drawn; this is the same arithmetic for the things drawn over
  * it, in CSS, and index.css repeats it for the notices.
  */
-const CLEAR_OF_CONTROLS = "bottom-[calc(max(1.25rem,env(safe-area-inset-bottom)+0.5rem)+4rem)]";
+const CLEAR_OF_CONTROLS = "bottom-[calc(max(1.25rem,env(safe-area-inset-bottom)+0.5rem)+4.25rem)]";
 
 /** The same room with the controls out of the way at the bottom. */
 const NOTHING_TO_CLEAR = "bottom-[max(1.25rem,calc(env(safe-area-inset-bottom)+0.5rem))]";
@@ -112,13 +121,18 @@ const BESIDE_PANEL = {
 	wide: "sm:right-[20.75rem]", // MusicPanel and WatchPanel, w-80
 } as const;
 
-export function Room({ room, relay, carrying, entry, onLeave }: RoomProps) {
+export function Room({ room, relay, carrying, entry, signedIn, onLeave }: RoomProps) {
 	// Both here, because both are drawn in two places: the bar sends them and
 	// the tiles show them. A reaction is an event, so holding it in each would
 	// be two lists that drift apart; a hand is state on the roster, and reading
 	// it twice would work and would still be two things to keep agreeing.
 	const hands = useHands(room);
 	const reactions = useReactions(room);
+
+	// No bar along the top of a call (live/progress.ts): the call asks its
+	// server things all the time, and a line over the pictures would say
+	// nothing anybody is waiting for.
+	useEffect(() => hush(), []);
 
 	// One at a time, because both float over the same corner and the second
 	// would simply be drawn on top of the first.
@@ -129,6 +143,11 @@ export function Room({ room, relay, carrying, entry, onLeave }: RoomProps) {
 	// is no, which is most deployments and everybody not signed in.
 	const [library, setLibrary] = useState<Library[]>();
 	useEffect(() => {
+		// Not asked of somebody this page knows is not signed in, whom the
+		// server can only refuse: the answer would be no, and the refusal a
+		// red line in the console for every guest (the health check of
+		// 2026-10-29). Unknown is asked, as it always was.
+		if (signedIn === false) return;
 		let live = true;
 		void askLibraries().then((found) => {
 			if (live) setLibrary(found);
@@ -154,6 +173,9 @@ export function Room({ room, relay, carrying, entry, onLeave }: RoomProps) {
 		// Not in an encrypted call, where the show says and hears nothing: an
 		// offer there led to a panel that could only say so.
 		if (room.options.e2ee !== undefined) return;
+		// Nor of somebody who is not signed in, for the reason the library
+		// above is not.
+		if (signedIn === false) return;
 		void watchReady().then((ready) => {
 			if (live) setCanWatch(ready);
 		});
@@ -210,6 +232,12 @@ export function Room({ room, relay, carrying, entry, onLeave }: RoomProps) {
 		};
 	}, []);
 
+	// Night, whatever the system says, for as long as the call is on screen:
+	// everything it opens included, its menus and its notices. The switch that
+	// would let a call follow the system instead is CALLS_STAY_DARK, in
+	// live/appearance.ts, and it is the only place that decides it.
+	useNight();
+
 	const openChat = useCallback(() => {
 		setPanel("messages");
 		chat.markRead();
@@ -242,29 +270,14 @@ export function Room({ room, relay, carrying, entry, onLeave }: RoomProps) {
 		 * together, which is also what somebody pressing it is asking for.
 		 */
 		<div ref={screen.ref} className="relative h-full">
-			<Stage
-				room={room}
-				hands={hands}
-				reactions={reactions}
-				relay={relay}
-				carrying={carrying}
-				entry={entry}
-				standing={standing}
-				chat={chat}
-				chatting={chatting}
-				listening={listening}
-				screen={screen}
-				onClosePanel={() => setPanel(undefined)}
-				onOpenSound={() => setPanel("sound")}
-				music={panel === "music"}
-				watchPanel={panel === "watch"}
-				library={library}
-				watchReady={canWatch}
-				watching={show?.show.holder}
-				onOpenWatch={openWatch}
-				aside={aside}
-				island={island}
-			/>
+			{/*
+			  * The controls before the pictures in the document, though they are
+			  * drawn over them. A keyboard reaches what comes first first, and
+			  * the controls came after every picture and every picture's own
+			  * buttons: twenty-five people in a call was twenty-five presses of
+			  * Tab and more before the microphone. Where they are drawn is their
+			  * own position and layer, and does not depend on the order.
+			  */}
 			<ControlBar
 				room={room}
 				handUp={hands.mine}
@@ -304,6 +317,29 @@ export function Room({ room, relay, carrying, entry, onLeave }: RoomProps) {
 					rememberPlacement(chosen);
 				}}
 				onReserve={setIsland}
+			/>
+			<Stage
+				room={room}
+				hands={hands}
+				reactions={reactions}
+				relay={relay}
+				carrying={carrying}
+				entry={entry}
+				standing={standing}
+				chat={chat}
+				chatting={chatting}
+				listening={listening}
+				screen={screen}
+				onClosePanel={() => setPanel(undefined)}
+				onOpenSound={() => setPanel("sound")}
+				music={panel === "music"}
+				watchPanel={panel === "watch"}
+				library={library}
+				watchReady={canWatch}
+				watching={show?.show.holder}
+				onOpenWatch={openWatch}
+				aside={aside}
+				island={island}
 			/>
 			{/* Outside the stage on purpose: what people can hear must not depend
 			    on what the layout happens to be drawing. */}
@@ -371,6 +407,10 @@ function Stage({
 	const participants = useRoster(room);
 	// Kept on screen for its exit, rather than gone the frame it is closed.
 	const musicPanel = useLingering(music, 160);
+	// The two that were drawn as `open && …`, and so were on one frame and
+	// gone the next while the music and the film beside them came and went.
+	const chatPanel = useLingering(chatting, 200);
+	const soundPanel = useLingering(listening, 200);
 	const watchingPanel = useLingering(watchPanel, 160);
 	const state = useConnection(room);
 
@@ -389,19 +429,9 @@ function Stage({
 	const all = surfaces(ordered, room.localParticipant.identity, watching);
 	const { pinned, toggle, pin } = usePin(all);
 
-	// Taking the last picture off the stage leaves nothing to fill the screen
-	// with. The element holding it is the same one in either arrangement now, so
-	// it no longer leaves on its own when the stage empties — and a screen still
-	// filled by a grid nobody asked to see is one somebody has to press Escape to
-	// get out of.
-	const { exit } = screen;
-	useEffect(() => {
-		if (!pinned) exit();
-	}, [pinned, exit]);
-
 	// Worked out here rather than inside a tile, because the question is about
-	// the room: whether anybody unsigned is wearing a name somebody else signed.
-	// A tile can only see itself.
+	// the room: whether anybody is wearing a name somebody else signed under
+	// another signature. A tile can only see itself.
 	const roster = participants.map((p) => ({ name: p.name ?? "", identity: p.identity }));
 	const suspect = new Set(roster.filter((p) => impersonating(p, roster)).map((p) => p.identity));
 
@@ -430,11 +460,30 @@ function Stage({
 
 
 
+	// Taking the last picture off the stage leaves nothing to fill the screen
+	// with. The element holding it is the same one in either arrangement now, so
+	// it no longer leaves on its own when the stage empties — and a screen still
+	// filled by a grid nobody asked to see is one somebody has to press Escape to
+	// get out of. Except in a call of two, where the other person fills the
+	// screen without being on the stage and is what it was filled with — which
+	// is why this waits until who that is has been worked out.
+	const { exit } = screen;
+	useEffect(() => {
+		if (!pinned && !alone) exit();
+	}, [pinned, alone, exit]);
+
 	const plan = pinned
 		? planFocus(size, pinned.id, screen.active ? [] : shown, { fullscreen: screen.active, island })
 		: alone
 			? planClose(size, alone.id, self ? [self.id] : [], island)
 			: planGrid(size, shown, island);
+
+	// Whether a picture's foot is behind the controls, which is so of the
+	// other person in a call of two on a phone, who fills the whole screen.
+	const underIsland = (id: string) => {
+		const spot = plan.get(id);
+		return spot !== undefined && spot.y + spot.height > size.height - island;
+	};
 
 	// Somebody sharing their screen is two pictures. Whichever is not on the
 	// stage is what the switch on the stage offers, and finding it here is the
@@ -552,27 +601,40 @@ function Stage({
 								.map((one) => one.what)}
 						/>
 
-						{onStage && (
+						{/*
+						  * And on the other person in a call of two, who fills the
+						  * screen without being put on the stage. Filling the screen
+						  * was offered only to a picture on the stage, so the commonest
+						  * call anybody has could not be made fullscreen without first
+						  * pressing the picture into a layout with a strip under it.
+						  */}
+						{(onStage || surface.id === alone?.id) && (
 							<StageControls
 								other={counterpart}
 								onSwitch={pin}
 								fullscreen={screen.active}
 								onFullscreen={screen.toggle}
 								fullscreenSupported={screen.supported}
+								at={onStage ? "top" : "bottom"}
+								lift={underIsland(surface.id) ? island : 0}
 							/>
 						)}
 					</>
 				}
 				onSelect={() => toggle(surface)}
-				onExpand={onStage ? screen.toggle : undefined}
+				onExpand={onStage || surface.id === alone?.id ? screen.toggle : undefined}
 			/>
 		);
 	};
 
 	return (
 		<main
+			// Whether the host's console is in the top right corner, for the
+			// stage's own buttons, which are in the same corner of a picture
+			// that reaches the top; see StageControls.
+			data-hosting={standing.yours && state === ConnectionState.Connected ? "" : undefined}
 			className={cn(
-				"relative h-full",
+				"group/room relative h-full",
 				/*
 				 * A lane for the controls, and the reason nothing else has to
 				 * know about them.
@@ -734,17 +796,18 @@ function Stage({
 				</div>
 			)}
 
-			{chatting && (
+			{chatPanel.mounted && (
 				<ChatPanel
 					said={chat.all}
 					onSay={chat.send}
 					sending={chat.sending}
 					offline={state !== ConnectionState.Connected}
+					leaving={chatPanel.leaving}
 					onClose={onClosePanel}
 				/>
 			)}
 
-			{listening && <SoundPanel room={room} onClose={onClosePanel} />}
+			{soundPanel.mounted && <SoundPanel room={room} leaving={soundPanel.leaving} onClose={onClosePanel} />}
 
 			{musicPanel.mounted && (
 				<MusicPanel room={room} libraries={library} leaving={musicPanel.leaving} onClose={onClosePanel} />

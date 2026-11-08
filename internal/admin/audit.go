@@ -52,6 +52,15 @@ type Log struct {
 
 func NewLog() *Log { return &Log{} }
 
+// logger is where the record goes.
+func (l *Log) logger() *slog.Logger {
+	if l.to == nil {
+		return slog.Default()
+	}
+
+	return l.to
+}
+
 // Record notes something in the process log.
 func (l *Log) Record(entry Entry) {
 	attrs := []any{"action", entry.Action, "trip", entry.Trip}
@@ -69,10 +78,7 @@ func (l *Log) Record(entry Entry) {
 		attrs = append(attrs, "change", entry.Change)
 	}
 
-	to := l.to
-	if to == nil {
-		to = slog.Default()
-	}
+	to := l.logger()
 
 	// Warn rather than Info for a refusal, so that the one query worth having
 	// standing — anything above Info from this service — surfaces somebody

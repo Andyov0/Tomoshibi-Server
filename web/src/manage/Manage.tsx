@@ -7,7 +7,7 @@ import { AppsPanel } from "./AppsPanel";
 import { NowPanel } from "./NowPanel";
 import { RelaysPanel } from "./RelaysPanel";
 import { RoomsPanel } from "./RoomsPanel";
-import { RuntimePanel } from "./RuntimePanel";
+import { LogPanel } from "./LogPanel";
 import { SignIn } from "./SignIn";
 import { type Panel, PANELS, Shell } from "./Shell";
 import { powers } from "./grants";
@@ -52,10 +52,34 @@ export function Manage() {
 		enabled: who !== undefined,
 	});
 
+	// The meetings in progress, here for the same reason: the rail counts the
+	// people in them, and the Now page draws them. Counted from the rooms rather
+	// than from the relays' own counters, which count somebody carried from one
+	// relay to another once on each, so the rail said seven people while the
+	// page beside it listed five.
+	const { value: rooms } = usePoll(api.rooms, {
+		every: 5000,
+		onSignedOut: () => setWho(undefined),
+		enabled: who !== undefined,
+	});
+	const live = rooms?.liveUnavailable ? undefined : rooms?.live;
+
+	// Who is shut out of signing in, here for the same reason again: the
+	// count is on the accounts tab, so that a lockout is noticed from whatever
+	// page is open, and the accounts page draws the list. Slower than the
+	// readings above, because a lockout lasts half an hour and the page
+	// counts it down by itself.
+	const { value: lockouts, refresh: refreshLockouts } = usePoll(api.lockouts, {
+		every: 15_000,
+		onSignedOut: () => setWho(undefined),
+		enabled: who !== undefined,
+	});
+	const shutOut = lockouts?.lockouts.filter((one) => Date.parse(one.until) > Date.now()).length ?? 0;
+
 	// What the deployment says its line carries, asked for on signing in.
 	//
 	// api.runtime() tells units.ts the answer, and until this was here the only
-	// thing that called it was the Runtime panel — so every share-of-the-uplink
+	// thing that called it was the old runtime panel — so every share-of-the-uplink
 	// bar was drawn against a hardcoded gigabit unless somebody had happened to
 	// open that page first. On a hundred megabit line the rail said five per
 	// cent while the line was half full, and it said it more convincingly than
@@ -117,11 +141,12 @@ export function Manage() {
 			panel={panel}
 			onPanel={choose}
 			onSignOut={signOut}
+			badges={{ Accounts: shutOut }}
 			load={
 				load && {
 					out: load.bytes.outPerSec,
-					rooms: load.rooms,
-					clients: load.clients,
+					rooms: live ? live.length : load.rooms,
+					clients: live ? live.reduce((sum, one) => sum + one.participants, 0) : load.clients,
 				}
 			}
 		>
@@ -134,7 +159,7 @@ export function Manage() {
 				data-panel={shown}
 				className={leaving ? "animate-page-leave" : "animate-page"}
 			>
-				{shown === "Now" && <NowPanel now={load} onSignedOut={signedOut} />}
+				{shown === "Now" && <NowPanel now={load} live={live} onSignedOut={signedOut} />}
 				{shown === "Rooms" && (
 					<RoomsPanel canRooms={can.rooms} canSettings={can.settings} onSignedOut={signedOut} />
 				)}
@@ -143,12 +168,16 @@ export function Manage() {
 						canAccounts={can.accounts}
 						canModerate={can.moderate}
 						onSignedOut={signedOut}
+						lockouts={lockouts}
+						onLockoutsChanged={refreshLockouts}
 					/>
 				)}
-				{shown === "Relays" && <RelaysPanel canRelays={can.relays} onSignedOut={signedOut} />}
+				{shown === "Relays" && (
+					<RelaysPanel canRelays={can.relays} canEnrol={can.moderate} onSignedOut={signedOut} />
+				)}
 				{shown === "Apps" && <AppsPanel canSettings={can.settings} onSignedOut={signedOut} />}
 				{shown === "Admins" && <AdminsPanel canModerate={can.moderate} onSignedOut={signedOut} />}
-				{shown === "Runtime" && <RuntimePanel onSignedOut={signedOut} />}
+				{shown === "Log" && <LogPanel onSignedOut={signedOut} />}
 			</div>
 		</Shell>
 	);
@@ -157,6 +186,11 @@ export function Manage() {
 /** Which panel the address names, so a page can be reloaded where it was. */
 function remembered(): Panel {
 	const named = window.location.hash.replace(/^#/, "").toLowerCase();
+
+	// The runtime page became the log; an address somebody kept for it still
+	// opens where its contents went.
+	if (named === "runtime") return "Log";
+
 	return PANELS.find((one) => one.toLowerCase() === named) ?? "Now";
 }
 

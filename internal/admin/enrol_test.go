@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"tomoshibi/internal/config"
 	"tomoshibi/internal/room"
@@ -151,7 +152,39 @@ func (n *naming) Unpoint(host string) error {
 	return nil
 }
 
+// enrolSecret is the long-lived secret deployments used to enrol with, still
+// in the configuration of every one that did, and accepted by nothing unless
+// accept_secret says so.
 const enrolSecret = "a secret that lives in the install script"
+
+// minted is a token as the relays page would mint one, written straight into
+// the store so that a test about the enrolment is not also a test of the page.
+func minted(t *testing.T, api *API, prefix string, replace bool) string {
+	t.Helper()
+
+	return mintedFor(t, api, store.EnrolGrant{Prefix: prefix, Replace: replace})
+}
+
+func mintedFor(t *testing.T, api *API, grant store.EnrolGrant) string {
+	t.Helper()
+
+	token, err := store.NewEnrolToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	if grant.Expires.IsZero() {
+		grant.Expires = now.Add(time.Hour)
+	}
+	grant.Made, grant.By, grant.ByName = now, "minter", "adam"
+
+	if _, err := api.enrolments.KeepEnrolGrant(token, grant); err != nil {
+		t.Fatal(err)
+	}
+
+	return token
+}
 
 func enrolling(t *testing.T) (*API, *relayList, *naming, http.Handler) {
 	t.Helper()
@@ -186,6 +219,15 @@ func enrolling(t *testing.T) (*API, *relayList, *naming, http.Handler) {
 	relays := &relayList{}
 	api.relays = relays
 
+	// A real store for the tokens, because the one-use rule is the store's to
+	// keep and a stand-in would only test itself.
+	tokens, err := store.Open(filepath.Join(dir, "meet.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tokens.Close() })
+	api.enrolments = tokens
+
 	names := &naming{}
 
 	api.UseEnrolment(&Enrolment{
@@ -195,6 +237,9 @@ func enrolling(t *testing.T) (*API, *relayList, *naming, http.Handler) {
 		CertPath: certPath, KeyPath: keyPath,
 		ListenPort: 13377, UDPPort: 13378, TCPPort: 13379,
 		Naming: names,
+		BinarySum: func() (string, error) {
+			return "0f343b0931126a20f133d67c2b018a3b5fd3b6af0a2b7d7a7fd0e04b5fd3c8b5", nil
+		},
 	})
 
 	mux := http.NewServeMux()
@@ -212,11 +257,11 @@ func enrolRequest(body string) *http.Request {
 }
 
 func TestAMachineWithTheSecretIsEnrolled(t *testing.T) {
-	_, relays, names, mux := enrolling(t)
+	api, relays, names, mux := enrolling(t)
 
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"tokyo","region":"jp","address":"198.51.100.9"}`))
+		`{"secret":"`+minted(t, api, "tokyo", false)+`","prefix":"tokyo","region":"jp","address":"198.51.100.9"}`))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("enrolment answered %d: %s", recorder.Code, recorder.Body)
@@ -257,15 +302,22 @@ func TestAMachineWithTheSecretIsEnrolled(t *testing.T) {
 }
 
 // The trust boundary, and the only thing in front of the deployment's secret.
+//
+// The old long-lived secret is among the wrong answers. A deployment upgraded
+// with it still in its configuration must stop accepting it, or the upgrade
+// changed nothing for anybody who already had a copy.
 func TestAWrongSecretGetsNothing(t *testing.T) {
-	_, relays, names, mux := enrolling(t)
+	api, relays, names, mux := enrolling(t)
+
+	token := minted(t, api, "tokyo", false)
 
 	for _, secret := range []string{
 		"",
 		"wrong",
-		enrolSecret + "x",
-		strings.ToUpper(enrolSecret),
-		enrolSecret[:len(enrolSecret)-1],
+		enrolSecret,
+		token + "x",
+		strings.ToUpper(token),
+		token[:len(token)-1],
 	} {
 		recorder := httptest.NewRecorder()
 		body, _ := json.Marshal(map[string]string{
@@ -294,7 +346,7 @@ func TestAWrongSecretGetsNothing(t *testing.T) {
 // A prefix becomes a name in a zone this deployment controls. Anything that is
 // not a label has to be refused before it gets there.
 func TestAPrefixThatIsNotALabelIsRefused(t *testing.T) {
-	_, _, names, mux := enrolling(t)
+	api, _, names, mux := enrolling(t)
 
 	for _, prefix := range []string{
 		"", "-leading", "trailing-", "has space", "has.dot", "under_score",
@@ -302,7 +354,7 @@ func TestAPrefixThatIsNotALabelIsRefused(t *testing.T) {
 	} {
 		recorder := httptest.NewRecorder()
 		body, _ := json.Marshal(map[string]string{
-			"secret": enrolSecret, "prefix": prefix, "address": "198.51.100.9",
+			"secret": minted(t, api, "tokyo", false), "prefix": prefix, "address": "198.51.100.9",
 		})
 		mux.ServeHTTP(recorder, enrolRequest(string(body)))
 
@@ -319,13 +371,24 @@ func TestAPrefixThatIsNotALabelIsRefused(t *testing.T) {
 	}
 }
 
+// Including addresses that parse and are nobody's on the internet. A name in
+// this deployment's zone, covered by its wildcard, pointed at a machine inside
+// somebody's network is a name that lends the deployment's certificate to it.
 func TestAnAddressThatIsNotOneIsRefused(t *testing.T) {
-	_, _, _, mux := enrolling(t)
+	api, _, names, mux := enrolling(t)
 
-	for _, address := range []string{"not-an-ip", "example.com", "999.1.1.1", "1.1.1.1;rm -rf /"} {
+	// One token for every refusal: a refused address is a typo to correct, and
+	// a token spent on a typo is a trip back to the management pages.
+	token := minted(t, api, "tokyo", false)
+
+	for _, address := range []string{
+		"not-an-ip", "example.com", "999.1.1.1", "1.1.1.1;rm -rf /",
+		"127.0.0.1", "10.0.0.8", "172.16.4.4", "192.168.1.1", "169.254.169.254",
+		"100.64.0.1", "0.0.0.0", "224.0.0.1", "::1", "2001:db8::1",
+	} {
 		recorder := httptest.NewRecorder()
 		body, _ := json.Marshal(map[string]string{
-			"secret": enrolSecret, "prefix": "tokyo", "address": address,
+			"secret": token, "prefix": "tokyo", "address": address,
 		})
 		mux.ServeHTTP(recorder, enrolRequest(string(body)))
 
@@ -333,16 +396,25 @@ func TestAnAddressThatIsNotOneIsRefused(t *testing.T) {
 			t.Errorf("address %q answered %d, wanted 400", address, recorder.Code)
 		}
 	}
+
+	if len(names.pointed) != 0 {
+		t.Errorf("a refused address reached the zone: %v", names.pointed)
+	}
+
+	if code := post(mux, enrolRequest(
+		`{"secret":"`+token+`","prefix":"tokyo","address":"198.51.100.9"}`)); code != http.StatusOK {
+		t.Errorf("the token was spent by the refusals before it: the corrected request answered %d", code)
+	}
 }
 
 // A machine that does not name its own address is pointed at the one the
 // request came from, which is what a machine behind NAT needs.
 func TestTheCallersAddressIsUsedWhenNoneIsGiven(t *testing.T) {
-	_, _, names, mux := enrolling(t)
+	api, _, names, mux := enrolling(t)
 
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"tokyo"}`))
+		`{"secret":"`+minted(t, api, "tokyo", false)+`","prefix":"tokyo"}`))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("answered %d: %s", recorder.Code, recorder.Body)
@@ -360,11 +432,11 @@ func TestTheCallersAddressIsUsedWhenNoneIsGiven(t *testing.T) {
 // goes on holding calls at an address that no longer reaches it — and nothing
 // anywhere says so. This used to update silently.
 func TestATakenPrefixIsRefusedAndChangesNothing(t *testing.T) {
-	_, relays, names, mux := enrolling(t)
+	api, relays, names, mux := enrolling(t)
 
 	first := httptest.NewRecorder()
 	mux.ServeHTTP(first, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"tokyo","address":"198.51.100.9"}`))
+		`{"secret":"`+minted(t, api, "tokyo", false)+`","prefix":"tokyo","address":"198.51.100.9"}`))
 
 	if first.Code != http.StatusOK {
 		t.Fatalf("first enrolment answered %d", first.Code)
@@ -372,7 +444,7 @@ func TestATakenPrefixIsRefusedAndChangesNothing(t *testing.T) {
 
 	second := httptest.NewRecorder()
 	mux.ServeHTTP(second, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"tokyo","address":"198.51.100.10"}`))
+		`{"secret":"`+minted(t, api, "tokyo", false)+`","prefix":"tokyo","address":"198.51.100.10"}`))
 
 	if second.Code != http.StatusConflict {
 		t.Fatalf("a second machine took the prefix %q and answered %d, wanted 409",
@@ -395,11 +467,11 @@ func TestATakenPrefixIsRefusedAndChangesNothing(t *testing.T) {
 
 // Saying so takes it over, which is what a rebuilt machine needs.
 func TestReplacingATakenPrefixIsAllowedWhenAsked(t *testing.T) {
-	_, relays, names, mux := enrolling(t)
+	api, relays, names, mux := enrolling(t)
 
 	first := httptest.NewRecorder()
 	mux.ServeHTTP(first, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"tokyo","address":"198.51.100.9"}`))
+		`{"secret":"`+minted(t, api, "tokyo", false)+`","prefix":"tokyo","address":"198.51.100.9"}`))
 
 	if first.Code != http.StatusOK {
 		t.Fatalf("first enrolment answered %d", first.Code)
@@ -407,7 +479,7 @@ func TestReplacingATakenPrefixIsAllowedWhenAsked(t *testing.T) {
 
 	second := httptest.NewRecorder()
 	mux.ServeHTTP(second, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"tokyo","address":"198.51.100.10","replace":true}`))
+		`{"secret":"`+minted(t, api, "tokyo", true)+`","prefix":"tokyo","address":"198.51.100.10","replace":true}`))
 
 	if second.Code != http.StatusOK {
 		t.Fatalf("an asked-for replacement answered %d: %s", second.Code, second.Body)
@@ -426,12 +498,12 @@ func TestReplacingATakenPrefixIsAllowedWhenAsked(t *testing.T) {
 // correct and a name added by hand finishes it, which is a better end than
 // refusing work that has already been done.
 func TestAFailedNamingStillEnrols(t *testing.T) {
-	_, relays, names, mux := enrolling(t)
+	api, relays, names, mux := enrolling(t)
 	names.fail = errAsIf("cloudflare refused")
 
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"tokyo","address":"198.51.100.9"}`))
+		`{"secret":"`+minted(t, api, "tokyo", false)+`","prefix":"tokyo","address":"198.51.100.9"}`))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("a naming failure refused the whole enrolment: %d %s", recorder.Code, recorder.Body)
@@ -454,7 +526,8 @@ type errAsIf string
 
 func (e errAsIf) Error() string { return string(e) }
 
-// The script carries the secret, so it is not a public document.
+// The page's copy of the script is behind a session like the rest of the page,
+// and carries nothing secret now that the token is asked for when it runs.
 func TestTheScriptIsNotServedWithoutASession(t *testing.T) {
 	api, _, _, _ := enrolling(t)
 
@@ -465,8 +538,7 @@ func TestTheScriptIsNotServedWithoutASession(t *testing.T) {
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/relays/script", nil))
 
 	if recorder.Code == http.StatusOK {
-		t.Fatal("the install script was served to a caller with no session, and it carries " +
-			"the enrolment secret")
+		t.Fatal("the management pages' copy of the install script was served to a caller with no session")
 	}
 
 	if strings.Contains(recorder.Body.String(), enrolSecret) {
@@ -491,11 +563,11 @@ neither had a symptom that pointed anywhere near its cause.
 // through, where it sits on the map — was configured by somebody afterwards, and
 // a replacing enrolment used to write over all of it with zero.
 func TestReinstallingARelayKeepsWhatSomebodyConfiguredOnIt(t *testing.T) {
-	_, relays, _, mux := enrolling(t)
+	api, relays, _, mux := enrolling(t)
 
 	// Enrolled once, then given a role.
 	if code := post(mux, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"hongkong","region":"hk","address":"198.51.100.9"}`,
+		`{"secret":"`+minted(t, api, "hongkong", false)+`","prefix":"hongkong","region":"hk","address":"198.51.100.9"}`,
 	)); code != http.StatusOK {
 		t.Fatalf("the first enrolment answered %d", code)
 	}
@@ -518,7 +590,7 @@ func TestReinstallingARelayKeepsWhatSomebodyConfiguredOnIt(t *testing.T) {
 	// The machine is rebuilt and enrols again onto the same prefix, this time
 	// from a new address and with the region corrected.
 	if code := post(mux, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"hongkong","region":"hk-east",`+
+		`{"secret":"`+minted(t, api, "hongkong", true)+`","prefix":"hongkong","region":"hk-east",`+
 			`"address":"203.0.113.44","replace":true}`,
 	)); code != http.StatusOK {
 		t.Fatalf("the replacing enrolment answered %d", code)
@@ -571,7 +643,7 @@ func TestTheNameRemovedIsTheOneTheRelayAnswersTo(t *testing.T) {
 	api, relays, names, mux := enrolling(t)
 
 	if code := post(mux, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"osaka","region":"jp","address":"198.51.100.9"}`,
+		`{"secret":"`+minted(t, api, "osaka", false)+`","prefix":"osaka","region":"jp","address":"198.51.100.9"}`,
 	)); code != http.StatusOK {
 		t.Fatalf("enrolment answered %d", code)
 	}
@@ -618,7 +690,7 @@ func TestRemovingARelayRemovesTheNamePointedAtIt(t *testing.T) {
 	api, relays, names, mux := enrolling(t)
 
 	if code := post(mux, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"osaka","region":"jp","address":"198.51.100.9"}`,
+		`{"secret":"`+minted(t, api, "osaka", false)+`","prefix":"osaka","region":"jp","address":"198.51.100.9"}`,
 	)); code != http.StatusOK {
 		t.Fatalf("enrolment answered %d", code)
 	}
@@ -674,7 +746,7 @@ waiting for the next relay rather than fixed.
 */
 
 func TestAnEnrolledRelayIsToldWhereEverythingIs(t *testing.T) {
-	_, relays, _, mux := enrolling(t)
+	api, relays, _, mux := enrolling(t)
 
 	// A fleet with locations, which is what makes a region list mean anything.
 	for _, existing := range []store.Relay{
@@ -697,7 +769,7 @@ func TestAnEnrolledRelayIsToldWhereEverythingIs(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"tokyo","region":"jp",`+
+		`{"secret":"`+minted(t, api, "tokyo", true)+`","prefix":"tokyo","region":"jp",`+
 			`"address":"198.51.100.9","replace":true}`))
 
 	if recorder.Code != http.StatusOK {
@@ -746,7 +818,7 @@ func TestAnEnrolledRelayIsToldWhereEverythingIs(t *testing.T) {
 // refuses to start — so the install would finish, the certificate would be
 // written, the name would be pointed, and the service would not come up.
 func TestARelayWithNoPositionIsNotGivenAListThatWouldStopItStarting(t *testing.T) {
-	_, relays, _, mux := enrolling(t)
+	api, relays, _, mux := enrolling(t)
 
 	for _, existing := range []store.Relay{
 		{Name: "HK Gomami", Region: "hk", URL: "wss://hk.invalid", Enabled: true, Lat: 22.32, Lon: 114.17},
@@ -759,7 +831,7 @@ func TestARelayWithNoPositionIsNotGivenAListThatWouldStopItStarting(t *testing.T
 
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, enrolRequest(
-		`{"secret":"`+enrolSecret+`","prefix":"nowhere","region":"jp","address":"198.51.100.9"}`))
+		`{"secret":"`+minted(t, api, "nowhere", false)+`","prefix":"nowhere","region":"jp","address":"198.51.100.9"}`))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("enrolment answered %d: %s", recorder.Code, recorder.Body)

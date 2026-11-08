@@ -53,17 +53,23 @@ export function WatchPanel({
 		<aside
 			className={cn(
 				"absolute z-20 flex flex-col overflow-hidden border border-border",
-				"bg-surface/95 shadow-2xl backdrop-blur-md",
+				"bg-surface shadow-2xl",
 				leaving ? "animate-depart" : "animate-arrive",
 				"inset-x-0 bottom-0 h-[70%] rounded-t-2xl",
 				"pb-[calc(env(safe-area-inset-bottom)+3.5rem)] sm:pb-0",
 				"sm:inset-x-auto sm:right-3 sm:bottom-3 sm:h-[min(34rem,calc(100%-5.5rem))] sm:w-80 sm:rounded-xl",
 			)}
 		>
-			<header className="flex items-center justify-between border-border border-b px-3 py-2">
-				<strong className="font-semibold text-[12.5px]">{t("Watch together")}</strong>
-				<Button variant="ghost" size="icon" className="size-6" aria-label={t("Close watch together")} onClick={onClose}>
-					<X className="size-3.5" />
+			<header className="flex items-center justify-between border-border border-b py-1.5 pr-1.5 pl-4">
+				<strong className="font-semibold text-[14px]">{t("Watch together")}</strong>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="size-8 rounded-full text-fg-muted hover:text-fg pointer-coarse:size-11"
+					aria-label={t("Close watch together")}
+					onClick={onClose}
+				>
+					<X />
 				</Button>
 			</header>
 			{servers.length > 0 && (

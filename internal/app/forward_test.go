@@ -644,6 +644,7 @@ func TestAPinnedEntryOverridesTheBrowserAndThenGoesAway(t *testing.T) {
 
 	var identity struct {
 		Identity string `json:"identity"`
+		Proof    string `json:"proof"`
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/rooms/standup/join",
@@ -664,7 +665,7 @@ func TestAPinnedEntryOverridesTheBrowserAndThenGoesAway(t *testing.T) {
 
 	// The same person asking for the same relay their browser measured.
 	again := httptest.NewRequest(http.MethodPost, "/api/rooms/standup/join",
-		strings.NewReader(`{"name":"somebody","identity":"`+identity.Identity+`","relay":"shanghai"}`))
+		strings.NewReader(`{"name":"somebody","identity":"`+identity.Identity+`","proof":"`+identity.Proof+`","relay":"shanghai"}`))
 	again.Header.Set("Content-Type", "application/json")
 
 	var moved struct {
@@ -681,7 +682,7 @@ func TestAPinnedEntryOverridesTheBrowserAndThenGoesAway(t *testing.T) {
 
 	// And once. The next join is theirs again.
 	back := httptest.NewRequest(http.MethodPost, "/api/rooms/standup/join",
-		strings.NewReader(`{"name":"somebody","identity":"`+identity.Identity+`","relay":"shanghai"}`))
+		strings.NewReader(`{"name":"somebody","identity":"`+identity.Identity+`","proof":"`+identity.Proof+`","relay":"shanghai"}`))
 	back.Header.Set("Content-Type", "application/json")
 
 	var third struct {

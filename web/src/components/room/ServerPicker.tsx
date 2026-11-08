@@ -123,10 +123,20 @@ export function ServerList({
 	relays,
 	value,
 	onChange,
+	fill = false,
 }: {
 	relays: Relay[];
 	value: string;
 	onChange: (name: string) => void;
+	/**
+	 * Stretched to the height it is given, with the globe as large as fits
+	 * what is spare and in the middle of it: the lobby's second block, which
+	 * is as tall as the first so that the two line up at the top and the
+	 * bottom. The globe follows the height rather than setting it; at its
+	 * own size it was taller than the meeting's three cards, and stretched
+	 * them, leaving a strip of nothing under each card's button.
+	 */
+	fill?: boolean;
 }) {
 	const t = useT();
 	const { measured, measuring, ready, measure } = useMeasuring(relays);
@@ -137,7 +147,7 @@ export function ServerList({
 	}, []);
 
 	return (
-		<div className="flex flex-col gap-2">
+		<div className={cn("flex flex-col gap-2", fill && "h-full")}>
 			<div className="flex items-center justify-between gap-2 px-1">
 				<span className="text-[11px] text-fg-muted">{t("Server")}</span>
 
@@ -175,7 +185,19 @@ export function ServerList({
 			 * the second by reading, and which one they reach for is theirs to
 			 * decide rather than ours.
 			 */}
-			<Globe relays={relays} value={value} measured={measured} onChange={onChange} />
+			{/* At most about 270 pixels across. It filled whatever column
+			    it was in, which in the lobby was a square as tall as the rest of
+			    the page above it; zooming is how somebody looks closer now. */}
+			<div className={cn("w-full", fill && "flex min-h-0 flex-1 items-center justify-center")}>
+				<div
+					className={cn(
+						"mx-auto w-full max-w-[17rem]",
+						fill && "aspect-square h-full max-h-[17rem] w-auto max-w-full",
+					)}
+				>
+					<Globe relays={relays} value={value} measured={measured} onChange={onChange} />
+				</div>
+			</div>
 
 			<ServerPicker relays={relays} value={value} onChange={onChange} plain />
 		</div>
@@ -395,7 +417,7 @@ export function ServerPicker({
 							// A ring as well as a border, and a real shadow. It has to
 							// read as a sheet above the page rather than as more page:
 							// on a dark interface a one-pixel border alone disappears.
-							"border border-fg/15 bg-surface-hi shadow-2xl ring-1 ring-black/40",
+							"border border-fg/15 bg-surface-hi shadow-2xl ring-1 ring-shade/40 afloat",
 							// Arrives from the edge it is anchored to rather than
 							// appearing: a menu that fades in from nowhere reads as a
 							// page redraw, and one that grows the wrong way reads as a
@@ -459,7 +481,7 @@ function Rows({
 
 	return (
 		<>
-			<li className="flex items-center justify-between gap-2 border-fg/10 border-b bg-black/15 px-3 py-2">
+			<li className="flex items-center justify-between gap-2 border-fg/10 border-b bg-shade/15 px-3 py-2">
 				<span className="text-fg-muted text-[10.5px] uppercase tracking-wide">
 					{t("Round trip")}
 				</span>
@@ -655,8 +677,8 @@ function Heading({ text, depth, delay }: { text: string; depth: number; delay: n
 			className={cn(
 				// A band rather than a line of text, so a heading is unmistakably
 				// not something to click.
-				"animate-arrive bg-black/20 py-1.5 pr-3 font-medium text-[10.5px] text-fg-muted uppercase tracking-wider",
-				depth > 0 && "bg-black/10 text-fg-muted/70 normal-case tracking-normal",
+				"animate-arrive bg-shade/20 py-1.5 pr-3 font-medium text-[10.5px] text-fg-muted uppercase tracking-wider",
+				depth > 0 && "bg-shade/10 text-fg-muted/70 day:text-fg-muted normal-case tracking-normal",
 			)}
 		>
 			{say(text)}
@@ -716,7 +738,7 @@ function Option({
 
 				<Check
 					className={cn(
-						"size-3.5 shrink-0 text-tally transition-opacity duration-150",
+						"size-3.5 shrink-0 text-tally-ink transition-opacity duration-150",
 						!chosen && "opacity-0",
 					)}
 				/>
@@ -754,10 +776,10 @@ function Latency({ ms, known }: { ms: number | undefined; known: boolean }) {
 	}
 
 	if (ms === undefined) {
-		return <span className="shrink-0 text-[11px] text-danger">{t("Timeout")}</span>;
+		return <span className="shrink-0 text-[11px] text-danger-ink">{t("Timeout")}</span>;
 	}
 
-	const colour = ms <= 150 ? "text-good" : ms <= 400 ? "text-tally" : "text-danger";
+	const colour = ms <= 150 ? "text-good-ink" : ms <= 400 ? "text-tally-ink" : "text-danger-ink";
 
 	return (
 		<span

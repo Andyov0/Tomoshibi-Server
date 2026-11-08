@@ -219,6 +219,18 @@ type Meet struct {
 	// should pick something unremarkable.
 	ProbePort int `yaml:"probe_port"`
 
+	// TurnPeers are the only addresses this relay's TURN server forwards to:
+	// the other relays, as addresses or CIDRs.
+	//
+	// The media server's TURN refuses loopback, private and link-local peers
+	// and lets every public address through, so a forwarding credential —
+	// handed out at any join that crosses relays — was a UDP proxy to anywhere
+	// on the internet, paid for by this machine's egress and charged to its
+	// address's reputation. Listed, everything else is denied. Empty keeps the
+	// media server's default and is warned about at startup wherever TURN is
+	// on.
+	TurnPeers []string `yaml:"turn_peers"`
+
 	// TLSCert and TLSKey serve this listener over TLS directly, without a proxy
 	// in front.
 	//
@@ -289,6 +301,10 @@ type Meet struct {
 	// Apps is where the native apps are offered to signed-in accounts and to
 	// people holding a link into a meeting. See Apps.
 	Apps Apps `yaml:"apps"`
+
+	// Turnstile is Cloudflare's human check in front of the two sign-in doors.
+	// Unset, neither door asks for one. See Turnstile.
+	Turnstile Turnstile `yaml:"turnstile"`
 }
 
 // Apps is what the download page offers somebody signed in, and what the page
@@ -310,8 +326,9 @@ type Meet struct {
 // Read only where pages are served. A relay serves none and ignores all of it.
 type Apps struct {
 	// MacDir holds the builds handed over as files — the Mac app's disk
-	// images, the Android app's packages and the Windows app's installers —
-	// and the apps.json manifest that names them, a list for each platform. The manifest is read on every
+	// images, the Android app's packages, the Windows app's installers and
+	// the Linux app's AppImages, one for each processor — and the apps.json
+	// manifest that names them, a list for each platform. The manifest is read on every
 	// request, so a new version is a file copied in and a manifest rewritten,
 	// without a restart; see internal/app/apps.go for its shape.
 	//
@@ -343,7 +360,7 @@ type Apps struct {
 	//
 	// Each is the app identifier Apple's statement names an app by: the
 	// developer's team id, ten capital letters and digits, a dot, and the app's
-	// bundle id, as SM86NB3CPZ.app.example.ios. One entry for each app, since the
+	// bundle id, as A1B2C3D4E5.app.example.ios. One entry for each app, since the
 	// iOS app and the Mac app are two bundles. With none the address answers 404,
 	// for the reason the Android statement's does: a deployment without an Apple
 	// app must not claim one.
@@ -459,14 +476,26 @@ type Watch struct {
 
 // Enrol is what a machine running the install script is told.
 //
-// Off unless a secret is set. What an enrolment hands over is the credential
-// every relay signs with, the redis password and a private key, so a deployment
-// that has not said it wants this does not get an endpoint that gives them away.
+// Off unless a domain is set. What an enrolment hands over is the credential
+// every relay signs with, the redis password and a private key, so it is bought
+// with a token an administrator mints for one machine on the relays page, which
+// works once and for half an hour.
 type Enrol struct {
-	// Secret is what the install script proves it has. Long-lived, because the
-	// script is meant to be kept and pasted into whatever machine comes next —
-	// which makes the script itself a credential.
+	// Secret is the long-lived enrolment secret this used to run on, and is
+	// read only where AcceptSecret is set.
+	//
+	// It was the credential: kept in the command every relay was brought up
+	// with, so in every relay's shell history, and good for ever — for a new
+	// relay, or for moving an existing relay's name to any address. A
+	// deployment upgraded with this still set stops accepting it, says so at
+	// startup, and enrols with tokens instead.
 	Secret string `yaml:"secret"`
+
+	// AcceptSecret takes the old secret again, for a machine somebody is in the
+	// middle of bringing up with an old command. Never for taking over a prefix
+	// already in use, and every use is logged at warning level. Off by default,
+	// and meant to be turned off again.
+	AcceptSecret bool `yaml:"accept_secret"`
 
 	// Domain is what a prefix is added to: `tokyo` under `relay.example.com`
 	// becomes `tokyo.relay.example.com`.
@@ -810,7 +839,15 @@ func Load(path string) (*Config, error) {
 	// that is written down — but it is not a thing anybody should arrive at by
 	// pressing the top option on a page, so the management pages do not have it
 	// and the log says so on every start.
-	if meet.Rooms.JoinedBy == room.ByWhoeverKnows {
+	// Neither of the two warnings below is said by a relay, which reads no
+	// room settings at all: it holds no store and opens nothing, and the
+	// control node decides who may open and join. A relay's configuration
+	// has no rooms section, so it carried the defaults, and "anyone" among
+	// them had every relay warn on every start about a setting it never
+	// reads (the health check of 2026-10-29).
+	relay := meet.Role == RoleRelay
+
+	if meet.Rooms.JoinedBy == room.ByWhoeverKnows && !relay {
 		slog.Warn("rooms.joined_by is \"anyone\", so anybody who has a room's name is in the " +
 			"meeting — and a room here is a name, so anybody who guesses one is too. The " +
 			"management pages do not offer this; it is set in the configuration file")
@@ -825,7 +862,7 @@ func Load(path string) (*Config, error) {
 	// Understood, not offered, and said every time. Both mean anybody may start
 	// a meeting on this deployment's machines — "signed" included, since the
 	// signature it asks for is made by typing anything at all.
-	if meet.Rooms.OpenedBy == room.ByAnyone || meet.Rooms.OpenedBy == room.BySigned {
+	if (meet.Rooms.OpenedBy == room.ByAnyone || meet.Rooms.OpenedBy == room.BySigned) && !relay {
 		slog.Warn("rooms.opened_by lets anybody start a meeting on this deployment: "+
 			"\"signed\" asks for a passphrase and a passphrase is whatever somebody types. "+
 			"The management pages do not offer either; both are set in the configuration file",
@@ -834,11 +871,13 @@ func Load(path string) (*Config, error) {
 
 	if !meet.Rooms.OpenedBy.Valid() {
 		return nil, fmt.Errorf(
-			// All three, because there are three. This listed two and left out
+			// All four, because there are four. This listed two and left out
 			// the middle one, so somebody who mistyped "signed" was told by the
-			// error message that the setting they wanted does not exist.
-			"rooms.opened_by: %q is not who a room can be opened by. The three are %q, %q and %q",
-			meet.Rooms.OpenedBy, room.ByAnyone, room.BySigned, room.ByAdmins)
+			// error message that the setting they wanted does not exist; then
+			// it listed three and left out "accounts", which is the one the
+			// management pages and the example configuration use.
+			"rooms.opened_by: %q is not who a room can be opened by. The four are %q, %q, %q and %q",
+			meet.Rooms.OpenedBy, room.ByAnyone, room.BySigned, room.ByAccounts, room.ByAdmins)
 	}
 
 	if err := checkRole(&meet); err != nil {
@@ -858,6 +897,10 @@ func Load(path string) (*Config, error) {
 	}
 
 	if err := checkApps(&meet); err != nil {
+		return nil, err
+	}
+
+	if err := checkTurnstile(&meet); err != nil {
 		return nil, err
 	}
 
@@ -926,7 +969,7 @@ func checkApps(meet *Meet) error {
 	if apps.MacDir != "" {
 		if info, err := os.Stat(apps.MacDir); err != nil || !info.IsDir() {
 			slog.Warn("meet.apps.mac_dir is not a directory this server can read, so the "+
-				"download page says the Mac, Android and Windows apps are not available yet", "dir", apps.MacDir)
+				"download page says the Mac, Android, Windows and Linux apps are not available yet", "dir", apps.MacDir)
 		}
 	}
 

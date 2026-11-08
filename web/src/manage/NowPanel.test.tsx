@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { Now, Trend } from "./api";
+import type { LiveRoom, Now, Participant, Trend } from "./api";
 import { NowPanel } from "./NowPanel";
 
 /*
@@ -31,12 +31,16 @@ import { NowPanel } from "./NowPanel";
  * it is wrong by an amount nobody can check from the picture.
  */
 
-const { history } = vi.hoisted(() => ({ history: vi.fn() }));
+const { history, participants, accounts } = vi.hoisted(() => ({
+	history: vi.fn(),
+	participants: vi.fn(),
+	accounts: vi.fn(),
+}));
 
 vi.mock("./api", () => ({
 	// The poll reaches for this to tell a lost session from a failure.
 	SignedOut: class SignedOut extends Error {},
-	api: { history },
+	api: { history, participants, accounts },
 }));
 
 /*
@@ -162,10 +166,11 @@ const answered: Trend = {
 	],
 };
 
-function open(now?: Now) {
+function open(now?: Now, live?: LiveRoom[]) {
 	history.mockResolvedValue(answered);
+	accounts.mockResolvedValue([]);
 
-	return render(<NowPanel now={now} onSignedOut={vi.fn()} />);
+	return render(<NowPanel now={now} live={live} onSignedOut={vi.fn()} />);
 }
 
 describe("NowPanel", () => {
@@ -186,11 +191,17 @@ describe("NowPanel", () => {
 
 	// A relay holding no calls and a relay that did not answer are both zeros,
 	// and the difference between quiet and down is most of why this is opened.
+	// Said first at the top of the page, then on the relay as what to go and
+	// check, with the machine's own words kept beside it for an engineer.
 	it("says why a relay did not answer rather than showing it as idle", async () => {
 		open(aControlNode);
 
-		expect(await screen.findByText("dial tcp: i/o timeout")).toBeDefined();
-		expect(screen.getByText("1 of 2 answering")).toBeDefined();
+		expect(await screen.findByText("1 of 2 relays are not answering")).toBeDefined();
+		expect(screen.getByText("Not answering")).toBeDefined();
+		expect(
+			screen.getByText("It did not answer in time. The machine, or the network to it, may be down."),
+		).toBeDefined();
+		expect(screen.getByText("dial tcp: i/o timeout")).toBeDefined();
 	});
 
 	// Before the first poll comes back there is no reading at all, which is a
@@ -307,5 +318,136 @@ describe("the readout", () => {
 		fireEvent.click(screen.getByText("away"));
 
 		await waitFor(() => expect(screen.queryByText(/1\.0 Mbps/)).toBeNull());
+	});
+});
+
+/*
+ * Who is in which room, on which machine, from what.
+ *
+ * The page could not say until it was redrawn, and every way it can go wrong is
+ * quiet: a headline counted from the relays' own counters counts somebody
+ * carried from one relay to another twice, so five people read as seven beside
+ * a list of five; and a person whose media comes in through another relay than
+ * the room's looks exactly like everybody else unless the page says so.
+ */
+describe("the people in calls", () => {
+	const room: LiveRoom = {
+		name: "standup",
+		sid: "RM_1",
+		participants: 2,
+		publishers: 2,
+		createdAt: new Date(Date.now() - 25 * 60_000).toISOString(),
+		relay: "Hong Kong",
+	};
+
+	const person = (identity: string, name: string, extra: Partial<Participant> = {}): Participant => ({
+		identity,
+		name,
+		sid: `PA_${identity}`,
+		state: "ACTIVE",
+		joinedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+		publisher: true,
+		trip: { mark: identity.slice(1, 11), proven: true },
+		tracks: [],
+		...extra,
+	});
+
+	it("counts the people in the rooms, not the relays' connections", async () => {
+		participants.mockResolvedValue([]);
+
+		// The relays count seven, because two people are carried through a
+		// second relay and counted on both.
+		open({ ...aControlNode, clients: 7 }, [room, { ...room, name: "retro", sid: "RM_2", participants: 3 }]);
+
+		expect(await screen.findByText("5 people are in 2 rooms")).toBeDefined();
+	});
+
+	it("says what each person joined from, and the relay they came in by when it is not the room's", async () => {
+		participants.mockResolvedValue([
+			person("tada0000000-1", "Ada", {
+				client: { kind: "iphone", app: "0.1.2.4", system: "iOS 27.0.1", device: "iPhone17,1" },
+				relay: "Hong Kong",
+			}),
+			person("tbea0000000-1", "Bea", {
+				client: { kind: "web", browser: "Edge 141", system: "Windows" },
+				relay: "Tokyo",
+			}),
+		]);
+
+		open(aControlNode, [room]);
+
+		expect(await screen.findByText("iPhone app 0.1.2.4")).toBeDefined();
+		expect(screen.getByText("Edge 141")).toBeDefined();
+
+		const bea = screen.getByText("Bea").closest("div.flex.min-h-\\[52px\\]") as HTMLElement;
+		expect(within(bea).getByText(/came in through/)).toBeDefined();
+
+		const ada = screen.getByText("Ada").closest("div.flex.min-h-\\[52px\\]") as HTMLElement;
+		expect(within(ada).queryByText(/came in through/)).toBeNull();
+
+		expect(participants).toHaveBeenCalledWith("standup");
+	});
+
+	it("names the account a passphrase belongs to", async () => {
+		participants.mockResolvedValue([person("tada0000000-1", "Ada Lovelace")]);
+
+		history.mockResolvedValue(answered);
+		accounts.mockResolvedValue([{ name: "ada", trip: "ada0000000", effective: {} }]);
+		render(<NowPanel now={aControlNode} live={[room]} onSignedOut={vi.fn()} />);
+
+		expect(await screen.findByText("account ada")).toBeDefined();
+	});
+});
+
+/*
+ * Every figure the panel showed before it was redrawn.
+ *
+ * The redesign kept five of the old relay table's eleven columns, and the owner
+ * noticed (2026-11-01). Each figure that came back is held here, because a
+ * figure dropped from a page is the quietest fault there is: nothing breaks,
+ * the page still reads well, and the number somebody looked for is gone.
+ */
+describe("the relays' figures", () => {
+	it("says every one of them, the low ones too", async () => {
+		open({
+			...aControlNode,
+			nodes: [
+				{
+					...(aControlNode.nodes?.[0] as NonNullable<Now["nodes"]>[number]),
+					rooms: 3,
+					tracksIn: 4,
+					tracksOut: 9,
+					inPerSec: 1250,
+					nackPerSec: 0.5,
+					bytesOut: 9_000_000,
+					bytesIn: 1_000_000,
+				},
+			],
+		});
+
+		await screen.findByText("guangzhou");
+
+		const relay = screen.getByText("guangzhou").closest("div.flex.flex-col.gap-2") as HTMLElement;
+		const said = (label: string) => (within(relay).getByText(label).nextElementSibling as HTMLElement).textContent;
+
+		expect(said("Rooms")).toBe("3");
+		expect(said("Tracks")).toBe("4 in, 9 out");
+		expect(said("Receiving")).toBe("10 kbps");
+		// Half a packet a second is an ordinary network and is still a reading.
+		expect(said("Packets asked for again")).toBe("0.5 a second");
+		expect(said("Since it started")).toBe("9.0 MB out, 1.0 MB in");
+		expect(said("Node")).toBe("ND_gz");
+	});
+
+	it("says the deployment's totals, connections and tracks among them", async () => {
+		open(aControlNode);
+
+		const totals = (await screen.findByText("Totals across the relays that answered")).parentElement as HTMLElement;
+		const said = (label: string) => (within(totals).getByText(label).nextElementSibling as HTMLElement).textContent;
+
+		expect(said("Connections")).toBe("5");
+		expect(said("Tracks")).toBe("4 in, 9 out");
+		expect(said("Rates averaged over")).toBe("10s");
+		expect(said("Since each relay started")).toBe("2 kB out, 1 kB in");
 	});
 });

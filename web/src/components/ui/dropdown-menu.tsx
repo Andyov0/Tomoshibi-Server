@@ -27,7 +27,11 @@ export function DropdownMenuContent({
 					// menu past the edge of a phone.
 					"z-50 max-h-(--radix-dropdown-menu-content-available-height) max-w-(--radix-dropdown-menu-content-available-width)",
 					"min-w-56 overflow-y-auto overflow-x-hidden",
-					"rounded-lg border border-border bg-surface p-1 shadow-lg",
+					// Twelve at the corner and eight on each row inside it, so the
+					// two curves are concentric across the four pixels between
+					// them; they were eight and six, which reads as a row that
+					// was not drawn for the menu it is in.
+					"rounded-xl border border-border bg-surface p-1 shadow-lg",
 					// This application's own motion, not a plugin's. The classes
 					// that used to be here — animate-in, fade-in-0 — belong to
 					// tailwindcss-animate, which is not in the manifest and never
@@ -47,7 +51,7 @@ export function DropdownMenuContent({
 export function DropdownMenuLabel({ className, ...props }: React.ComponentProps<typeof Primitive.Label>) {
 	return (
 		<Primitive.Label
-			className={cn("px-2 py-1.5 font-medium text-fg-muted text-xs", className)}
+			className={cn("px-2.5 pt-2 pb-1 font-medium text-fg-muted text-xs", className)}
 			{...props}
 		/>
 	);
@@ -75,8 +79,13 @@ export function DropdownMenuItem({
 	return (
 		<Primitive.Item
 			className={cn(
-				"relative flex cursor-default select-none items-start gap-2 rounded-md px-2 py-1.5 text-sm outline-none",
-				"focus:bg-surface-hi data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+				"relative flex min-h-8 cursor-default select-none items-start gap-2.5 rounded-lg px-2.5 py-1.5 text-sm outline-none",
+				// A finger's height where the pointer is a finger. Thirty-two is
+				// a row a cursor lands on without looking; on a phone the same
+				// row was a target two thirds the size the platform asks for,
+				// in a list where a miss is a different microphone.
+				"pointer-coarse:min-h-11 pointer-coarse:items-center",
+				"transition-colors focus:bg-surface-hi data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
 				className,
 			)}
 			{...props}
@@ -94,13 +103,14 @@ export function DropdownMenuCheckboxItem({
 		<Primitive.CheckboxItem
 			checked={checked}
 			className={cn(
-				"relative flex cursor-default select-none items-center gap-2 rounded-md py-1.5 pr-2 pl-8 text-sm outline-none",
-				"focus:bg-surface-hi data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+				"relative flex min-h-8 cursor-default select-none items-center gap-2 rounded-lg py-1.5 pr-2.5 pl-8 text-sm outline-none",
+				"pointer-coarse:min-h-11",
+				"transition-colors focus:bg-surface-hi data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
 				className,
 			)}
 			{...props}
 		>
-			<span className="absolute left-2 flex size-4 items-center justify-center">
+			<span className="absolute left-2.5 flex size-4 items-center justify-center">
 				<Primitive.ItemIndicator>
 					<Check className="size-4" />
 				</Primitive.ItemIndicator>

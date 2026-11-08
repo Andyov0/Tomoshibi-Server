@@ -131,6 +131,14 @@ func TestSilentSaysNothingToAnOrdinaryRequest(t *testing.T) {
 		"POST /rtc HTTP/1.1\r\nHost: relay.example.invalid\r\nContent-Length: 0\r\n\r\n",
 		// An upgrade to something that is not a WebSocket.
 		"GET / HTTP/1.1\r\nHost: relay.example.invalid\r\nUpgrade: h2c\r\nConnection: Upgrade\r\n\r\n",
+		// A WebSocket upgrade anywhere but the signalling path, which used to
+		// be answered with Go's own 404 and so named the server.
+		"GET / HTTP/1.1\r\nHost: relay.example.invalid\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+		"GET /twirp/x HTTP/1.1\r\nHost: relay.example.invalid\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+		"GET /rtcx HTTP/1.1\r\nHost: relay.example.invalid\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+		// A bearer token anywhere but the management API.
+		"GET / HTTP/1.1\r\nHost: relay.example.invalid\r\nAuthorization: Bearer a.token.here\r\n\r\n",
+		"GET /rtc/validate HTTP/1.1\r\nHost: relay.example.invalid\r\nAuthorization: Bearer a.token.here\r\n\r\n",
 	} {
 		got, err := speak(t, addr, request)
 

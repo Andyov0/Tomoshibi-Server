@@ -1,6 +1,6 @@
 import { Phrased } from "@/hooks/useT";
 import { type Phrase, locale } from "@/live/i18n";
-import { Laptop, type LucideIcon, Monitor, TabletSmartphone } from "lucide-react";
+import { Computer, Laptop, type LucideIcon, Monitor, TabletSmartphone } from "lucide-react";
 
 /**
  * What the two places that offer the apps share: the download page behind an
@@ -33,11 +33,22 @@ export interface IOSOffer {
 	link?: string;
 }
 
+/**
+ * The Linux app's two builds, an AppImage for each processor
+ * (internal/app/apps.go): one holds the machine code of one processor alone.
+ */
+export interface LinuxBuilds {
+	x86_64: Build;
+	aarch64: Build;
+}
+
 /** What the server says is offered, everywhere it is asked. */
 export interface Offered {
 	mac: Build;
 	android: Build;
 	windows: Build;
+	/** Missing from a server from before the Linux app, which offers none. */
+	linux?: LinuxBuilds;
 	ios: IOSOffer;
 }
 
@@ -46,6 +57,7 @@ export const NOTHING: Offered = {
 	mac: { available: false },
 	android: { available: false },
 	windows: { available: false },
+	linux: { x86_64: { available: false }, aarch64: { available: false } },
 	ios: { invites: false, left: 0 },
 };
 
@@ -57,6 +69,7 @@ export const MAC_OS = "macOS";
 export const I_OS = "iOS";
 export const WINDOWS = "Windows";
 export const ANDROID = "Android";
+export const LINUX = "Linux";
 
 /** A size in megabytes, the way Finder counts them, in the reader's language. */
 export function sizeSaid(bytes: number): string {
@@ -160,6 +173,61 @@ export const WINDOWS_APP: Shelf = {
 		"If your browser says the file isn't commonly downloaded, choose Keep. The first time you run it, if Windows says it protected your PC, choose More info, then Run anyway.",
 	missing: "The Windows app is coming soon.",
 };
+
+/*
+ * Linux is an AppImage, one file that runs on any recent distribution once it
+ * may run as a program: a browser saves it without the permission to, and a
+ * file manager's double click on it then does nothing, or offers to open it as
+ * an archive. The line under the buttons says so first. The distributions it
+ * names are the oldest it runs on, because it is built on Ubuntu 24.04's
+ * libraries; Fedora 40 has the same C library.
+ *
+ * Two buttons rather than one, one for each processor, because the page
+ * cannot tell which the reader has: Chrome says x86_64 on every Linux machine,
+ * ARM laptops included. The x86-64 build first and said to be the usual one,
+ * which it is, so that the choice costs most people nothing.
+ */
+export interface Processor {
+	key: keyof LinuxBuilds;
+	/** Its name, the same in every language. */
+	name: string;
+	href: string;
+}
+
+export const PROCESSORS: readonly Processor[] = [
+	{ key: "x86_64", name: "x86-64", href: "/api/apps/linux-x86_64" },
+	{ key: "aarch64", name: "ARM64", href: "/api/apps/linux-aarch64" },
+];
+
+export const LINUX_APP = {
+	icon: Computer,
+	name: LINUX,
+	meant: "For Linux on Intel, AMD and ARM PCs.",
+	take: "Download for Linux ({architecture})",
+	install: "Allow the AppImage to run as a program, then open it. Needs Ubuntu 24.04, Debian 13, Fedora 40 or a newer Linux.",
+	caution: "Most PCs need x86-64. Choose ARM64 for a computer with an ARM processor.",
+	missing: "The Linux app is not available yet.",
+} as const satisfies Omit<Shelf, "href">;
+
+/** The Linux builds a server offers, nothing from one from before them. */
+export function linuxOf(offered: Offered): LinuxBuilds {
+	return offered.linux ?? (NOTHING.linux as LinuxBuilds);
+}
+
+/** Whether either Linux build is there to download. */
+export function offersLinux(offered: Offered): boolean {
+	const linux = linuxOf(offered);
+	return offers(linux.x86_64) || offers(linux.aarch64);
+}
+
+/**
+ * The Linux build whose version and size a card shows: the x86-64 one, which
+ * most readers take, and the ARM one where it is alone.
+ */
+export function linuxFigures(offered: Offered): Build {
+	const linux = linuxOf(offered);
+	return offers(linux.x86_64) ? linux.x86_64 : linux.aarch64;
+}
 
 /** A build's version and size, the way every place that offers it says them. */
 export function Figures({ build }: { build: Build }) {

@@ -36,12 +36,14 @@ export function Sealed({ value, onChange }: { value: string; onChange: (word: st
 				onClick={() => setOpen((was) => !was)}
 				aria-expanded={open}
 				className={cn(
-					"flex items-center gap-1.5 self-start rounded-md px-1.5 py-1 text-[11px]",
-					"text-fg-muted transition-colors hover:bg-surface-hi hover:text-fg",
-					value && "text-tally",
+					// A row a cursor and a finger can find: it was twenty-two pixels
+					// of eleven-pixel words.
+					"pressable -ml-2 flex h-8 items-center gap-1.5 self-start rounded-[10px] px-2 text-[12.5px] outline-none",
+					"text-fg-muted hover:bg-wash hover:text-fg focus-visible:ring-2 focus-visible:ring-fg/70 pointer-coarse:h-11",
+					value && "text-tally-ink",
 				)}
 			>
-				<Lock className="size-3" />
+				<Lock className="size-3.5" />
 				{value ? t("This call is sealed") : t("Seal this call")}
 			</button>
 
@@ -59,9 +61,13 @@ export function Sealed({ value, onChange }: { value: string; onChange: (word: st
 						// deliberately is and this deliberately is not.
 						autoComplete="off"
 						maxLength={128}
+						// White by day, as the name and passphrase above it are.
+						// The raised grey is for a field inside a card; this one
+						// stands on the page's own ground, which by day is paler
+						// than the grey, so it read as a field switched off.
 						className={cn(
-							"w-full rounded-md border border-border bg-surface-hi px-2.5 py-1.5",
-							"text-sm outline-none focus-visible:ring-2 focus-visible:ring-fg/40",
+							"h-9 w-full rounded-[10px] border border-border bg-surface-hi day:bg-surface px-3",
+							"text-sm outline-none focus-visible:ring-2 focus-visible:ring-fg/40 pointer-coarse:h-11 pointer-coarse:text-base",
 						)}
 					/>
 

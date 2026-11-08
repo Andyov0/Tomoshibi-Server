@@ -1,7 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "@/index.css";
+import { followTheSystem } from "@/live/appearance";
 import { start } from "@/live/i18n";
+import { watchRequests } from "@/live/progress";
+import { TopProgress } from "@/components/TopProgress";
 import { Notices } from "@/components/room/Notices";
 import { Manage } from "./Manage";
 
@@ -22,6 +25,13 @@ import { Manage } from "./Manage";
  */
 start();
 
+// Day and night fade into each other, and nothing chases the fade (live/appearance.ts).
+followTheSystem();
+
+// Before the first request, so the page's arrival is counted from the start
+// (live/progress.ts).
+watchRequests();
+
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");
 
@@ -33,5 +43,6 @@ createRoot(root).render(
 		    fades; a panel that cannot reach the server is something still true
 		    and stays where the missing figures are. */}
 		<Notices />
+		<TopProgress />
 	</StrictMode>,
 );

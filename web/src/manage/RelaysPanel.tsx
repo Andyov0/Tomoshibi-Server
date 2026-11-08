@@ -1,4 +1,6 @@
 import { useT } from "@/hooks/useT";
+import { Button } from "@/components/ui/button";
+import { Flagged } from "@/components/room/Flag";
 import { useLingering } from "@/hooks/useLingering";
 import { useReorder } from "@/hooks/useReorder";
 import { cn } from "@/lib/utils";
@@ -7,20 +9,26 @@ import { actionFailed } from "@/live/notices";
 import {
 	Check,
 	ChevronDown,
+	ChevronRight,
 	ChevronUp,
 	Copy,
+	Eye,
+	EyeOff,
 	GripVertical,
 	Loader2,
 	Plus,
 	RotateCw,
 	Terminal,
 	Trash2,
-	X,
 } from "lucide-react";
 import { type PointerEvent as Pointing, useCallback, useEffect, useMemo, useState } from "react";
 import { type Relay, api } from "./api";
+import { Box, Hint } from "./Boxes";
+import { Group, Section, field, quiet, quietIcon } from "./Grouped";
+import { reason } from "./health";
 import { usePoll } from "./poll";
-import { Card, Failed } from "./Shell";
+import { Sheet } from "./Sheet";
+import { Failed } from "./Shell";
 
 /**
  * The media servers this deployment holds calls on.
@@ -37,13 +45,29 @@ import { Card, Failed } from "./Shell";
  * client's says whether it is near them. A relay can be perfectly healthy here
  * and the wrong choice for somebody on another continent, and a row that
  * conflated the two would send an operator looking for a fault that is not one.
+ *
+ * Redrawn (2026-10-29) as one group of rows, each saying first whether the
+ * machine answered and what it is for, with everything that can be changed
+ * about it in a sheet the row opens. It was a card per relay with seven
+ * bordered controls on every row and a form that unfolded under it, so the
+ * page was mostly controls for the one question it is opened to answer. Adding
+ * a machine is a sheet of numbered steps, because it is one: run a line on the
+ * new machine, open what it says, and watch it arrive here. The first step is
+ * making the one-time token the machine enrols with.
  */
 export function RelaysPanel({
 	canRelays,
+	canEnrol = false,
 	onSignedOut,
 }: {
 	/** May add, edit, order and remove relays, and hand out the install line. */
 	canRelays: boolean;
+	/**
+	 * May mint the token a new machine enrols with, which buys the deployment's
+	 * key pair, its redis password and the certificate's key: moderate's, not
+	 * the relays capability's.
+	 */
+	canEnrol?: boolean;
 	onSignedOut: () => void;
 }) {
 	const t = useT();
@@ -58,13 +82,8 @@ export function RelaysPanel({
 	// relay continuously for a page nobody has open.
 	const { value, error, refresh } = usePoll(api.relays, { every: 15_000, onSignedOut });
 
-	const [adding, setAdding] = useState(false);
-	const [script, setScript] = useState<string>();
-	const [command, setCommand] = useState<string>();
-	// What the new machine will be called, and what has to be reachable on it.
-	// Both come back with the command and neither was drawn.
-	const [enrolDomain, setEnrolDomain] = useState<string>();
-	const [enrolPort, setEnrolPort] = useState<number>();
+	const [adding, setAdding] = useState<"script" | "address">();
+	const [opened, setOpened] = useState<string>();
 	const [busy, setBusy] = useState<string>();
 
 	/**
@@ -176,149 +195,150 @@ export function RelaysPanel({
 		[busy],
 	);
 
+	const move = (index: number, by: number) =>
+		act(relays[index]?.name ?? "", () => {
+			const order = relays.map((one) => one.name);
+			const to = index + by;
+			const moved = order[index];
+			if (moved === undefined || to < 0 || to >= order.length) return Promise.resolve();
+
+			order.splice(index, 1);
+			order.splice(to, 0, moved);
+
+			return api.reorderRelays(order);
+		});
+
+	const down = relays.filter((relay) => relay.enabled && !relay.reachable).length;
+
 	if (error) return <Failed>{error}</Failed>;
 
 	return (
-		<div className="flex flex-col gap-4">
-			<Card
-				title={t("Relays")}
-				note={t("Where calls are held. This machine serves the page and carries no media.")}
-				actions={
-					canModerate &&
-					!adding &&
-					script === undefined && (
-						<div className="flex items-center gap-2">
-							{/* Two ways in, because they are different situations. A machine
-							    somebody is holding gets the script; one that is already
-							    running somewhere gets its address typed in. */}
-							<button
-								type="button"
-								onClick={async () => {
-									try {
-										// Both, in one press. The command is what gets
-										// used and the script is what makes it readable
-										// before it is run as root.
-										const [text, ready] = await Promise.all([
-											api.relayScript(),
-											api.relayCommand(),
-										]);
-										setCommand(ready.command);
-										setEnrolDomain(ready.domain);
-										setEnrolPort(ready.port);
-										setScript(text);
-									} catch {
-										actionFailed(t("This deployment cannot bring up relays from a script."));
-									}
-								}}
-								className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi"
-							>
-								<Terminal className="size-3.5" />
-								{t("Add a machine")}
-							</button>
+		<div className="mx-auto flex max-w-[1180px] flex-col gap-6">
+			<header className="flex flex-wrap items-center gap-x-4 gap-y-2 px-1">
+				<div className="flex min-w-0 flex-col gap-1">
+					<h1 className="font-semibold text-[22px] leading-tight tracking-[-0.01em]">{t("Relays")}</h1>
+					<p className="max-w-[60ch] text-[13.5px] text-fg-muted">
+						{t("Where calls are held. This machine serves the page and carries no media.")}
+					</p>
+				</div>
 
-							<button
-								type="button"
-								onClick={() => setAdding(true)}
-								className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi"
-							>
-								<Plus className="size-3.5" />
-								{t("Add by address")}
-							</button>
-						</div>
-					)
+				{canModerate && (
+					<div className="ml-auto flex flex-wrap items-center gap-2">
+						{/* Two ways in, because they are different situations. A machine
+						    somebody is holding gets the script; one that is already
+						    running somewhere gets its address typed in. */}
+						<Button variant="primary" size="sm" onClick={() => setAdding("script")}>
+							<Terminal />
+							{t("Add a machine")}
+						</Button>
+						<Button variant="secondary" size="sm" onClick={() => setAdding("address")}>
+							<Plus />
+							{t("Add by address")}
+						</Button>
+					</div>
+				)}
+			</header>
+
+			<Section
+				title={t("In service")}
+				note={
+					value === undefined
+						? undefined
+						: down > 0
+							? t("{down} of {count} relays are not answering", { down, count: relays.length })
+							: t("{count} configured", { count: relays.length })
 				}
 			>
-				{script !== undefined ? (
-					<AddByScript
-						script={script}
-						command={command}
-						domain={enrolDomain}
-						port={enrolPort}
-						onDone={() => {
-							setScript(undefined);
-							setCommand(undefined);
+				<Group>
+					{value !== undefined && relays.length === 0 && (
+						<p className="animate-fade-in px-4 py-5 text-fg-muted text-[13.5px]">
+							{t("No relays yet. Calls cannot be held until one is added.")}
+						</p>
+					)}
+
+					{/* Its own container, because the rows are measured through it
+					    and nothing else may be among its children. */}
+					<div ref={reorder.list}>
+						{relays.map((relay, index) => {
+							const lifted = reorder.carrying === index;
+							const offset = reorder.shift(index);
+
+							return (
+								<div
+									key={relay.name}
+									style={offset ? { transform: `translateY(${offset}px)` } : undefined}
+									className={cn(
+										"relative bg-surface duration-200 ease-settle",
+										"before:absolute before:top-0 before:right-0 before:left-4 before:h-px before:bg-border first:before:hidden",
+										index === 0 && "rounded-t-[14px]",
+										index === relays.length - 1 && "rounded-b-[14px]",
+										// The rows standing aside slide; the row under the pointer
+										// follows it exactly, and so transitions nothing.
+										lifted || reorder.carrying === undefined
+											? "transition-[box-shadow]"
+											: "transition-[transform,box-shadow]",
+										lifted && "z-10 rounded-[14px] shadow-[0_10px_30px_rgba(0,0,0,0.35)]",
+									)}
+								>
+									<RelayRow
+										relay={relay}
+										canModerate={canModerate}
+										busy={busy === relay.name}
+										lifted={lifted}
+										onTake={reorder.take(index)}
+										onMove={(by) => move(index, by)}
+										onRecheck={() => recheck(relay.name)}
+										onOpen={() => setOpened(relay.name)}
+									/>
+								</div>
+							);
+						})}
+					</div>
+				</Group>
+				<p className="px-1 text-[12px] text-fg-muted leading-relaxed">
+					{t("Clients are offered these in this order, nearest first among the ones that answer. Drag a row by its handle, or use the arrow keys on it, to change the order.")}
+				</p>
+			</Section>
+
+			{relays.map((relay, index) => (
+				<Sheet
+					key={relay.name}
+					open={opened === relay.name}
+					title={t("Relay")}
+					label={say(relay.label || relay.name)}
+					onClose={() => setOpened(undefined)}
+				>
+					<RelayDetail
+						relay={relay}
+						canModerate={canModerate}
+						busy={busy === relay.name}
+						first={index === 0}
+						last={index === relays.length - 1}
+						onMove={(by) => move(index, by)}
+						onRecheck={() => recheck(relay.name)}
+						onToggle={() => act(relay.name, () => api.editRelay(relay.name, { enabled: !relay.enabled }))}
+						onDrop={() => {
+							setOpened(undefined);
+							void act(relay.name, () => api.dropRelay(relay.name));
 						}}
+						onEdit={(change) => act(relay.name, () => api.editRelay(relay.name, change))}
 					/>
-				) : adding ? (
-					<AddRelay
-						onDone={async () => {
-							setAdding(false);
-							await refresh();
-						}}
-						onCancel={() => setAdding(false)}
-					/>
-				) : relays.length === 0 ? (
-					<p className="px-4 py-6 text-center text-fg-muted text-xs">
-						{t("No relays yet. Calls cannot be held until one is added.")}
-					</p>
-				) : null}
-			</Card>
+				</Sheet>
+			))}
 
-			{/* Its own container, because the rows are measured through it and the
-			    card above is not one of them. The spacing is the same as the
-			    column it sits in, so nothing about the page moved to gain a
-			    handle on the list. */}
-			<div ref={reorder.list} className="flex flex-col gap-4">
-				{relays.map((relay, index) => {
-					const lifted = reorder.carrying === index;
-					const offset = reorder.shift(index);
+			<Sheet open={adding === "script"} title={t("Add a machine")} onClose={() => setAdding(undefined)}>
+				<AddByScript open={adding === "script"} canEnrol={canEnrol} onDone={() => setAdding(undefined)} />
+			</Sheet>
 
-					return (
-						<div
-							key={relay.name}
-							style={offset ? { transform: `translateY(${offset}px)` } : undefined}
-							className={cn(
-								"relative duration-200 ease-settle",
-								// The rows standing aside slide; the row under the pointer
-								// follows it exactly, and so transitions nothing. At the drop
-								// neither does: the list reorders and the offsets come off in
-								// the same frame, and a row easing out of an offset it no
-								// longer has would be animating away from where it landed.
-								lifted || reorder.carrying === undefined
-									? "transition-[box-shadow]"
-									: "transition-[transform,box-shadow]",
-								// Written out rather than assembled from a size and a
-								// colour: the palette here is nearly black, and the
-								// default shadow is a tenth of an opacity that lands
-								// on it as nothing at all.
-								lifted && "z-10 shadow-[0_10px_30px_rgba(0,0,0,0.45)]",
-							)}
-						>
-							<RelayRow
-								// Which arrows to draw. The list is what the server sent, in
-								// the order it sent it, so an end is an end.
-								first={index === 0}
-								last={index === relays.length - 1}
-								onMove={(by) =>
-									act(relay.name, () => {
-										const order = relays.map((one) => one.name);
-										const to = index + by;
-										const moved = order[index];
-										if (moved === undefined || to < 0 || to >= order.length)
-											return Promise.resolve();
-
-										order.splice(index, 1);
-										order.splice(to, 0, moved);
-
-										return api.reorderRelays(order);
-									})
-								}
-								onTake={reorder.take(index)}
-								lifted={lifted}
-								relay={relay}
-								canModerate={canModerate}
-								busy={busy === relay.name}
-								onToggle={() =>
-									act(relay.name, () => api.editRelay(relay.name, { enabled: !relay.enabled }))
-								}
-								onDrop={() => act(relay.name, () => api.dropRelay(relay.name))}
-								onEdit={(change) => act(relay.name, () => api.editRelay(relay.name, change))}
-								onRecheck={() => recheck(relay.name)}
-							/>
-						</div>
-					);
-				})}
-			</div>
+			<Sheet open={adding === "address"} title={t("Add by address")} onClose={() => setAdding(undefined)}>
+				<AddRelay
+					onDone={async () => {
+						setAdding(undefined);
+						await refresh();
+					}}
+					onCancel={() => setAdding(undefined)}
+				/>
+			</Sheet>
 		</div>
 	);
 }
@@ -342,281 +362,333 @@ function arrange(relays: Relay[], order?: string[]): Relay[] {
 	return chosen.length === relays.length ? chosen : relays;
 }
 
+/** A relay's light, on the same bands the client's own picker uses. */
+function light(relay: Relay): string {
+	if (!relay.reachable) return "bg-danger";
+	if (!relay.enabled) return "bg-fg-muted/50";
+
+	const ms = relay.latencyMs ?? 0;
+	return ms <= 150 ? "bg-good" : ms <= 400 ? "bg-tally" : "bg-danger";
+}
+
+/**
+ * What a relay is for, as the short words a row carries.
+ *
+ * Only the ones that make it unlike an ordinary relay; an ordinary relay carries
+ * none, so a row with a word on it is a row worth reading.
+ */
+function Roles({ relay }: { relay: Relay }) {
+	const t = useT();
+
+	const words: { text: string; tone?: "tally" | "danger" }[] = [];
+	if (!relay.enabled) words.push({ text: t("Not taking new calls"), tone: "tally" });
+	// Offered to nobody, and the only sign otherwise would be that nobody lands
+	// there: a relay that signals through another while no relay signalling for
+	// itself answers (sent by servers that know it).
+	if (relay.unavailable === "no_signalling") words.push({ text: t("Offered to nobody"), tone: "danger" });
+	// A relay that signals through another is one no TLS reaches, and a client
+	// measures a relay with no probe address by opening TLS to it. The server
+	// refuses that combination now; one saved before it did is named here.
+	if (relay.signalVia && !relay.probe) words.push({ text: t("Needs a probe address"), tone: "danger" });
+	if (relay.fallback) words.push({ text: t("Keep in reserve") });
+	if (relay.adminOnly) words.push({ text: t("Administrators only") });
+	if (relay.owners?.length) words.push({ text: t("Only for {names}", { names: relay.owners.join(", ") }) });
+	if (relay.forwards) words.push({ text: t("Forwards other rooms") });
+	if (relay.bridge) words.push({ text: t("Bridge") });
+	if (relay.signalVia) words.push({ text: t("Signals through {relay}", { relay: relay.signalVia }) });
+
+	if (words.length === 0) return null;
+
+	return (
+		<span className="flex flex-wrap gap-1">
+			{words.map((word) => (
+				<span
+					key={word.text}
+					className={cn(
+						"rounded-full px-2 py-px text-[11.5px]",
+						word.tone === "tally"
+							? "bg-tally/15 text-tally-ink"
+							: word.tone === "danger"
+								? "bg-danger/15 text-danger-ink day:bg-danger/8"
+								: "bg-surface-hi text-fg-muted",
+					)}
+				>
+					{word.text}
+				</span>
+			))}
+		</span>
+	);
+}
+
+/** What the relay said when it was last asked, in a sentence. */
+function Answer({ relay }: { relay: Relay }) {
+	const t = useT();
+
+	return (
+		<span className="flex items-center gap-2 text-[12.5px] text-fg-muted">
+			<span className={cn("size-2 shrink-0 rounded-full transition-colors", light(relay))} aria-hidden />
+			{relay.reachable ? (
+				t("Answered in {ms} ms", { ms: relay.latencyMs ?? 0 })
+			) : (
+				<span className="flex min-w-0 flex-col">
+					<span className="text-danger-ink">{relay.detail ? reason(relay.detail) : t("Did not answer")}</span>
+					{/* The machine's own words under the plain ones, on the row and
+					    not only in its sheet, as the row said them before the
+					    redesign: they are the difference between a refused
+					    connection and an expired certificate. */}
+					{relay.detail && (
+						<span className="readout truncate text-[11.5px]" title={relay.detail}>
+							{relay.detail}
+						</span>
+					)}
+				</span>
+			)}
+		</span>
+	);
+}
+
 function RelayRow({
 	relay,
 	canModerate,
 	busy,
-	onToggle,
-	onDrop,
-	onEdit,
-	onMove,
-	onTake,
 	lifted,
+	onTake,
+	onMove,
 	onRecheck,
-	first,
-	last,
+	onOpen,
 }: {
 	relay: Relay;
 	canModerate: boolean;
 	busy: boolean;
-	onMove: (by: number) => void;
-	/** Picks the row up. */
-	onTake: (event: Pointing<HTMLElement>) => void;
-	/** Whether this is the row being carried. */
 	lifted: boolean;
+	onTake: (event: Pointing<HTMLElement>) => void;
+	onMove: (by: number) => void;
 	onRecheck: () => void;
+	onOpen: () => void;
+}) {
+	const t = useT();
+
+	return (
+		<div className="flex items-start gap-2 py-3 pr-2 pl-2 sm:pr-3">
+			{/* What the row is dragged by. A handle rather than the whole row: the
+			    row opens the relay, and a press that might be the start of a drag
+			    cannot also be a press on the thing underneath it. Arrow keys as
+			    well as a pointer, so the keyboard did not lose ordering the
+			    moment dragging arrived. */}
+			{canModerate ? (
+				<button
+					type="button"
+					onPointerDown={onTake}
+					onKeyDown={(event) => {
+						if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+
+						// Or the panel scrolls under a row somebody is moving.
+						event.preventDefault();
+						onMove(event.key === "ArrowUp" ? -1 : 1);
+					}}
+					disabled={busy}
+					aria-label={t("Drag to reorder")}
+					title={t("Drag to reorder")}
+					className={cn(
+						// A finger on this must move the row and not the page, and
+						// nothing but touch-action can say so.
+						quietIcon,
+						"touch-none",
+						lifted ? "cursor-grabbing text-fg" : "cursor-grab",
+					)}
+				>
+					<GripVertical />
+				</button>
+			) : (
+				<span className="w-2" />
+			)}
+
+			<div className="relative flex min-w-0 flex-1 flex-col gap-1 pt-1">
+				{/* The whole of this part opens the relay, through one button
+				    stretched over it. */}
+				<button
+					type="button"
+					onClick={onOpen}
+					aria-haspopup="dialog"
+					className={cn(
+						"min-w-0 truncate text-left text-[14.5px] outline-none",
+						"after:absolute after:inset-0 after:rounded-[10px] focus-visible:after:ring-2 focus-visible:after:ring-fg/70",
+					)}
+				>
+					<Flagged text={say(relay.label || relay.name)} />
+					{relay.label && <span className="readout ml-2 text-[12px] text-fg-muted">{relay.name}</span>}
+					{relay.region && <span className="ml-2 text-[12px] text-fg-muted">{say(relay.region)}</span>}
+				</button>
+				<span className="readout truncate text-[12px] text-fg-muted">{relay.url}</span>
+				<Answer relay={relay} />
+				<Roles relay={relay} />
+			</div>
+
+			{/* First on the right, because it is about the line beside it. The
+			    sheet changes the relay; this only asks it again. */}
+			<button
+				type="button"
+				onClick={onRecheck}
+				disabled={busy}
+				aria-label={t("Measure again")}
+				title={t("Measure again")}
+				className={cn(quietIcon, "relative z-10 mt-0.5")}
+			>
+				<RotateCw className={cn(busy && "animate-spin")} />
+			</button>
+
+			<ChevronRight className="mt-2 size-4 shrink-0 text-fg-muted" aria-hidden />
+		</div>
+	);
+}
+
+/** Everything about one relay, in its sheet. */
+function RelayDetail({
+	relay,
+	canModerate,
+	busy,
+	first,
+	last,
+	onMove,
+	onRecheck,
+	onToggle,
+	onDrop,
+	onEdit,
+}: {
+	relay: Relay;
+	canModerate: boolean;
+	busy: boolean;
 	first: boolean;
 	last: boolean;
+	onMove: (by: number) => void;
+	onRecheck: () => void;
 	onToggle: () => void;
 	onDrop: () => void;
-	onEdit: (change: {
-		name?: string;
-		url?: string;
-		region?: string;
-		label?: string;
-		fallback?: boolean;
-	}) => void;
+	onEdit: (change: Change) => void;
 }) {
 	const t = useT();
 
 	const [confirming, setConfirming] = useState(false);
-
-	// Shut by default. The settings are four fields and two switches and they
-	// are read perhaps once in a machine's life, against a row that is looked at
-	// whenever anybody wonders whether a relay is up — so leaving them open made
-	// the page mostly forms and hid the one line anybody came for.
-	const [showing, setShowing] = useState(false);
-
-	// Held on screen while they leave. Rendered as `showing && ...` the form was
-	// simply gone on the frame after the press, and a row that has just grown by
-	// six fields collapsing between two frames reads as the page having redrawn
-	// rather than as a panel being shut.
-	const settings = useLingering(showing);
-	const removal = useLingering(confirming);
+	const removal = useLingering(confirming, 160);
 
 	return (
-		<Card title={say(relay.label || relay.name)} note={relay.label ? relay.name : relay.region}>
-			<div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-				{/* What the row is dragged by.
-				    A handle rather than the whole row: the row is mostly buttons
-				    and an address somebody selects to copy, and a press that might
-				    be the start of a drag cannot also be a press on the thing
-				    underneath it — one of the two has to lose, and on this row both
-				    are things people do daily.
-
-				    Arrow keys as well as a pointer. The buttons beside it are the
-				    older way and stay, but a handle that only answers to a mouse is
-				    a feature the keyboard lost the moment dragging arrived. */}
-				{canModerate && (
-					<button
-						type="button"
-						onPointerDown={onTake}
-						onKeyDown={(event) => {
-							if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-
-							// Or the panel scrolls under a row somebody is moving.
-							event.preventDefault();
-							onMove(event.key === "ArrowUp" ? -1 : 1);
-						}}
-						disabled={busy}
-						aria-label={t("Drag to reorder")}
-						title={t("Drag to reorder")}
-						className={cn(
-							// A finger on this must move the row and not the page, and
-							// nothing but touch-action can say so: preventing the
-							// default on a pointer event is too late, because by then
-							// the browser has already decided the gesture is a scroll.
-							"-ml-1.5 shrink-0 touch-none rounded-md p-1 text-fg-muted transition-colors",
-							"hover:bg-surface-hi hover:text-fg disabled:opacity-40",
-							lifted ? "cursor-grabbing text-fg" : "cursor-grab",
-						)}
-					>
-						<GripVertical className="size-4" />
-					</button>
-				)}
-
-				{/* First, because it is about the line it sits beside: the address
-				    and what it answered in. The buttons on the right change the
-				    relay; this one only asks it again. */}
-				<button
-					type="button"
-					onClick={onRecheck}
-					disabled={busy}
-					aria-label={t("Measure again")}
-					title={t("Measure again")}
-					className="shrink-0 rounded-md border border-border p-1.5 text-fg-muted transition-colors hover:bg-surface-hi hover:text-fg disabled:opacity-40"
-				>
-					<RotateCw className={cn("size-3.5", busy && "animate-spin")} />
-				</button>
-
-				<div className="min-w-0 flex-1">
-					<div className="flex items-center gap-2">
-						<span className="truncate readout text-[12px]">{relay.url}</span>
-
-						{relay.fallback && (
-							<span className="shrink-0 rounded bg-fg/10 px-1.5 py-0.5 text-[10.5px] text-fg-muted">
-								{t("Keep in reserve")}
-							</span>
-						)}
-
-						{relay.adminOnly && (
-							<span className="shrink-0 rounded bg-fg/10 px-1.5 py-0.5 text-[10.5px] text-fg-muted">
-								{t("Administrators only")}
-							</span>
-						)}
-
-						{!relay.enabled && (
-							<span className="shrink-0 rounded bg-tally/15 px-1.5 py-0.5 text-[11px] text-tally">
-								{t("Not taking new calls")}
-							</span>
-						)}
-					</div>
-
-					{/*
-					  * A light before the sentence, on the same bands the client's
-					  * own picker uses. The dot that used to be here was painted a
-					  * colour this palette does not have, so on every reachable
-					  * relay it was an eight-pixel hole beside the address — which
-					  * is what anybody would read it as.
-					  */}
-					<p className="mt-1 flex items-center gap-2 text-fg-muted text-xs">
-						<span
-							className={cn(
-								"size-2 shrink-0 rounded-full",
-								!relay.reachable
-									? "bg-danger"
-									: (relay.latencyMs ?? 0) <= 150
-										? "bg-good"
-										: (relay.latencyMs ?? 0) <= 400
-											? "bg-tally"
-											: "bg-danger",
-							)}
-							aria-hidden
-						/>
-
-						{relay.reachable
-							? t("Answered in {ms} ms", { ms: relay.latencyMs ?? 0 })
-							: relay.detail
-								? t("Did not answer: {reason}", { reason: relay.detail })
-								: t("Did not answer")}
+		<div className="flex flex-col gap-7">
+			<div className="flex flex-col gap-1.5">
+				<p className="font-semibold text-[22px] leading-tight">
+					<Flagged text={say(relay.label || relay.name)} />
+				</p>
+				<p className="readout break-all text-[12.5px] text-fg-muted">{relay.url}</p>
+				<Answer relay={relay} />
+				<Roles relay={relay} />
+				{/* The two states a row can only name, said in full where there is
+				    room: a relay offered to nobody, and one clients would measure by
+				    opening TLS to it. */}
+				{relay.unavailable === "no_signalling" && (
+					<p className="text-[12.5px] text-danger-ink leading-relaxed">
+						{t("Offered to nobody: no relay that signals for itself is answering to carry its signalling, and clients never connect to it directly.")}
 					</p>
-				</div>
-
-				{canModerate && (
-					<div className="flex shrink-0 items-center gap-2">
-
-						{/* Order is not something this server can work out. Alphabetical
-						    puts a reserve above the relay holding every call, and by-date
-						    puts whichever machine was rebuilt last at the bottom. */}
-						<div className="flex items-center">
-							<button
-								type="button"
-								disabled={busy || first}
-								onClick={() => onMove(-1)}
-								aria-label={t("Move up")}
-								className="rounded-l-md border border-border p-1.5 hover:bg-surface-hi disabled:opacity-30"
-							>
-								<ChevronUp className="size-3.5" />
-							</button>
-							<button
-								type="button"
-								disabled={busy || last}
-								onClick={() => onMove(1)}
-								aria-label={t("Move down")}
-								className="-ml-px rounded-r-md border border-border p-1.5 hover:bg-surface-hi disabled:opacity-30"
-							>
-								<ChevronDown className="size-3.5" />
-							</button>
-						</div>
-
-						<button
-							type="button"
-							onClick={onToggle}
-							disabled={busy}
-							className="rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi disabled:opacity-50"
-						>
-							{relay.enabled ? t("Stop sending here") : t("Send calls here")}
-						</button>
-
-						<button
-							type="button"
-							onClick={() => setShowing(!showing)}
-							aria-expanded={showing}
-							aria-label={t("Settings")}
-							title={t("Settings")}
-							className={cn(
-								"rounded-md border border-border p-1.5 text-fg-muted transition-colors",
-								"hover:bg-surface-hi hover:text-fg",
-								showing && "bg-surface-hi text-fg",
-							)}
-						>
-							<ChevronDown
-								className={cn("size-3.5 transition-transform duration-200", showing && "rotate-180")}
-							/>
-						</button>
-
-						{confirming ? (
-							<div className="flex items-center gap-1">
-								{/* Named rather than a bare tick, because removing a relay and
-								    disabling one are a keystroke apart and only one of them is
-								    reversible by somebody who did not write the address down. */}
-								<button
-									type="button"
-									onClick={() => {
-										setConfirming(false);
-										onDrop();
-									}}
-									disabled={busy}
-									className="flex items-center gap-1 rounded-md bg-danger px-2.5 py-1 text-[12px] text-white hover:opacity-90 disabled:opacity-50"
-								>
-									<Check className="size-4" />
-									{t("Remove")}
-								</button>
-								<button
-									type="button"
-									onClick={() => setConfirming(false)}
-									className="rounded-md border border-border p-1.5 hover:bg-surface-hi"
-									aria-label={t("Cancel")}
-								>
-									<X className="size-4" />
-								</button>
-							</div>
-						) : (
-							<button
-								type="button"
-								onClick={() => setConfirming(true)}
-								disabled={busy}
-								className="rounded-md border border-border p-1.5 text-fg-muted hover:bg-surface-hi hover:text-danger disabled:opacity-50"
-								aria-label={t("Remove relay")}
-							>
-								<Trash2 className="size-4" />
-							</button>
-						)}
-					</div>
 				)}
+				{relay.signalVia && !relay.probe && (
+					<p className="text-[12.5px] text-danger-ink leading-relaxed">
+						{t("Signals through another relay and has no probe address, so clients measure it by opening TLS to it. Set where it is measured.")}
+					</p>
+				)}
+				<div className="mt-1 flex flex-wrap gap-2">
+					<Button variant="secondary" size="sm" onClick={onRecheck} disabled={busy}>
+						<RotateCw className={cn(busy && "animate-spin")} />
+						{t("Measure again")}
+					</Button>
+				</div>
 			</div>
 
-			{canModerate && settings.mounted && (
-				<div className={settings.leaving ? "animate-depart" : "animate-arrive"}>
-					<Settings relay={relay} busy={busy} onSave={(change) => onEdit(change)} />
-				</div>
+			{canModerate && (
+				<Section title={t("Taking calls")}>
+					<Group>
+						<div className="flex flex-col gap-2 px-4 py-3">
+							<Box
+								label={t("Send calls here")}
+								checked={relay.enabled}
+								disabled={busy}
+								saving={busy}
+								onChange={onToggle}
+							/>
+							<p className="pl-7 text-[12px] text-fg-muted leading-relaxed">
+								{t("Calls already on this relay keep running; this only stops new ones being sent there.")}
+							</p>
+						</div>
+						<div className="flex items-center gap-2 border-border border-t px-4 py-2.5">
+							<span className="mr-auto text-[13.5px]">{t("Order")}</span>
+							<button type="button" disabled={busy || first} onClick={() => onMove(-1)} className={quiet}>
+								<ChevronUp />
+								{t("Move up")}
+							</button>
+							<button type="button" disabled={busy || last} onClick={() => onMove(1)} className={quiet}>
+								<ChevronDown />
+								{t("Move down")}
+							</button>
+						</div>
+					</Group>
+				</Section>
 			)}
 
-			{removal.mounted && (
-				<p
-					className={cn(
-						"px-4 pb-3 text-fg-muted text-xs",
-						removal.leaving ? "animate-depart" : "animate-arrive",
-					)}
-				>
-					{t(
-						"Calls already on this relay keep running; this only stops new ones being sent there.",
-					)}
-				</p>
+			{canModerate && <Settings relay={relay} busy={busy} onSave={onEdit} />}
+
+			{canModerate && (
+				<Section title={t("Remove relay")}>
+					<Group>
+						<div className="flex flex-col gap-2 px-4 py-3">
+							<p className="text-[12.5px] text-fg-muted leading-relaxed">
+								{t("Removing forgets the machine here. Calls on it keep running until they end, and nobody is sent there again.")}
+							</p>
+							{removal.mounted ? (
+								<div className={cn("flex flex-wrap items-center gap-2", removal.leaving ? "animate-fade-out" : "animate-fade-in")}>
+									{/* Named rather than a bare tick, because removing a relay and
+									    disabling one are a keystroke apart and only one of them is
+									    reversible by somebody who did not write the address down. */}
+									<Button variant="danger" size="sm" onClick={onDrop} disabled={busy}>
+										<Trash2 />
+										{t("Remove")}
+									</Button>
+									<Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
+										{t("Cancel")}
+									</Button>
+								</div>
+							) : (
+								<Button
+									variant="secondary"
+									size="sm"
+									className="self-start text-danger-ink"
+									onClick={() => setConfirming(true)}
+									disabled={busy}
+								>
+									<Trash2 />
+									{t("Remove relay")}
+								</Button>
+							)}
+						</div>
+					</Group>
+				</Section>
 			)}
-		</Card>
+		</div>
 	);
 }
+
+type Change = {
+	name?: string;
+	url?: string;
+	region?: string;
+	label?: string;
+	probe?: string;
+	turn?: string;
+	forwards?: boolean;
+	apart?: string[];
+	bridge?: boolean;
+	signalVia?: string;
+	fallback?: boolean;
+	adminOnly?: boolean;
+	lat?: number;
+	lon?: number;
+};
 
 /**
  * Everything about this relay that can be changed.
@@ -632,10 +704,10 @@ function RelayRow({
  * measurement, which is a great deal cheaper than a deployment stuck with the
  * word "sh" forever.
  *
- * Saved together rather than field by field, because they are usually changed
- * together — a machine that moved has a new address and often a new name — and
- * because a form that saves on every keystroke is one that saves halfway
- * through a word.
+ * The words are saved together rather than field by field, because they are
+ * usually changed together — a machine that moved has a new address and often
+ * a new name — and because a form that saves on every keystroke is one that
+ * saves halfway through a word. The switches save as they are pressed.
  */
 function Settings({
 	relay,
@@ -644,20 +716,7 @@ function Settings({
 }: {
 	relay: Relay;
 	busy: boolean;
-	onSave: (change: {
-		name?: string;
-		url?: string;
-		region?: string;
-		label?: string;
-		probe?: string;
-		turn?: string;
-		forwards?: boolean;
-		apart?: string[];
-		bridge?: boolean;
-		signalVia?: string;
-		fallback?: boolean;
-		adminOnly?: boolean;
-	}) => void;
+	onSave: (change: Change) => void;
 }) {
 	const t = useT();
 
@@ -724,208 +783,182 @@ function Settings({
 		place !== placeOf(relay);
 
 	return (
-		<div className="flex flex-col gap-3 border-border border-t px-4 py-3">
-			<div className="flex flex-wrap gap-3">
-				<Field label={t("Name")} hint={t("How this deployment refers to it")}>
-					<input
-						value={name}
-						onChange={(event) => setName(event.target.value)}
-						maxLength={64}
-						className="readout w-full rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
-					/>
-				</Field>
+		<>
+			<Section title={t("What it is called")}>
+				<Group>
+					<Field label={t("Name")} hint={t("How this deployment refers to it")}>
+						<input value={name} onChange={(event) => setName(event.target.value)} maxLength={64} className={cn(field, "readout")} />
+					</Field>
 
-				<Field label={t("Shown to people as")} hint={t("Left empty, the name is used")}>
-					<input
-						value={label}
-						onChange={(event) => setLabel(event.target.value)}
-						placeholder={relay.name}
-						maxLength={64}
-						className="w-full rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
-					/>
-				</Field>
-			</div>
+					<Field label={t("Shown to people as")} hint={t("Left empty, the name is used")}>
+						<input
+							value={label}
+							onChange={(event) => setLabel(event.target.value)}
+							placeholder={relay.name}
+							maxLength={64}
+							className={field}
+						/>
+					</Field>
 
-			<div className="flex flex-wrap gap-3">
-				<Field label={t("Address")} hint={t("What a browser dials")} wide>
-					<input
-						value={url}
-						onChange={(event) => setUrl(event.target.value)}
-						placeholder="wss://host:port"
-						className="readout w-full rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
-					/>
-				</Field>
+					<Field label={t("Region")} hint={t("Groups the picker. A slash nests: Oversea/Asia")}>
+						<input value={region} onChange={(event) => setRegion(event.target.value)} maxLength={64} className={field} />
+					</Field>
 
-				<Field label={t("Measured at")} hint={t("host:port where it answers STUN. Empty means time the socket instead")}>
-					<input
-						value={probe}
-						onChange={(event) => setProbe(event.target.value)}
-						placeholder="host:39218"
-						className="readout w-full rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
-					/>
-				</Field>
+					<Field label={t("Where it is")} hint={t("Latitude, longitude. Puts it on the globe and lets the fleet judge distance")}>
+						<input
+							value={place}
+							onChange={(event) => setPlace(event.target.value)}
+							placeholder="22.32, 114.17"
+							className={cn(field, "readout")}
+						/>
+					</Field>
+				</Group>
+			</Section>
 
-				<Field label={t("Forwards through")} hint={t("host:port of its TURN server. Empty means it cannot carry a call it is not holding")}>
-					<input
-						value={turn}
-						onChange={(event) => setTurn(event.target.value)}
-						placeholder="host:39219"
-						className="readout w-full rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
-					/>
-				</Field>
+			<Section title={t("How it is reached")}>
+				<Group>
+					<Field label={t("Address")} hint={t("What a browser dials")}>
+						<input
+							value={url}
+							onChange={(event) => setUrl(event.target.value)}
+							placeholder="wss://host:port"
+							className={cn(field, "readout")}
+						/>
+					</Field>
 
-				<Field label={t("Never forwards with")} hint={t("Relay names, comma separated. Applies in both directions")}>
-					<input
-						value={apart}
-						onChange={(event) => setApart(event.target.value)}
-						placeholder={t("None")}
-						className="readout w-full rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
-					/>
-				</Field>
+					<Field label={t("Measured at")} hint={t("host:port where it answers STUN. Empty means time the socket instead")}>
+						<input
+							value={probe}
+							onChange={(event) => setProbe(event.target.value)}
+							placeholder="host:39218"
+							className={cn(field, "readout")}
+						/>
+					</Field>
 
-				{/* For a machine no TLS handshake reaches: its media stays here
-				    and the signalling goes through the relay named. */}
-				<Field
-					label={t("Signals through")}
-					hint={t("A relay name, for a machine no TLS reaches. Its media stays here")}
-				>
-					<input
-						value={via}
-						onChange={(event) => setVia(event.target.value)}
-						placeholder={t("None")}
-						className="readout w-full rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
-					/>
-				</Field>
+					<Field label={t("Forwards through")} hint={t("host:port of its TURN server. Empty means it cannot carry a call it is not holding")}>
+						<input
+							value={turn}
+							onChange={(event) => setTurn(event.target.value)}
+							placeholder="host:39219"
+							className={cn(field, "readout")}
+						/>
+					</Field>
 
-				<Field
-					label={t("Where it is")}
-					hint={t("Latitude, longitude. Puts it on the globe and lets the fleet judge distance")}
-				>
-					<input
-						value={place}
-						onChange={(event) => setPlace(event.target.value)}
-						placeholder="22.32, 114.17"
-						className="readout w-full rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
-					/>
-				</Field>
+					{/* For a machine no TLS handshake reaches: its media stays here
+					    and the signalling goes through the relay named. */}
+					<Field label={t("Signals through")} hint={t("A relay name, for a machine no TLS reaches. Its media stays here")}>
+						<input
+							value={via}
+							onChange={(event) => setVia(event.target.value)}
+							placeholder={t("None")}
+							className={cn(field, "readout")}
+						/>
+					</Field>
 
-				<Field label={t("Region")} hint={t("Groups the picker. A slash nests: Oversea/Asia")}>
-					<input
-						value={region}
-						onChange={(event) => setRegion(event.target.value)}
-						maxLength={64}
-						className="w-full rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
-					/>
-				</Field>
-			</div>
+					<Field label={t("Never forwards with")} hint={t("Relay names, comma separated. Applies in both directions")}>
+						<input
+							value={apart}
+							onChange={(event) => setApart(event.target.value)}
+							placeholder={t("None")}
+							className={cn(field, "readout")}
+						/>
+					</Field>
 
-			<div className="flex flex-wrap items-center gap-4">
-				<label className="flex items-center gap-1.5 text-[12px] text-fg-muted">
-					<input
-						type="checkbox"
-						checked={relay.fallback ?? false}
-						disabled={busy}
-						onChange={(event) => onSave({ fallback: event.target.checked })}
-						className="size-3.5 accent-tally"
-					/>
-					{t("Keep in reserve")}
-				</label>
+					<div className="flex justify-end border-border border-t px-4 py-3">
+						<Button
+							variant="primary"
+							size="sm"
+							disabled={busy || !dirty}
+							onClick={() =>
+								onSave({
+									name,
+									url,
+									region,
+									label,
+									probe,
+									turn,
+									apart: apart
+										.split(",")
+										.map((one) => one.trim())
+										.filter(Boolean),
+									signalVia: via.trim(),
+									...degrees(place),
+								})
+							}
+						>
+							{busy && <Loader2 className="animate-spin" />}
+							{t("Save")}
+						</Button>
+					</div>
+				</Group>
+			</Section>
 
-				{/* For a fleet with machines on both sides of a border. Somebody
-				    who lands on a pair that carries nothing between them is sent
-				    here instead of to the machine they picked — which is the one
-				    way their call can go, rather than a direct connection across
-				    the thing every relay here exists to avoid. */}
-				<label className="flex items-center gap-1.5 text-[12px] text-fg-muted">
-					<input
-						type="checkbox"
-						checked={relay.bridge ?? false}
-						disabled={busy}
-						onChange={(event) => onSave({ bridge: event.target.checked })}
-						className="size-3.5 accent-tally"
-					/>
-					{t("Stands in for pairs that cannot reach each other")}
-				</label>
+			<Section title={t("What it is for")}>
+				<Group>
+					<div className="flex flex-col gap-1 px-4 py-3">
+						<Box
+							label={t("Keep in reserve")}
+							checked={relay.fallback ?? false}
+							disabled={busy}
+							onChange={(on) => onSave({ fallback: on })}
+						/>
 
-				{/* Its own switch, and deliberately not tied to any other.
-				    A meeting lives on one machine, so somebody joining a room that
-				    is already running has their media go past the relay they picked
-				    unless this relay forwards it on. That costs the relay two bytes
-				    for every one it carries, which is why it is a decision and not
-				    a consequence: a machine reserved for administrators can still
-				    be the right place to forward through, and a machine anybody may
-				    use can be one whose bandwidth is too expensive to spend twice.
-				    Whoever pays the bill decides, per machine. */}
-				<label className="flex items-center gap-1.5 text-[12px] text-fg-muted">
-					<input
-						type="checkbox"
-						checked={relay.forwards ?? false}
-						disabled={busy}
-						onChange={(event) => onSave({ forwards: event.target.checked })}
-						className="size-3.5 accent-tally"
-					/>
-					{t("Forwards other rooms")}
-				</label>
+						{/* For a fleet with machines on both sides of a border. Somebody
+						    who lands on a pair that carries nothing between them is sent
+						    here instead of to the machine they picked — which is the one
+						    way their call can go, rather than a direct connection across
+						    the thing every relay here exists to avoid. */}
+						<Box
+							label={t("Stands in for pairs that cannot reach each other")}
+							checked={relay.bridge ?? false}
+							disabled={busy}
+							onChange={(on) => onSave({ bridge: on })}
+						/>
 
-				{/* Distinct from taking it out of service, and from keeping it in
-				    reserve: those are about when to use it, this is about who may.
-				    Refused at the join as well as hidden from the list, or somebody
-				    who read the name off a colleague's screen could ask for it. */}
-				<label className="flex items-center gap-1.5 text-[12px] text-fg-muted">
-					<input
-						type="checkbox"
-						checked={relay.adminOnly ?? false}
-						disabled={busy}
-						onChange={(event) => onSave({ adminOnly: event.target.checked })}
-						className="size-3.5 accent-tally"
-					/>
-					{t("Administrators only")}
-				</label>
+						{/* Its own switch, and deliberately not tied to any other. A
+						    meeting lives on one machine, so somebody joining a room that
+						    is already running has their media go past the relay they
+						    picked unless this relay forwards it on. That costs the relay
+						    two bytes for every one it carries, which is why it is a
+						    decision and not a consequence. Whoever pays the bill
+						    decides, per machine. */}
+						<Box
+							label={t("Forwards other rooms")}
+							checked={relay.forwards ?? false}
+							disabled={busy}
+							onChange={(on) => onSave({ forwards: on })}
+						/>
 
-				<button
-					type="button"
-					disabled={busy || !dirty}
-					onClick={() =>
-						onSave({
-							name,
-							url,
-							region,
-							label,
-							probe,
-							turn,
-							apart: apart
-								.split(",")
-								.map((one) => one.trim())
-								.filter(Boolean),
-							signalVia: via.trim(),
-							...degrees(place),
-						})
-					}
-					className="ml-auto rounded-md border border-border px-2.5 py-1.5 text-[12px] hover:bg-surface-hi disabled:opacity-40"
-				>
-					{t("Save")}
-				</button>
-			</div>
-		</div>
+						{/* Distinct from taking it out of service, and from keeping it
+						    in reserve: those are about when to use it, this is about who
+						    may. Refused at the join as well as hidden from the list. */}
+						<Box
+							label={t("Administrators only")}
+							checked={relay.adminOnly ?? false}
+							disabled={busy || ((relay.owners?.length ?? 0) > 0 && !relay.adminOnly)}
+							onChange={(on) => onSave({ adminOnly: on })}
+						>
+							{/* Somebody's own cannot also be kept for administrators,
+							    and the server refuses it; said here so the box does not
+							    look broken. */}
+							<Hint show={(relay.owners?.length ?? 0) > 0}>
+								{t("Only for {names}, which is set on their accounts, so it cannot also be kept for administrators.", { names: (relay.owners ?? []).join(", ") })}
+							</Hint>
+						</Box>
+					</div>
+				</Group>
+			</Section>
+		</>
 	);
 }
 
-function Field({
-	label,
-	hint,
-	wide,
-	children,
-}: {
-	label: string;
-	hint: string;
-	wide?: boolean;
-	children: React.ReactNode;
-}) {
+/** One field in a group: the label above, the hint under it. */
+function Field({ label, hint, children }: { label: string; hint: string; children: React.ReactNode }) {
 	return (
-		<label className={cn("flex flex-col gap-1", wide ? "min-w-64 flex-[2]" : "min-w-40 flex-1")}>
-			<span className="text-fg-muted text-[11px]">{label}</span>
+		<label className="relative flex flex-col gap-1.5 px-4 py-3 before:absolute before:top-0 before:right-0 before:left-4 before:h-px before:bg-border first:before:hidden">
+			<span className="text-[12.5px] text-fg-muted">{label}</span>
 			{children}
-			<span className="text-fg-muted/70 text-[10.5px]">{hint}</span>
+			<span className="text-[12px] text-fg-muted leading-relaxed">{hint}</span>
 		</label>
 	);
 }
@@ -959,67 +992,42 @@ function AddRelay({ onDone, onCancel }: { onDone: () => void; onCancel: () => vo
 
 	return (
 		<form
-			className="flex flex-col gap-3 px-4 py-3"
+			className="flex flex-col gap-5"
 			onSubmit={(event) => {
 				event.preventDefault();
 				void submit();
 			}}
 		>
-			<div className="grid gap-3 sm:grid-cols-3">
-				<label className="flex flex-col gap-1">
-					<span className="text-fg-muted text-xs">{t("Name")}</span>
-					<input
-						value={name}
-						onChange={(event) => setName(event.target.value)}
-						placeholder="tokyo"
-						required
-						className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm"
-					/>
-				</label>
+			<p className="text-[13.5px] text-fg-muted leading-relaxed">
+				{t("The address a browser dials. It must begin ws:// or wss://, and the relay must be running with role: relay.")}
+			</p>
 
-				<label className="flex flex-col gap-1 sm:col-span-2">
-					<span className="text-fg-muted text-xs">{t("Address")}</span>
+			<Group>
+				<Field label={t("Name")} hint={t("How this deployment refers to it")}>
+					<input value={name} onChange={(event) => setName(event.target.value)} placeholder="tokyo" required className={cn(field, "readout")} />
+				</Field>
+				<Field label={t("Address")} hint={t("What a browser dials")}>
 					<input
 						value={url}
 						onChange={(event) => setUrl(event.target.value)}
 						placeholder="wss://tokyo.example.com"
 						required
-						className="rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-sm"
+						className={cn(field, "readout")}
 					/>
-				</label>
-			</div>
-
-			<label className="flex flex-col gap-1">
-				<span className="text-fg-muted text-xs">{t("Region (optional)")}</span>
-				<input
-					value={region}
-					onChange={(event) => setRegion(event.target.value)}
-					placeholder="jp"
-					className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm sm:max-w-48"
-				/>
-			</label>
-
-			<p className="text-fg-muted text-xs">
-				{t("The address a browser dials. It must begin ws:// or wss://, and the relay must be running with role: relay.")}
-			</p>
+				</Field>
+				<Field label={t("Region (optional)")} hint={t("Groups the picker. A slash nests: Oversea/Asia")}>
+					<input value={region} onChange={(event) => setRegion(event.target.value)} placeholder="jp" className={field} />
+				</Field>
+			</Group>
 
 			<div className="flex gap-2">
-				<button
-					type="submit"
-					disabled={saving || !name.trim() || !url.trim()}
-					className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi disabled:opacity-50"
-				>
-					{saving && <Loader2 className="size-4 animate-spin" />}
+				<Button type="submit" variant="primary" size="sm" disabled={saving || !name.trim() || !url.trim()}>
+					{saving && <Loader2 className="animate-spin" />}
 					{t("Add relay")}
-				</button>
-
-				<button
-					type="button"
-					onClick={onCancel}
-					className="rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi"
-				>
+				</Button>
+				<Button type="button" variant="ghost" size="sm" onClick={onCancel}>
 					{t("Cancel")}
-				</button>
+				</Button>
 			</div>
 		</form>
 	);
@@ -1030,138 +1038,304 @@ function AddRelay({ onDone, onCancel }: { onDone: () => void; onCancel: () => vo
  *
  * Wrapped rather than scrolled sideways: a command that runs off the edge gets
  * copied in half by anybody selecting it by hand, and the half that goes missing
- * is the end, which is where the secret is.
+ * is the end, which is where the secret is. Drawn with that last word hidden
+ * until asked for, because the line is read on a screen somebody else may be
+ * looking at, and copied whole whether it is shown or not.
  */
-function Command({ command }: { command: string }) {
+function Command({ command, secret }: { command: string; secret?: boolean }) {
 	const t = useT();
 
 	const [copied, setCopied] = useState(false);
+	const [shown, setShown] = useState(false);
+
+	const words = command.split(" ");
+	const drawn =
+		secret && !shown ? (words.length > 1 ? [...words.slice(0, -1), "••••••••"].join(" ") : "••••••••") : command;
 
 	return (
-		<div className="relative">
-			<pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-border bg-surface-hi p-3 pr-20 text-[11.5px] leading-relaxed">
-				<code>{command}</code>
+		<div className="flex flex-col gap-2">
+			<pre className="readout overflow-x-auto whitespace-pre-wrap break-all rounded-[12px] border border-border bg-bg p-3 text-[12.5px] leading-relaxed">
+				<code>{drawn}</code>
 			</pre>
 
-			<button
-				type="button"
-				onClick={async () => {
-					try {
-						await navigator.clipboard.writeText(command);
-						setCopied(true);
-						setTimeout(() => setCopied(false), 2000);
-					} catch {
-						actionFailed(t("Could not copy. Select the text and copy it."));
-					}
-				}}
-				className="absolute top-2 right-2 flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] hover:bg-surface-hi"
-			>
-				{copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-				{copied ? t("Copied") : t("Copy")}
-			</button>
-		</div>
-	);
-}
-
-/**
- * The script that brings a machine up as a relay.
- *
- * Shown rather than run: this is somebody else's machine, and the only thing
- * this server can do about it is hand over the instructions. What comes back
- * afterwards is the relay appearing in the list above, which is how anybody
- * knows it worked.
- *
- * The warning is not decoration. The script carries the enrolment secret, and
- * that secret buys the credential every relay in this deployment signs with.
- */
-function AddByScript({
-	script,
-	command,
-	domain,
-	port,
-	onDone,
-}: { script: string; command?: string; domain?: string; port?: number; onDone: () => void }) {
-	const t = useT();
-
-	const [copied, setCopied] = useState(false);
-
-	return (
-		<div className="flex flex-col gap-3 px-4 py-3">
-			<p className="text-fg-muted text-xs">
-				{t("Run this on the new machine as root. Replace <prefix> with the name it should answer to. It does the rest: fetches the binary, takes this deployment's certificate and credentials, points a name at the machine, and starts the relay.")}
-			</p>
-
-			{command && <Command command={command} />}
-
-			{/* What the machine will be called and what has to be open on it.
-			    The server has always sent both and this drew neither, so an
-			    operator ran the line and then found out which name it had taken
-			    by reading the DNS, and which port to open by a call failing. A
-			    provider's security group is not something to be discovering
-			    afterwards. */}
-			{(domain || port) && (
-				<p className="text-fg-muted text-xs leading-relaxed">
-					{domain && (
-						<>
-							{t("It becomes")} <span className="readout text-fg">{`<prefix>.${domain}`}</span>
-							{". "}
-						</>
-					)}
-					{port ? (
-						<>
-							{t("Open these on the machine:")}{" "}
-							<span className="readout text-fg">{`tcp/${port}`}</span>
-							{t(", and the UDP media port.")}
-						</>
-					) : null}
-				</p>
-			)}
-
-			<p className="text-fg-muted text-xs">
-				{t("What that runs, in full. Worth reading before running anything as root.")}
-			</p>
-
-			<div className="relative">
-				<pre className="max-h-64 overflow-auto rounded-md border border-border bg-surface-hi p-3 text-[11px] leading-relaxed">
-					<code>{script}</code>
-				</pre>
-
-				<button
-					type="button"
+			<div className="flex flex-wrap gap-2">
+				<Button
+					variant="secondary"
+					size="sm"
 					onClick={async () => {
 						try {
-							await navigator.clipboard.writeText(script);
+							await navigator.clipboard.writeText(command);
 							setCopied(true);
 							setTimeout(() => setCopied(false), 2000);
 						} catch {
 							actionFailed(t("Could not copy. Select the text and copy it."));
 						}
 					}}
-					className="absolute top-2 right-2 flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] hover:bg-surface-hi"
 				>
-					{copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+					{copied ? <Check /> : <Copy />}
 					{copied ? t("Copied") : t("Copy")}
-				</button>
-			</div>
-
-			<p className="rounded-md border border-tally/40 bg-tally/10 px-3 py-2 text-[11px] text-tally">
-				{t("This script carries the key to this deployment. Anybody who has it can add a relay, so do not put it anywhere it will be kept.")}
-			</p>
-
-			<div>
-				<button
-					type="button"
-					onClick={onDone}
-					className="rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi"
-				>
-					{t("Done")}
-				</button>
+				</Button>
+				{secret && (
+					<button type="button" onClick={() => setShown((was) => !was)} aria-pressed={shown} className={quiet}>
+						{shown ? <EyeOff /> : <Eye />}
+						{shown ? t("Hide the secret") : t("Show the secret")}
+					</button>
+				)}
 			</div>
 		</div>
 	);
 }
 
-/** A relay's place, as the field shows it. */
+/**
+ * Bringing a new machine up as a relay, as the steps it is.
+ *
+ * Shown rather than run: this is somebody else's machine, and the only thing
+ * this server can do about it is hand over the instructions. What comes back
+ * afterwards is the relay appearing in the list, which is how anybody knows it
+ * worked.
+ *
+ * The first step is the token. What a machine enrols with is minted here for
+ * its one prefix, works once and for half an hour, and is pasted into the
+ * script when it asks — never typed into the command, which is what a shell
+ * keeps. The long-lived secret this replaced sat in the history of every relay
+ * ever brought up. Only an administrator who can manage everything mints one,
+ * because what it buys is the deployment's key pair; anybody else with the
+ * relays is told so, and still sees the line and what it runs.
+ */
+function AddByScript({ open, canEnrol, onDone }: { open: boolean; canEnrol: boolean; onDone: () => void }) {
+	const t = useT();
+
+	const [ready, setReady] = useState<{ script: string; command: string; domain?: string; port?: number }>();
+	const [refused, setRefused] = useState(false);
+	const [reading, setReading] = useState(false);
+	const [minted, setMinted] = useState<{ token: string; command: string; expires: string }>();
+	const script = useLingering(reading, 180);
+
+	useEffect(() => {
+		if (!open) return;
+
+		let live = true;
+		setMinted(undefined);
+
+		void (async () => {
+			try {
+				// Both, in one press. The command is what gets used and the
+				// script is what makes it readable before it is run as root.
+				const [text, line] = await Promise.all([api.relayScript(), api.relayCommand()]);
+				if (live) setReady({ script: text, command: line.command, domain: line.domain, port: line.port });
+			} catch {
+				if (live) setRefused(true);
+			}
+		})();
+
+		return () => {
+			live = false;
+		};
+	}, [open]);
+
+	if (refused) {
+		return (
+			<p className="text-[13.5px] text-fg-muted leading-relaxed">
+				{t("This deployment cannot bring up relays from a script.")}{" "}
+				{t("Set meet.enrol in the configuration file to turn it on, or add a running relay by its address.")}
+			</p>
+		);
+	}
+
+	if (!ready) return <span className="block h-40" aria-hidden />;
+
+	return (
+		<div className="flex animate-fade-in flex-col gap-6">
+			<Step number={1} title={t("Make a token")}>
+				{canEnrol ? (
+					<MintToken onMinted={setMinted} />
+				) : (
+					<p className="text-[13px] text-fg-muted leading-relaxed">
+						{t("The machine needs a token to enrol, and only an administrator who can manage everything can make one.")}
+					</p>
+				)}
+				{minted && (
+					<div className="flex animate-arrive flex-col gap-2">
+						<p className="text-[13px] text-fg-muted leading-relaxed">
+							{t("Paste this when the script asks for the token. It works once, for this machine, until {time}.", {
+								time: new Date(minted.expires).toLocaleTimeString(),
+							})}
+						</p>
+						<Command command={minted.token} secret />
+					</div>
+				)}
+			</Step>
+
+			<Step number={2} title={t("Run this on the new machine as root")}>
+				<p className="text-[13px] text-fg-muted leading-relaxed">
+					{t("Replace <prefix> with the name it should answer to. It does the rest: fetches the binary, takes this deployment's certificate and credentials, points a name at the machine, and starts the relay.")}
+				</p>
+				<Command command={minted ? minted.command : ready.command} />
+			</Step>
+
+			{/* What the machine will be called and what has to be open on it. The
+			    server has always sent both, and an operator who ran the line
+			    found out which port to open by a call failing. A provider's
+			    security group is not something to be discovering afterwards. */}
+			<Step number={3} title={t("Open its ports")}>
+				<p className="text-[13px] text-fg-muted leading-relaxed">
+					{ready.domain && (
+						<>
+							{t("It becomes")} <span className="readout text-fg">{`<prefix>.${ready.domain}`}</span>
+							{". "}
+						</>
+					)}
+					{ready.port ? (
+						<>
+							{t("Open these on the machine:")} <span className="readout text-fg">{`tcp/${ready.port}`}</span>
+							{t(", and the UDP media port.")}
+						</>
+					) : null}
+				</p>
+			</Step>
+
+			<Step number={4} title={t("Wait for it to appear in the list")}>
+				<p className="text-[13px] text-fg-muted leading-relaxed">
+					{t("The machine adds itself when the script finishes. Its row turns green once this node can reach it.")}
+				</p>
+			</Step>
+
+			<div className="flex flex-col gap-2">
+				<button
+					type="button"
+					aria-expanded={reading}
+					onClick={() => setReading((was) => !was)}
+					className={cn(quiet, "-ml-2.5 h-auto min-h-8 justify-start self-start py-1.5 text-left")}
+				>
+					<ChevronDown className={cn("transition-transform duration-200", reading && "rotate-180")} />
+					{t("What that runs, in full. Worth reading before running anything as root.")}
+				</button>
+				{script.mounted && (
+					<pre
+						className={cn(
+							"readout max-h-80 overflow-auto rounded-[12px] border border-border bg-bg p-3 text-[11.5px] leading-relaxed",
+							script.leaving ? "animate-depart" : "animate-arrive",
+						)}
+					>
+						<code>{ready.script}</code>
+					</pre>
+				)}
+			</div>
+
+			{minted && (
+				<p className="animate-arrive rounded-[12px] bg-tally/10 px-3.5 py-2.5 text-[12.5px] text-tally-ink leading-relaxed">
+					{t("Until it is used, this token is the key to this deployment. Do not put it anywhere it will be kept.")}
+				</p>
+			)}
+
+			<Button variant="secondary" size="sm" className="self-start" onClick={onDone}>
+				{t("Done")}
+			</Button>
+		</div>
+	);
+}
+
+/**
+ * A token for one machine, made here and pasted there.
+ *
+ * Taking over a name already in use is decided here, by somebody signed in,
+ * rather than by the machine: a takeover moves a live relay's name to whatever
+ * address the machine reports, and the machine asking is the one party whose
+ * word on that is worth nothing. So the box says what it does, and is asked
+ * again before the token is made.
+ */
+function MintToken({ onMinted }: { onMinted: (minted: { token: string; command: string; expires: string }) => void }) {
+	const t = useT();
+
+	const [prefix, setPrefix] = useState("");
+	const [replace, setReplace] = useState(false);
+	const [from, setFrom] = useState("");
+	const [busy, setBusy] = useState(false);
+
+	return (
+		<form
+			className="flex flex-col gap-3"
+			onSubmit={async (event) => {
+				event.preventDefault();
+				if (busy || !prefix.trim()) return;
+
+				if (
+					replace &&
+					!window.confirm(
+						t("This token lets the new machine take over {name}: its name will point at the new machine, and calls dialled to it will land there. Make it?", {
+							name: prefix.trim(),
+						}),
+					)
+				) {
+					return;
+				}
+
+				setBusy(true);
+
+				try {
+					const made = await api.mintEnrolment({
+						prefix: prefix.trim().toLowerCase(),
+						replace,
+						from: from.trim() || undefined,
+					});
+					onMinted({ token: made.token, command: made.command, expires: made.grant.expires });
+				} catch (err) {
+					actionFailed(err instanceof Error ? err.message : String(err));
+				} finally {
+					setBusy(false);
+				}
+			}}
+		>
+			<Group>
+				<label className="flex flex-col gap-1.5 px-4 py-3">
+					<span className="text-[12.5px] text-fg-muted">{t("Prefix")}</span>
+					<input
+						value={prefix}
+						onChange={(event) => setPrefix(event.target.value)}
+						placeholder="tokyo"
+						autoComplete="off"
+						spellCheck={false}
+						className={cn(field, "readout")}
+					/>
+				</label>
+				<label className="relative flex flex-col gap-1.5 px-4 py-3 before:absolute before:top-0 before:right-0 before:left-4 before:h-px before:bg-border">
+					<span className="text-[12.5px] text-fg-muted">{t("Only from this address (optional)")}</span>
+					<input
+						value={from}
+						onChange={(event) => setFrom(event.target.value)}
+						placeholder="203.0.113.10"
+						autoComplete="off"
+						spellCheck={false}
+						className={cn(field, "readout")}
+					/>
+				</label>
+				<div className="relative px-4 py-2 before:absolute before:top-0 before:right-0 before:left-4 before:h-px before:bg-border">
+					<Box label={t("Takes over the relay already called this")} checked={replace} onChange={setReplace} />
+				</div>
+			</Group>
+
+			<Button type="submit" variant="primary" size="sm" className="self-start" disabled={busy || !prefix.trim()}>
+				{busy && <Loader2 className="animate-spin" />}
+				{t("Make a token")}
+			</Button>
+		</form>
+	);
+}
+
+function Step({ number, title, children }: { number: number; title: string; children: React.ReactNode }) {
+	return (
+		<section className="flex gap-3">
+			<span className="grid size-6 shrink-0 place-items-center rounded-full bg-surface-hi font-medium text-[12.5px] tabular-nums">
+				{number}
+			</span>
+			<div className="flex min-w-0 flex-1 flex-col gap-2 pt-0.5">
+				<h3 className="font-medium text-[14px]">{title}</h3>
+				{children}
+			</div>
+		</section>
+	);
+}
+
 function placeOf(relay: Relay): string {
 	if (relay.lat === undefined || relay.lon === undefined) return "";
 

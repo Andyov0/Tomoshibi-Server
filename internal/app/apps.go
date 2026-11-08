@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"tomoshibi/internal/admin"
 	"tomoshibi/internal/config"
 	"tomoshibi/internal/limit"
 	"tomoshibi/internal/remote"
@@ -32,8 +33,9 @@ Getting the native apps, for somebody signed in or somebody holding a link into
 a meeting.
 
 The apps are in no store. The Mac app is a disk image, the Android app a
-package and the Windows app an installer, all handed over by this server from a
-directory, and the iOS app is TestFlight, which installs for an address Apple
+package, the Windows app an installer and the Linux app an AppImage for each of
+two processors, all handed over by this server from a directory, and the iOS
+app is TestFlight, which installs for an address Apple
 has been asked to invite or for whoever opens the beta's public link. They are behind something for the same
 reason the client's own features are: a download link anybody can reach is one
 posted everywhere, and every TestFlight tester is counted against a ceiling
@@ -63,10 +65,13 @@ well, rather than nothing.
 	GET  /api/apps/mac         the newest disk image itself
 	GET  /api/apps/android     the newest Android package itself
 	GET  /api/apps/windows     the newest Windows installer itself
+	GET  /api/apps/linux-x86_64   the newest Linux AppImage for x86-64 PCs itself
+	GET  /api/apps/linux-aarch64  the newest Linux AppImage for ARM64 ones itself
 	POST /api/apps/ios/invite  ask Apple to invite one address, for an account only
 
-The first four take ?invite=<token> or ?meeting=<token> in place of a session,
-and a download made that way is logged as one, with the room it was for.
+All but the last take ?invite=<token> or ?meeting=<token> in place of a
+session, and a download made that way is logged as one, with the room it was
+for.
 
 The directory holds the builds and a manifest beside them, apps.json, with a
 list for each platform whose app is a file, and one for the iOS app:
@@ -77,7 +82,20 @@ list for each platform whose app is a file, and one for the iOS app:
 	              "size": 31457280, "sha256": "…64 hex digits…"}],
 	 "windows": [{"version": "1.2.0", "file": "Tomoshibi-Setup-1.2.0.exe",
 	              "size": 41943040, "sha256": "…64 hex digits…"}],
+	 "linux-x86_64":  [{"version": "1.2.0", "file": "Tomoshibi-1.2.0-x86_64.AppImage",
+	                    "size": 47185920, "sha256": "…64 hex digits…"}],
+	 "linux-aarch64": [{"version": "1.2.0", "file": "Tomoshibi-1.2.0-aarch64.AppImage",
+	                    "size": 45088768, "sha256": "…64 hex digits…"}],
 	 "ios":     [{"version": "1.2.0"}]}
+
+The Linux app has a list for each processor rather than one list, because an
+AppImage holds the machine code of one alone, where every other platform's
+file holds all the processors it runs on. The list a build is in is the
+platform the release key signs it for (the native repository's
+core/protocol/src/api/updates.rs, linux_section), so a line moved to the other
+list fails its signature in the app, and each list takes only a file named for
+its own processor, so that a line pasted into the wrong one is not offered at
+all.
 
 The iOS list is for the app's own updates and nothing else. TestFlight installs
 that app, so its lines say which version is the newest there and what changed
@@ -87,7 +105,9 @@ handed over for it anywhere. Any entry may also carry notes, by language, which
 the apps show beside an update (updates.go). Any entry may carry its build
 number as well, "build": "2" or 2: a later build of a version is offered as the
 version with the build joined on, 0.1.4.2, and shown on the page as 0.1.4 (2)
-(updates.go, versionFor). A list holds one entry for each version.
+(updates.go, versionFor). A line for a file may carry "sig", the release key's
+signature of it, which the update answer passes to the apps as it is
+(updates.go). A list holds one entry for each version.
 
 For each platform the entry with the highest version is offered, and only when
 its file is there, is the size the manifest says, and hashes to what the
@@ -245,6 +265,8 @@ func (a *App) mountApps(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/apps/mac", a.download(platformMac))
 	mux.HandleFunc("GET /api/apps/android", a.download(platformAndroid))
 	mux.HandleFunc("GET /api/apps/windows", a.download(platformWindows))
+	mux.HandleFunc("GET /api/apps/linux-x86_64", a.download(platformLinuxX64))
+	mux.HandleFunc("GET /api/apps/linux-aarch64", a.download(platformLinuxArm))
 	mux.HandleFunc("POST /api/apps/ios/invite", a.inviteTester)
 
 	// What the apps themselves ask, to update themselves. See updates.go.
@@ -265,7 +287,16 @@ type appsView struct {
 	Mac     buildView `json:"mac"`
 	Android buildView `json:"android"`
 	Windows buildView `json:"windows"`
+	Linux   linuxView `json:"linux"`
 	IOS     iosView   `json:"ios"`
+}
+
+// linuxView is the Linux app's two builds, one for each processor, which the
+// page offers side by side: a browser cannot be trusted to say which one it
+// runs on (Chrome says x86_64 on every Linux machine), so the reader chooses.
+type linuxView struct {
+	X64 buildView `json:"x86_64"`
+	Arm buildView `json:"aarch64"`
 }
 
 // buildView is one platform's newest build, where there is one to hand over.
@@ -435,6 +466,10 @@ func (a *App) appsOffered(w http.ResponseWriter, r *http.Request) {
 		Mac:     a.apps.shown(platformMac),
 		Android: a.apps.shown(platformAndroid),
 		Windows: a.apps.shown(platformWindows),
+		Linux: linuxView{
+			X64: a.apps.shown(platformLinuxX64),
+			Arm: a.apps.shown(platformLinuxArm),
+		},
 	}
 
 	if a.apps.tester != nil && who.account != "" {
@@ -482,7 +517,7 @@ func (a *App) download(p platform) http.HandlerFunc {
 		// directory is called. The version was held to a handful of characters
 		// when the manifest was read, so nothing in it can close the quotes.
 		w.Header().Set("Content-Type", shelf.contentType)
-		w.Header().Set("Content-Disposition", `attachment; filename="Tomoshibi-`+release.Version+shelf.suffix+`"`)
+		w.Header().Set("Content-Disposition", `attachment; filename="Tomoshibi-`+release.Version+shelf.savedAs()+`"`)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 
 		// Private, because this answer is behind an account or a link and the
@@ -673,6 +708,8 @@ const (
 	platformAndroid
 	platformWindows
 	platformIOS
+	platformLinuxX64
+	platformLinuxArm
 )
 
 // shelf is what tells one platform's builds apart from another's.
@@ -684,10 +721,15 @@ type shelf struct {
 	// called is how the log names the platform.
 	called string
 
-	// suffix is what a file must end in to be offered as this platform's, and
-	// what the saved file is given. Checked so that a line pasted into the
-	// wrong list hands nobody a disk image on a phone.
+	// suffix is what a file must end in to be offered as this platform's, in
+	// lower case, and what the saved file is given unless saved says
+	// otherwise. Checked so that a line pasted into the wrong list hands
+	// nobody a disk image on a phone, or an ARM image to an x86-64 PC.
 	suffix string
+
+	// saved is what the saved file is given where it is not the suffix: the
+	// suffix is compared in lower case, and an AppImage is called .AppImage.
+	saved string
 
 	// contentType is what the browser is told it is saving, and so what it
 	// offers to open it with.
@@ -728,6 +770,27 @@ var shelves = [...]shelf{
 	// download page offers it by invitation or public link as before, which
 	// is why the page never asks this shelf for a build.
 	platformIOS: {section: "ios", called: "iOS", elsewhere: true},
+	// An AppImage for each processor, after the iOS app so that no platform
+	// before them changes its number (the desk's memory of each one's hash is
+	// kept by number). The type is the one shared-mime-info gives an AppImage,
+	// which is what a Linux desktop opens a saved file by.
+	platformLinuxX64: {
+		section: "linux-x86_64", called: "Linux x86-64", suffix: "-x86_64.appimage",
+		saved: "-x86_64.AppImage", contentType: "application/vnd.appimage",
+	},
+	platformLinuxArm: {
+		section: "linux-aarch64", called: "Linux ARM64", suffix: "-aarch64.appimage",
+		saved: "-aarch64.AppImage", contentType: "application/vnd.appimage",
+	},
+}
+
+// savedAs is what the end of a saved file's name is.
+func (s shelf) savedAs() string {
+	if s.saved != "" {
+		return s.saved
+	}
+
+	return s.suffix
 }
 
 // appRelease is one entry of the manifest, whichever platform's list it is in.
@@ -750,6 +813,12 @@ type appRelease struct {
 	// (updates.go, versionFor) and the page shows in brackets (labelOf); never
 	// what the newest line is chosen by, nor what the saved file is named.
 	Build json.RawMessage `json:"build,omitempty"`
+
+	// Sig is the release key's signature of the line, made where the build
+	// was made and handed to the apps untouched with the update (updates.go,
+	// sigOf); this server neither makes nor checks it. Raw for the reason the
+	// build is.
+	Sig json.RawMessage `json:"sig,omitempty"`
 }
 
 // The manifest's own name, beside the builds it describes.
@@ -1022,4 +1091,31 @@ func (v *verifiedImage) matches(file *os.File, info fs.FileInfo, want, called st
 	}
 
 	return v.good
+}
+
+// adminShelf shows the management pages which version of each app is handed
+// out, the same newest-and-checked answer the download page and the apps'
+// update check are given, for every platform including the one installed
+// elsewhere.
+type adminShelf struct{ desk *appsDesk }
+
+func (s adminShelf) Offered() ([]admin.Offered, bool) {
+	if s.desk == nil || s.desk.dir == "" {
+		return nil, false
+	}
+
+	out := make([]admin.Offered, 0, len(shelves))
+	for p := range shelves {
+		one := admin.Offered{Platform: shelves[p].section}
+
+		if release, ok := s.desk.release(platform(p)); ok {
+			one.Available = true
+			one.Version = labelOf(release)
+			one.Size = release.Size
+		}
+
+		out = append(out, one)
+	}
+
+	return out, true
 }

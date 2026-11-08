@@ -156,7 +156,7 @@ export function RoomTitle({
 						<Button
 							variant="ghost"
 							size="icon"
-							className="-mt-0.5 size-7 shrink-0"
+							className="-mt-1 size-8 shrink-0 rounded-full text-fg-muted hover:text-fg pointer-coarse:-mt-2.5 pointer-coarse:size-11"
 							aria-label={t("Change room")}
 							onClick={() => setEditing(true)}
 						>
@@ -175,11 +175,11 @@ export function RoomTitle({
 						<Button
 							variant="ghost"
 							size="icon"
-							className="-mt-0.5 size-7 shrink-0"
+							className="-mt-1 size-8 shrink-0 rounded-full text-fg-muted hover:text-fg pointer-coarse:-mt-2.5 pointer-coarse:size-11"
 							aria-label={copied ? t("Link copied") : t("Copy link")}
 							onClick={copy}
 						>
-							{copied ? <Check className="size-3.5 text-tally" /> : <Copy className="size-3.5" />}
+							{copied ? <Check className="size-3.5 text-tally-ink" /> : <Copy className="size-3.5" />}
 						</Button>
 					)}
 				</div>

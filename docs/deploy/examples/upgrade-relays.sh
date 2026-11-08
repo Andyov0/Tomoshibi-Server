@@ -29,7 +29,7 @@
 #   TRIES      idle checks before giving up                         360
 #   FORCE=1    swap without waiting for the fleet to be idle
 #
-# A re-enrolment (REPLACE=1) also replaces the binary, but it rewrites
+# A re-enrolment (a takeover token) also replaces the binary, but it rewrites
 # relay.yaml whole and loses everything added to it by hand; this does not
 # touch the configuration.
 set -uo pipefail

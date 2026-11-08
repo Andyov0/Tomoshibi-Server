@@ -117,6 +117,35 @@ func TestFewerEntriesThanProxiesReadsTheFurthestOut(t *testing.T) {
 	}
 }
 
+// An entry that is not an address was written by the caller, since a proxy
+// writes the address it saw. It was being kept as the caller's address, in
+// the store and in the sign-in lockouts' list as markup; it is passed over
+// for the next entry to its right, which a nearer proxy wrote, or for the
+// peer where there is none.
+func TestAnEntryThatIsNoAddressIsPassedOver(t *testing.T) {
+	cases := []struct {
+		forwarded, want string
+	}{
+		// Somebody past the CDN, straight to nginx, with a header of their own.
+		{"not-an-ip <b>x</b>, 198.18.0.66", "198.18.0.66"},
+		{"<img src=x onerror=alert(1)>", "127.0.0.1"},
+		{", 198.18.0.66", "198.18.0.66"},
+		// Through the CDN, which wrote the entry read, whatever came before.
+		{"<b>x</b>, 192.0.2.1, 203.0.113.9", "192.0.2.1"},
+		// One address however it was spelled, and with a port some proxies add.
+		{"2001:DB8::0:1, 203.0.113.9", "2001:db8::1"},
+		{"[2001:db8::1]:443, 203.0.113.9", "2001:db8::1"},
+		{"192.0.2.1:51234, 203.0.113.9", "192.0.2.1"},
+		{"fe80::1%eth0, 203.0.113.9", "fe80::1"},
+	}
+
+	for _, c := range cases {
+		if got := Caller(request("127.0.0.1:1000", c.forwarded), 2); got != c.want {
+			t.Errorf("%q: caller %q, want %q", c.forwarded, got, c.want)
+		}
+	}
+}
+
 // Untrusted, the header is whatever the caller typed, so varying it must not
 // conjure a fresh budget.
 func TestAnUntrustedHeaderCannotBuyANewBudget(t *testing.T) {

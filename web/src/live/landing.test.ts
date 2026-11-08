@@ -152,6 +152,19 @@ describe("what a device is offered", () => {
 	it("is nothing for a device this cannot place", () => {
 		expect(offerFor(undefined, everything)).toBeUndefined();
 	});
+
+	// Either processor's build is an offer, and neither is nothing at all:
+	// nobody on Linux was told an app was coming, so there is no sentence to
+	// say it is, as there is for Windows; and a server from before the Linux
+	// app says nothing of it.
+	it("is the Linux app where either processor's build is there, and nothing otherwise", () => {
+		const one = { available: true, version: "0.1.7", size: 47_185_920 };
+		const none = { available: false };
+		expect(offerFor("linux", { ...everything, linux: { x86_64: one, aarch64: one } })).toEqual({ kind: "linux" });
+		expect(offerFor("linux", { ...everything, linux: { x86_64: none, aarch64: one } })).toEqual({ kind: "linux" });
+		expect(offerFor("linux", { ...everything, linux: { x86_64: none, aarch64: none } })).toBeUndefined();
+		expect(offerFor("linux", everything)).toBeUndefined();
+	});
 });
 
 describe("asking the app at once", () => {

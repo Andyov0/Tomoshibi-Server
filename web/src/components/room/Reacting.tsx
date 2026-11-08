@@ -1,3 +1,4 @@
+import { useLingering } from "@/hooks/useLingering";
 import { cn } from "@/lib/utils";
 
 /**
@@ -13,13 +14,17 @@ import { cn } from "@/lib/utils";
  * controls, which are the two other things that can be over a tile at once.
  */
 export function Reacting({ hand, reactions }: { hand?: boolean; reactions?: string[] }) {
+	// Lowered as it was raised, rather than gone between two frames.
+	const raised = useLingering(hand === true, 180);
+
 	return (
 		<>
-			{hand && (
+			{raised.mounted && (
 				<span
 					className={cn(
-						"absolute top-2 left-2 flex size-7 items-center justify-center rounded-full",
-						"animate-arrive bg-tally text-base text-bg shadow-lg",
+						"pointer-events-none absolute top-2 left-2 z-10 flex size-7 items-center justify-center rounded-full",
+						"bg-tally text-[15px] text-tally-fg shadow-lg",
+						raised.leaving ? "animate-depart" : "animate-arrive",
 					)}
 					// Announced, because a hand nobody sees is a hand that was not
 					// put up. A reader has no tile to glance at.

@@ -1,4 +1,4 @@
-import { type Invitation, type Me, inviteToken, invited, me as whoAmI } from "@/live/account";
+import { type Invitation, type Me, inviteCarried, inviteToken, invited, me as whoAmI } from "@/live/account";
 import { doorway } from "@/live/doorway";
 import { forget as forgetTimings } from "@/live/relays";
 import { chosenRelay, leftRoom, rememberRelay, wasIn } from "@/live/api";
@@ -10,6 +10,7 @@ import { watchShareFreezes } from "@/live/freeze";
 import { magnifyShares } from "@/live/lens";
 import { forgetMeeting, keepMeeting, meetingToken, whenSaid } from "@/live/meeting";
 import { useT } from "@/hooks/useT";
+import { arrivalOver } from "@/live/appearance";
 import { deviceFailed, joinFailed, newerVersion } from "@/live/notices";
 import { watchForNewerBuild } from "@/live/freshness";
 import { Lobby, SignIn } from "@/routes/Lobby";
@@ -35,7 +36,7 @@ import type { ReactNode } from "react";
  */
 const DISCONNECT_REMOVED = 4;
 const DISCONNECT_ROOM_CLOSED = 5;
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**
  * The room the address names, or nothing.
@@ -89,6 +90,12 @@ export function App() {
 	const t = useT();
 	const [room, setRoom] = useState(initialRoom);
 	const [front, setFront] = useState<Front>({ at: "asking" });
+
+	// Whether anybody is signed in, as far as this page has been told: by the
+	// question it asks on arrival, and by signing in and out here since.
+	// Undefined until it has asked. Read by the call, which does not ask the
+	// server for what only somebody signed in can have where nobody is.
+	const [signedIn, setSignedIn] = useState<boolean>();
 	const [live, setLive] = useState<LiveRoom>();
 	// What the machine holding the call is called, so it can be said in the words
 	// the picker used rather than as an address.
@@ -194,6 +201,8 @@ export function App() {
 			([said, account, invitation, offered]) => {
 				if (!live) return;
 
+				setSignedIn(Boolean(account));
+
 				// An invitation that is no good is still an invitation, which is
 				// to say it is still somebody who was sent here on purpose and who
 				// arrives to find the sign-in page of a deployment they have no
@@ -234,12 +243,22 @@ export function App() {
 				// for as long as it was.
 				const landing = doorway({
 					invitation: invitation?.room,
+					invitationKept: Boolean(token) && !inviteCarried(),
 					address: initialRoom(),
 					wasIn: wasIn(),
 					account: Boolean(account),
 					meeting: meeting || undefined,
 					opening: said.openedBy,
 				});
+
+				// The night the page may have arrived with, which its own head
+				// holds from the first frame when this tab was in this room a
+				// moment ago (index.html). Kept where the doorway goes straight
+				// back into the call, until the call is on screen and holds the
+				// night itself; let go everywhere else, where the next screen is
+				// one that follows the system.
+				const straightIn = (landing.at === "invited" && landing.rejoin) || (landing.at === "ready" && account);
+				if (!straightIn) arrivalOver();
 
 				if (landing.at === "invited") {
 					setRoom(landing.room);
@@ -270,7 +289,7 @@ export function App() {
 							secret: "",
 							relay: chosenRelay(),
 							...rememberedDevices(),
-						}).catch(unattended);
+						}).catch(arrivalOver);
 					} else {
 						step("invite", landing.room, offered);
 					}
@@ -294,7 +313,7 @@ export function App() {
 						secret: "",
 						relay: chosenRelay(),
 						...rememberedDevices(),
-					}).catch(unattended);
+					}).catch(arrivalOver);
 
 					return;
 				}
@@ -332,6 +351,13 @@ export function App() {
 	// Held in a ref as well so the unmount cleanup can reach it without making
 	// the effect depend on it, which would disconnect on every render.
 	const current = useRef<LiveRoom>();
+
+	// The call on screen holds the night itself now (Room, in a layout effect,
+	// which runs before this one), so the night the page arrived with can go
+	// without a frame of day between the two.
+	useLayoutEffect(() => {
+		if (live) arrivalOver();
+	}, [live]);
 
 	useEffect(
 		() => () => {
@@ -764,7 +790,10 @@ export function App() {
 	);
 
 	if (live) {
-		return page("call", <Room room={live} relay={holding} carrying={carrying} entry={entry} onLeave={onLeave} />);
+		return page(
+			"call",
+			<Room room={live} relay={holding} carrying={carrying} entry={entry} signedIn={signedIn} onLeave={onLeave} />,
+		);
 	}
 
 	// Nothing rather than a spinner. The two requests behind this take one round
@@ -802,7 +831,12 @@ export function App() {
 	if (front.at === "sign in") {
 		return page(
 			"sign in",
-			<SignIn onSignedIn={(account) => setFront({ at: "lobby", me: account })} />,
+			<SignIn
+				onSignedIn={(account) => {
+					setSignedIn(true);
+					setFront({ at: "lobby", me: account });
+				}}
+			/>,
 		);
 	}
 
@@ -816,7 +850,10 @@ export function App() {
 					rememberRelay(relay);
 					setFront({ at: "ready", me: front.me, relay });
 				}}
-				onSignedOut={() => setFront({ at: "sign in" })}
+				onSignedOut={() => {
+					setSignedIn(false);
+					setFront({ at: "sign in" });
+				}}
 			/>,
 		);
 	}

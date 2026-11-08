@@ -2,7 +2,7 @@
 # Put a new binary on one relay, and put the old one back if it does not start.
 #
 # The binary and nothing else. The documented way to update a relay is to run
-# the enrolment again with REPLACE=1, and that rewrites relay.yaml whole — so it
+# the enrolment again with a takeover token, and that rewrites relay.yaml whole — so it
 # takes away everything added by hand afterwards. On this fleet that is the
 # probe port on all ten machines, the region and node selector on each, and
 # `silent` on the mainland ones, which is the setting that stops a machine being

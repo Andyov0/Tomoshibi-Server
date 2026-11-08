@@ -1,19 +1,20 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useIdle } from "@/hooks/useIdle";
-import { useRoomForSide } from "@/hooks/useRoomFor";
+import { useRoomForRow, useRoomForSide } from "@/hooks/useRoomFor";
+import { useDismiss } from "@/hooks/useDismiss";
 import { useLingering } from "@/hooks/useLingering";
 import { useT } from "@/hooks/useT";
 import type { Placement } from "@/live/controls";
 import { retune, runningShare, share, watchRunning } from "@/live/room";
 import type { Room } from "livekit-client";
-import { Clapperboard, ListMusic, MessageSquare, Mic, MicOff, Video, VideoOff, Volume2 } from "lucide-react";
+import { Clapperboard, Ellipsis, ListMusic, MessageSquare, Mic, MicOff, Video, VideoOff, Volume2 } from "lucide-react";
 import { Leaving } from "./Leaving";
-import { useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useIslandReserve } from "@/hooks/useIslandReserve";
 import { DeviceMenu } from "./DeviceMenu";
 import type { Reaction } from "@/live/hands";
-import { HandButton } from "./HandButton";
+import { HandButton, ReactionsButton } from "./HandButton";
 import { ShareButton } from "./ShareButton";
 import { useLocalState } from "@/hooks/useLocalState";
 import { canShareScreen } from "@/live/context";
@@ -150,17 +151,26 @@ export function ControlBar({
 	// the screen and cannot be pressed.
 	const side = where === "side" && roomy;
 
-	const drawn = useRef<HTMLElement>(null);
-	useIslandReserve(drawn, side, onReserve);
+	// One row where it fits, and a second row behind a button where it does
+	// not; see useRoomForRow. Asked unconditionally, for the reason above.
+	// A column down the side is a row turned on end and has the height for
+	// all of them, so it never folds.
+	const wide = useRoomForRow();
+	const folded = !wide && !side;
+	const [more, setMore] = useState(false);
+	const moreRow = useLingering(more && folded && !away, 160);
+	const island = useRef<HTMLElement>(null);
+	const row = useRef<HTMLDivElement>(null);
+	useDismiss(more, [island, row], () => setMore(false));
 
-	// How many buttons the bar carries past the five every phone has, which is
-	// what its narrow steps are measured against; see the classes below. From
-	// what is drawn, the share included wherever the browser offers one, and a
-	// button on its way out still counted until it has gone.
-	const extra =
-		(canShareScreen() ? 1 : 0) +
-		(musicButton.mounted && onMusic ? 1 : 0) +
-		(watchButton.mounted && onWatchPanel ? 1 : 0);
+	// A panel opened from the second row closes it, because the panel rises
+	// from the foot of the screen to where the row is.
+	useEffect(() => {
+		if (chatting || listening || music?.open || watch?.open) setMore(false);
+	}, [chatting, listening, music?.open, watch?.open]);
+
+	const drawn = island;
+	useIslandReserve(drawn, side, onReserve);
 
 	// Every toggle is awaited and guarded, because each one asks the browser for
 	// a device and a second click while that prompt is open leaves the button
@@ -188,7 +198,119 @@ export function ControlBar({
 			}
 		};
 
+	/*
+	 * The microphone and the camera from the keyboard: Command or Control with
+	 * D and E, which is what the Mac app and the larger web meeting services
+	 * use, so the hands already know them. Without them the microphone was
+	 * a button at the end of the tab order, behind every picture in the room.
+	 *
+	 * Not while somebody is typing, where D and E are letters; and the
+	 * browser's own use of the pair (a bookmark, the address bar) is given up
+	 * for the length of a call, as those services give it up.
+	 */
+	const toggles = useRef({ microphone: () => {}, camera: () => {} });
+	toggles.current.microphone = guard(
+		() => room.localParticipant.setMicrophoneEnabled(!local.microphone),
+		"microphone",
+	);
+	toggles.current.camera = guard(() => room.localParticipant.setCameraEnabled(!local.camera), "camera");
+
+	useEffect(() => {
+		const key = (event: KeyboardEvent) => {
+			if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+			const which = event.key.toLowerCase();
+			if (which !== "d" && which !== "e") return;
+
+			const target = event.target as HTMLElement | null;
+			if (target?.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']")) return;
+
+			event.preventDefault();
+			void (which === "d" ? toggles.current.microphone() : toggles.current.camera());
+		};
+
+		document.addEventListener("keydown", key);
+		return () => document.removeEventListener("keydown", key);
+	}, []);
+
+	const shareButton = canShareScreen() && (
+		<ShareButton
+			sharing={local.screen}
+			running={running}
+			listening={local.listening}
+			lossless={lossless}
+			losslessUnavailable={losslessUnavailable(room)}
+			sendingLossless={local.listening && sendingLossless(room)}
+			onLossless={(on) => {
+				setLossless(on);
+				rememberLossless(on);
+			}}
+			onStart={(frameRate, quality) => void guard(() => share(room, true, frameRate, quality))()}
+			onAdjust={(frameRate, quality) => void retune(room, frameRate, quality)}
+			onStop={() => void guard(() => share(room, false, 30))()}
+			onListen={() =>
+				void guard(async () => {
+					try {
+						await startListening(room, lossless, losslessGaveUp);
+					} catch (err) {
+						// A picker answered with nothing ticked is not a
+						// cancelled picker: it needs saying, with the way
+						// out. A cancelled one goes on to the guard, which
+						// says nothing, as for a screen.
+						if (err instanceof NoSound) noSoundShared();
+						else throw err;
+					}
+				})()
+			}
+			onStopListening={() => void guard(() => stopListening(room))()}
+		/>
+	);
+
+	const others: ReactNode = (
+		<>
+			{/* What can be heard, beside what can be said. Not in the device
+			    menu, which is about the microphone and camera somebody speaks
+			    into — this is about everybody else. */}
+			<Toggle on={listening} onLabel={t("Hide sound")} offLabel={t("Show sound")} onClick={onListen}>
+				<Volume2 />
+			</Toggle>
+
+			{/* Music, beside the sound it is part of: what is playing, the song
+			    desk, and each listener's own volume for it. Shown once there is
+			    something to show, so a call without music has no extra button. */}
+			{musicButton.mounted && onMusic && (
+				<Toggle
+					on={music?.open === true}
+					onLabel={t("Hide music")}
+					offLabel={t("Show music")}
+					onClick={onMusic}
+					className={musicButton.leaving ? "animate-depart" : "animate-arrive"}
+				>
+					<ListMusic />
+					<Dot shown={music?.playing === true && !music.open} pulse />
+				</Toggle>
+			)}
+
+			{/* Watching together, beside the music and apart from it: the one
+			    puts a picture on the stage, the other plays into the sound. */}
+			{watchButton.mounted && onWatchPanel && (
+				<Toggle
+					on={watch?.open === true}
+					onLabel={t("Hide watch together")}
+					offLabel={t("Show watch together")}
+					onClick={onWatchPanel}
+					className={watchButton.leaving ? "animate-depart" : "animate-arrive"}
+				>
+					<Clapperboard />
+					<Dot shown={watch?.playing === true && !watch.open} pulse />
+				</Toggle>
+			)}
+		</>
+	);
+
+	const busyInRow = (music?.playing === true && !music.open) || (watch?.playing === true && !watch.open);
+
 	return (
+		<>
 		<footer
 			ref={drawn}
 			className={cn(
@@ -198,82 +320,12 @@ export function ControlBar({
 				// happening in it. Floating gives the pictures the whole window
 				// and puts the controls on the same layer as everything else
 				// that appears over them: the panel, the notices, the bubbles.
-				"absolute z-20 flex gap-1.5",
-				"rounded-full border border-border bg-surface/90 p-1.5 shadow-2xl backdrop-blur-md",
-				/*
-				 * Narrower on a narrow phone, in two steps, because at full size the
-				 * bar is 368 pixels and a 320-pixel phone could not hold it: both ends
-				 * hung off the screen, the hang-up button with them, and the page
-				 * was pushed wider than the display so the browser zoomed it all out.
-				 * A 375-pixel phone held it with three pixels to spare.
-				 *
-				 * Below 390 only the spacing tightens, which is enough there. Below
-				 * 372, which takes in the common 360-pixel Android width as well as
-				 * 320, the buttons come down to 34 pixels and the divider goes -- a
-				 * smaller target than is comfortable, chosen over a control that is
-				 * not on the screen at all. The sizes are reached from here rather
-				 * than through each button so that every other place those buttons
-				 * appear keeps its size.
-				 */
-				"max-[390px]:gap-1 max-[390px]:p-1",
-				"max-[372px]:[&_.size-10]:size-[34px] max-[372px]:[&_.size-11]:size-[38px]",
-				"max-[372px]:[&_.rounded-r-full]:h-[34px] max-[372px]:[&_.rounded-r-full]:pr-1.5 max-[372px]:[&_.rounded-r-full]:pl-0.5",
-				"max-[372px]:[&>span.w-px]:hidden",
-				/*
-				 * Every button past the five a phone always has, counted rather than
-				 * named: the screen share, the music and watching together are 46
-				 * pixels each at full size, and the steps below are taken a width
-				 * sooner for each one there is.
-				 *
-				 * They were named, and the share was left out of the count. Each step
-				 * was measured "on a phone's set of buttons, without the screen share
-				 * no phone browser offers" -- true of a phone, and not of the browsers
-				 * that do offer it at the same width: a desktop window narrowed to a
-				 * phone's size, and a phone emulated in one. There the bar carried
-				 * the share as well, 414 pixels with nothing else, and at 375 hung ten
-				 * pixels off each side with the page scrolling sideways under it; at
-				 * 320 four. Nothing had been added to the bar since the narrow-phone
-				 * fix of 10-08 -- built from that commit, it overflowed the same --
-				 * the steps had simply been worked out for one button fewer. And the
-				 * music rules matched any marked button while the watch rules
-				 * matched only music and watch together, so a share beside either
-				 * fell between them.
-				 *
-				 * One extra: below 430 the spacing tightens, below 410 the buttons
-				 * come to 34, below 345 to 32 with the gaps nearly closed. Two: the
-				 * same from 476 and 454, 32 below 384, and 28 below 350. Three, 506
-				 * pixels at full size: from 522 and 500, 32 below 440, 28 below 384
-				 * and no gaps below 350 -- small targets, and every one on the screen.
-				 * Worked out so the bar leaves at least eight pixels either side at
-				 * every width, and measured at 320, 360, 375, 390 and 414 with every
-				 * count. Exact counts rather than "at least", so each group is whole
-				 * on its own and a later step never depends on an earlier one still
-				 * matching.
-				 */
-				"data-[extra=1]:max-[430px]:gap-1 data-[extra=1]:max-[430px]:p-1",
-				"data-[extra=1]:max-[410px]:[&_.size-10]:size-[34px] data-[extra=1]:max-[410px]:[&_.size-11]:size-[38px]",
-				"data-[extra=1]:max-[410px]:[&_.rounded-r-full]:h-[34px] data-[extra=1]:max-[410px]:[&_.rounded-r-full]:pr-1.5 data-[extra=1]:max-[410px]:[&_.rounded-r-full]:pl-0.5",
-				"data-[extra=1]:max-[410px]:[&>span.w-px]:hidden",
-				"data-[extra=1]:max-[345px]:gap-0.5",
-				"data-[extra=1]:max-[345px]:[&_.size-10]:size-8 data-[extra=1]:max-[345px]:[&_.size-11]:size-9",
-				"data-[extra=1]:max-[345px]:[&_.rounded-r-full]:h-8",
-				"data-[extra=2]:max-[476px]:gap-1 data-[extra=2]:max-[476px]:p-1",
-				"data-[extra=2]:max-[454px]:[&_.size-10]:size-[34px] data-[extra=2]:max-[454px]:[&_.size-11]:size-[38px]",
-				"data-[extra=2]:max-[454px]:[&_.rounded-r-full]:h-[34px] data-[extra=2]:max-[454px]:[&_.rounded-r-full]:pr-1.5 data-[extra=2]:max-[454px]:[&_.rounded-r-full]:pl-0.5",
-				"data-[extra=2]:max-[454px]:[&>span.w-px]:hidden",
-				"data-[extra=2]:max-[384px]:gap-0.5 data-[extra=2]:max-[384px]:[&_.size-10]:size-8 data-[extra=2]:max-[384px]:[&_.size-11]:size-9",
-				"data-[extra=2]:max-[384px]:[&_.rounded-r-full]:h-8",
-				"data-[extra=2]:max-[350px]:p-0.5 data-[extra=2]:max-[350px]:[&_.size-10]:size-7 data-[extra=2]:max-[350px]:[&_.size-11]:size-8",
-				"data-[extra=2]:max-[350px]:[&_.rounded-r-full]:h-7",
-				"data-[extra=3]:max-[522px]:gap-1 data-[extra=3]:max-[522px]:p-1",
-				"data-[extra=3]:max-[500px]:[&_.size-10]:size-[34px] data-[extra=3]:max-[500px]:[&_.size-11]:size-[38px]",
-				"data-[extra=3]:max-[500px]:[&_.rounded-r-full]:h-[34px] data-[extra=3]:max-[500px]:[&_.rounded-r-full]:pr-1.5 data-[extra=3]:max-[500px]:[&_.rounded-r-full]:pl-0.5",
-				"data-[extra=3]:max-[500px]:[&>span.w-px]:hidden",
-				"data-[extra=3]:max-[440px]:gap-0.5 data-[extra=3]:max-[440px]:[&_.size-10]:size-8 data-[extra=3]:max-[440px]:[&_.size-11]:size-9",
-				"data-[extra=3]:max-[440px]:[&_.rounded-r-full]:h-8",
-				"data-[extra=3]:max-[384px]:p-0.5 data-[extra=3]:max-[384px]:[&_.size-10]:size-7 data-[extra=3]:max-[384px]:[&_.size-11]:size-8",
-				"data-[extra=3]:max-[384px]:[&_.rounded-r-full]:h-7",
-				"data-[extra=3]:max-[350px]:gap-0",
+				// Above the panels, which are later in the document; see Room.
+				"absolute z-30 flex gap-1.5",
+				"glass rounded-full border p-1.5",
+				// Six controls at a finger's size on a 320-pixel phone, with
+				// four pixels between them where six would not fit.
+				"max-[359px]:gap-1",
 				side
 					? // Down the right edge, vertically centred. Costs width,
 						// which a wide window has and a tall one does not.
@@ -292,9 +344,9 @@ export function ControlBar({
 				// to have these out of the way.
 				"transition-[transform,opacity] duration-200",
 				away && "pointer-events-none opacity-0",
-				away && (side ? "translate-x-24" : "translate-y-24"),
+				away && (side ? "motion-safe:translate-x-24" : "motion-safe:translate-y-24"),
 			)}
-			data-extra={extra}
+			data-folded={folded ? "" : undefined}
 			onPointerEnter={() => setNear(true)}
 			onPointerLeave={() => setNear(false)}
 			onFocusCapture={(event) => {
@@ -313,6 +365,7 @@ export function ControlBar({
 			}}
 		>
 			<Toggle
+				device
 				on={local.microphone}
 				onLabel={t("Mute microphone")}
 				offLabel={t("Unmute microphone")}
@@ -325,6 +378,7 @@ export function ControlBar({
 			</Toggle>
 
 			<Toggle
+				device
 				on={local.camera}
 				onLabel={t("Turn camera off")}
 				offLabel={t("Turn camera on")}
@@ -334,107 +388,50 @@ export function ControlBar({
 			</Toggle>
 
 			{/* Beside the camera rather than with the panels: it is a thing said
-			    to the room, like speaking, and not a thing opened to be read. */}
-			<HandButton up={handUp} onRaise={onRaise} onReact={onReact} />
+			    to the room, like speaking, and not a thing opened to be read. On
+			    end down the side, and folded on a narrow screen, the reactions
+			    are a button of their own; see HandButton. */}
+			<HandButton up={handUp} onRaise={onRaise} onReact={onReact} split={!folded && !side} />
+			{side && <ReactionsButton onReact={onReact} place="end" />}
 
-			{canShareScreen() && (
-				<ShareButton
-					sharing={local.screen}
-					running={running}
-					listening={local.listening}
-					lossless={lossless}
-					losslessUnavailable={losslessUnavailable(room)}
-					sendingLossless={local.listening && sendingLossless(room)}
-					onLossless={(on) => {
-						setLossless(on);
-						rememberLossless(on);
-					}}
-					onStart={(frameRate, quality) => void guard(() => share(room, true, frameRate, quality))()}
-					onAdjust={(frameRate, quality) => void retune(room, frameRate, quality)}
-					onStop={() => void guard(() => share(room, false, 30))()}
-					onListen={() =>
-						void guard(async () => {
-							try {
-								await startListening(room, lossless, losslessGaveUp);
-							} catch (err) {
-								// A picker answered with nothing ticked is not a
-								// cancelled picker: it needs saying, with the way
-								// out. A cancelled one goes on to the guard, which
-								// says nothing, as for a screen.
-								if (err instanceof NoSound) noSoundShared();
-								else throw err;
-							}
-						})()
-					}
-					onStopListening={() => void guard(() => stopListening(room))()}
-				/>
-			)}
+			{!folded && shareButton}
 
 			<Toggle
 				on={chatting}
 				onLabel={t("Hide messages")}
-				offLabel={t("Show messages")}
-				signal
+				// The dot, said: a reader has no dot to see.
+				offLabel={unread ? `${t("Show messages")} (${t("New messages")})` : t("Show messages")}
 				onClick={onChat}
 			>
 				<MessageSquare />
 				{/* Whether, not how many: in a call the first question is the only
 				    one anybody asks. */}
-				{unread && !chatting && (
-					<span className="absolute top-0.5 right-0.5 size-2 rounded-full border-2 border-surface bg-tally" />
-				)}
+				<Dot shown={unread && !chatting} />
 			</Toggle>
 
-			{/* What can be heard, beside what can be said. Not in the device
-			    menu above, which is about the microphone and camera somebody
-			    speaks into — this is about everybody else. */}
-			<Toggle
-				on={listening}
-				onLabel={t("Hide sound")}
-				offLabel={t("Show sound")}
-				onClick={onListen}
-			>
-				<Volume2 />
-			</Toggle>
+			{!folded && others}
 
-			{/* Music, beside the sound it is part of: what is playing, the song
-			    desk, and each listener's own volume for it. Shown once there is
-			    something to show, so a call without music has no extra button. */}
-			{musicButton.mounted && onMusic && (
-				<Toggle
-					on={music?.open === true}
-					onLabel={t("Hide music")}
-					offLabel={t("Show music")}
-					onClick={onMusic}
-					className={musicButton.leaving ? "animate-depart" : "animate-arrive"}
-				>
-					<ListMusic />
-					{music?.playing && !music.open && (
-						<span className="absolute top-0.5 right-0.5 size-2 animate-pulse rounded-full border-2 border-surface bg-tally" />
-					)}
-				</Toggle>
+			{folded ? (
+				<span className="relative flex">
+					<Button
+						variant="secondary"
+						size="round"
+						aria-label={more ? t("Fewer controls") : t("More controls")}
+						aria-expanded={more}
+						onClick={() => setMore((was) => !was)}
+						className={cn("relative", more && "bg-surface-hi-press")}
+					>
+						<Ellipsis />
+						{/* What is going on in the row while it is folded away: a share
+						    running, music or a film playing. */}
+						<Dot shown={!more && (local.screen || local.listening || busyInRow)} />
+					</Button>
+				</span>
+			) : (
+				<DeviceMenu room={room} where={where} onPlace={onPlace} />
 			)}
 
-			{/* Watching together, beside the music and apart from it: the one
-			    puts a picture on the stage, the other plays into the sound. */}
-			{watchButton.mounted && onWatchPanel && (
-				<Toggle
-					on={watch?.open === true}
-					onLabel={t("Hide watch together")}
-					offLabel={t("Show watch together")}
-					onClick={onWatchPanel}
-					className={watchButton.leaving ? "animate-depart" : "animate-arrive"}
-				>
-					<Clapperboard />
-					{watch?.playing && !watch.open && (
-						<span className="absolute top-0.5 right-0.5 size-2 animate-pulse rounded-full border-2 border-surface bg-tally" />
-					)}
-				</Toggle>
-			)}
-
-			<DeviceMenu room={room} where={where} onPlace={onPlace} />
-
-			<span className={cn("bg-border", side ? "my-1 h-px w-5" : "mx-1 h-5 w-px")} />
+			{!folded && <span className={cn("bg-border", side ? "my-1 h-px w-5" : "mx-1 h-5 w-px")} />}
 
 			{/* Leaving and, for whoever runs the room, ending it. Together
 			    because they are the same intention at two scales — somebody is
@@ -442,22 +439,69 @@ export function ControlBar({
 			    home, and left the meeting running behind them. */}
 			<Leaving room={room} host={host} onLeave={onLeave} />
 		</footer>
+
+		{/*
+		 * The island's second row, above the first and in the same material,
+		 * rising out of it.
+		 *
+		 * Everything that is not needed every minute of a call, at the same
+		 * finger's size as the row below rather than smaller. It closes on a
+		 * press anywhere else, on Escape, and when what it opened is a panel,
+		 * which rises to where it is.
+		 *
+		 * Beside the island rather than inside it, though it is drawn as part
+		 * of it. A blurred material inside another blurs only what the outer
+		 * one has drawn, so inside the island this row blurred nothing at all
+		 * and was a flat grey over the pictures.
+		 */}
+		{moreRow.mounted && (
+			<div
+				ref={row}
+				className={cn(
+					"-translate-x-1/2 absolute left-1/2 z-30 flex gap-1.5 max-[359px]:gap-1",
+					// The island's own offset from the foot, its height, and a gap.
+					"bottom-[calc(max(1.25rem,calc(env(safe-area-inset-bottom)+0.5rem))+58px+10px)]",
+					"glass rounded-full border p-1.5",
+					"origin-bottom",
+					moreRow.leaving ? "animate-depart" : "animate-arrive",
+				)}
+			>
+				<ReactionsButton onReact={onReact} place="row" />
+				{shareButton}
+				{others}
+				<DeviceMenu room={room} where={where} onPlace={onPlace} />
+			</div>
+		)}
+		</>
 	);
 }
 
 /**
  * One control, lit or not.
  *
- * Off is drawn as unlit rather than as an alarm. Colouring every closed switch
- * red put four warnings in a row on a bar whose only real one is leaving, and a
- * warning that is always on stops being a warning. A muted microphone is a
- * choice somebody made, not a fault.
+ * Two kinds, and they light differently.
  *
- * `signal` marks a control where being on is itself worth announcing — an open
- * panel with something unread in it — and it takes the one colour that means
- * something is happening. Sharing takes that colour too, from a button of its
- * own: it carries a choice as well as a state, and a switch cannot ask a
- * question on its way on.
+ * A switch for one's own microphone or camera (`device`) is grey while it is
+ * on and drawn in the foreground while it is off — the way the platforms' own
+ * call screens draw a muted microphone, and for their reason: it is the one
+ * state on the row somebody has to read at a glance, since talking into a
+ * muted microphone is the commonest mistake a call has. It was drawn as the
+ * same grey either way with a dimmer icon, which at arm's length is the same
+ * button. Still not red: colouring every closed switch red put four warnings
+ * in a row on a bar whose only real one is leaving, and a muted microphone is
+ * a choice somebody made, not a fault.
+ *
+ * A button that opens a panel is drawn pressed — the raised grey a step
+ * further towards the foreground — while its panel is open, so that the button
+ * that closes the panel is the one that looks held down. It was amber for the
+ * messages only, and the sound panel open left its button looking exactly like
+ * a closed one. Not amber for any of them: the owner kept the amber for what is
+ * happening in the call — a share going out, a hand up, something unread,
+ * somebody speaking — and a panel somebody opened is none of those
+ * (2026-10-29). Sharing keeps the amber, from a button of its own.
+ *
+ * Every icon is drawn at full strength. A closed panel's was muted, which made
+ * half the row read as disabled.
  */
 function Toggle({
 	on,
@@ -465,27 +509,54 @@ function Toggle({
 	offLabel,
 	onClick,
 	children,
-	signal,
+	device,
 	className,
 }: {
 	on: boolean;
 	onLabel: string;
 	offLabel: string;
 	onClick: () => void;
-	children: React.ReactNode;
-	signal?: boolean;
+	children: ReactNode;
+	device?: boolean;
 	className?: string;
 }) {
 	return (
 		<Button
-			variant={on && signal ? "default" : "secondary"}
+			variant={device && !on ? "off" : "secondary"}
 			size="round"
+			// The action a press takes, and only that: it carried aria-pressed
+			// as well, so a live microphone was read as "Mute microphone,
+			// pressed" — the label and the state saying opposite things. The
+			// native clients name the action alone.
 			aria-label={on ? onLabel : offLabel}
-			aria-pressed={on}
 			onClick={onClick}
-			className={cn("relative", !on && "text-fg-muted", className)}
+			className={cn(
+				"relative",
+				!device && on && "bg-surface-hi-press hover:bg-surface-hi-press",
+				className,
+			)}
 		>
 			{children}
 		</Button>
+	);
+}
+
+/**
+ * Something new behind a button: a message, a song, a film.
+ *
+ * Always drawn and scaled to nothing when there is nothing to say, so that it
+ * arrives and leaves rather than being there on one frame and not the next.
+ */
+function Dot({ shown, pulse }: { shown: boolean; pulse?: boolean }) {
+	return (
+		<span
+			aria-hidden
+			className={cn(
+				"pointer-events-none absolute top-1 right-1 size-2.5 rounded-full border-2 border-surface bg-tally",
+				"transition-[transform,opacity] duration-200 ease-[var(--ease-settle)] motion-reduce:transition-none",
+				shown ? "scale-100 opacity-100" : "scale-0 opacity-0",
+				shown && pulse && "animate-breathe",
+			)}
+		/>
 	);
 }

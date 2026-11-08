@@ -63,8 +63,11 @@ export function Signal({
 					remember(next);
 				}}
 				className={cn(
-					"flex items-center gap-2 rounded-full bg-surface-hi/90 px-2.5 py-1.5 shadow backdrop-blur",
-					"text-xs transition-colors hover:bg-surface-hi",
+					// The controls' material, thirty-two tall, and a finger's
+					// forty-four from the pseudo-element around it on a phone.
+					"pressable glass relative flex h-8 items-center gap-2 rounded-full border px-3 outline-none",
+					"before:absolute before:-inset-1.5 before:hidden pointer-coarse:before:block",
+					"text-xs hover:bg-surface-hi focus-visible:ring-2 focus-visible:ring-fg/70",
 				)}
 			>
 				<Bars grade={reading.grade} />
@@ -150,8 +153,9 @@ function Detail({
 	return (
 		<dl
 			className={cn(
-				"mt-1.5 flex min-w-44 flex-col gap-1 rounded-lg px-3 py-2 text-[11px]",
-				"bg-surface-hi/90 shadow-lg ring-1 ring-black/30 backdrop-blur",
+				"mt-2 flex min-w-48 flex-col gap-1 rounded-[14px] px-3.5 py-2.5 text-[12px]",
+				// Opaque: it is read, figure by figure.
+				"bg-surface-hi shadow-lg ring-1 ring-shade/30 afloat",
 				// From under the bars it belongs to, rather than appearing: a panel
 				// that is simply there on the next frame reads as the page having
 				// redrawn itself.
@@ -284,7 +288,7 @@ function Figure({
 			<dd
 				className={cn(
 					"readout tabular-nums transition-colors duration-300",
-					warn ? "text-tally" : "text-fg",
+					warn ? "text-tally-ink" : "text-fg",
 				)}
 			>
 				{/* A relay's name arrives here with a flag in it, and on Windows

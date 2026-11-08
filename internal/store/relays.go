@@ -238,6 +238,10 @@ var (
 	// ErrRelaySignalledThrough is a relay being removed that another still
 	// signals through. See RemoveRelay.
 	ErrRelaySignalledThrough = errors.New("another relay signals through this one")
+
+	// ErrRelayNeedsProbe is a relay that signals through another and has no
+	// probe address. See Valid.
+	ErrRelayNeedsProbe = errors.New("a relay that signals through another needs a probe address")
 )
 
 // Valid reports whether a relay is one this deployment can use.
@@ -265,6 +269,13 @@ func (r Relay) Valid() error {
 	case len(r.Label) > 64:
 		return ErrRelayLongLabel
 
+	// A relay that signals through another is one no TLS reaches, and a
+	// client times a relay without a probe address by opening TLS to it —
+	// which, on the networks these machines are on, is the handshake that gets
+	// a machine filtered, made by every client measuring before every join.
+	// The probe is the only way such a relay can be measured at all.
+	case r.SignalVia != "" && strings.TrimSpace(r.Probe) == "":
+		return ErrRelayNeedsProbe
 	}
 
 	return nil
@@ -431,6 +442,12 @@ func (s *Store) UpdateRelay(relay Relay) error {
 			relay.Added = existing.Added
 		}
 
+		// Kept for administrators and somebody's own are two answers to who
+		// may use a machine, and they cannot both be true (own.go).
+		if relay.AdminOnly && len(ownersOf(tx, relay.Name)) > 0 {
+			return ErrRelayIsSomebodys
+		}
+
 		encoded, err := json.Marshal(relay)
 		if err != nil {
 			return err
@@ -522,6 +539,13 @@ func (s *Store) RenameRelay(from, to string) error {
 		// field was stale; and enrolling a machine under the old name later would
 		// have handed it the signalling of every relay that named it, with
 		// nobody having chosen that. Matched exactly, as the join matches it.
+		// And the accounts that hold it as their own, for the reason the rules
+		// are rewritten: an account naming a relay that is not there has no
+		// relay it may use, and would be refused at every join (own.go).
+		if err := renameOwned(tx, from, to); err != nil {
+			return err
+		}
+
 		return eachRelay(bucket, func(other Relay) (Relay, bool) {
 			var touched bool
 
@@ -615,6 +639,14 @@ func (s *Store) RemoveRelay(name string) error {
 		}
 		if signalled {
 			return ErrRelaySignalledThrough
+		}
+
+		// Nor while it is somebody's own, for the reason above: taking it off
+		// their account is a decision about what they may use, which only
+		// whoever gave it to them can make, and doing it here as a side effect
+		// would hand them every other relay without anybody having said so.
+		if len(ownersOf(tx, name)) > 0 {
+			return ErrRelayIsSomebodys
 		}
 
 		if err := bucket.Delete([]byte(name)); err != nil {

@@ -65,7 +65,14 @@ export function Flagged({ text }: { text: string }): ReactNode {
 				// nudged down because a glyph's baseline is not its bottom edge.
 				// Empty alt because the name it sits against already says the
 				// place: read aloud, the flag would be the country said twice.
-				className="inline-block h-[1em] w-[1.3em] align-[-0.15em] object-contain"
+				//
+				// A hairline round the flag's own shape by day. The flags are
+				// drawn with their white as a very light grey, which on a dark
+				// row is the flag's edge and on a white row is nothing: Japan's
+				// was a red dot beside "Tokyo", and the stripes of others lost
+				// their outer edge. A shadow follows the flag's outline where a
+				// border would draw the box it is fitted into.
+				className="inline-block h-[1em] w-[1.3em] align-[-0.15em] object-contain day:drop-shadow-[0_0_0.6px_rgb(0_0_0/0.45)]"
 			/>,
 		);
 

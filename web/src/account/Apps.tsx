@@ -1,17 +1,23 @@
 import { Invite, PublicLink, TESTFLIGHT } from "@/components/apps/Invite";
+import { LinuxCommand } from "@/components/apps/LinuxCommand";
 import {
 	ANDROID_APP,
 	type Build,
 	Figures,
 	I_OS,
 	type IOSOffer,
+	LINUX_APP,
 	MAC,
 	NOTHING,
 	type Offered,
+	PROCESSORS,
 	type Shelf,
 	WINDOWS,
 	WINDOWS_APP,
+	linuxFigures,
+	linuxOf,
 	offers,
+	offersLinux,
 } from "@/components/apps/shelves";
 import { LanguagePicker } from "@/components/room/LanguagePicker";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -41,11 +47,13 @@ import { SignIn } from "./Account";
  * the app's ceiling and a mail sent in its name. Somebody who arrives signed out
  * is asked to sign in by the same form, told why in a line of its own.
  *
- * Four platforms. The Mac, Android and Windows apps are each a file this
+ * Five platforms. The Mac, Android and Windows apps are each a file this
  * server hands over, and are drawn by one card and one row told which platform
  * they are for (Shelf, below), so that they cannot come to say different things
  * about the same answer: a version, a size, a download, a line on installing
- * it, and the warning the system will show on the way, where it shows one.
+ * it, and the warning the system will show on the way, where it shows one. The
+ * Linux app is two files, one for each processor, and has a card and a row of
+ * its own that offer both (shelves.tsx says why the page does not choose).
  *
  * Windows without a build is still drawn, as a place kept: so that the page did
  * not change shape on the day its app arrived, and so that somebody looking for
@@ -118,7 +126,7 @@ export function Apps() {
 				onIn={look}
 				icon={Download}
 				title={t("Get the apps")}
-				lead={t("Sign in to download Tomoshibi for Mac, Windows, iPhone, iPad and Android.")}
+				lead={t("Sign in to download Tomoshibi for Mac, Windows, Linux, iPhone, iPad and Android.")}
 			/>
 		);
 	}
@@ -133,20 +141,8 @@ export function Apps() {
 
 	return (
 		<div className="relative min-h-full overflow-x-hidden bg-bg">
-			{/*
-			 * The lobby's glow, high and behind everything. The page is a short
-			 * column on a dark field, which is the lobby's problem as well, and
-			 * the same answer gives it a top.
-			 */}
-			<div
-				aria-hidden
-				className={cn(
-					"pointer-events-none absolute inset-x-0 top-0 h-[45vh]",
-					"bg-[radial-gradient(60%_100%_at_50%_0%,var(--color-tally)_0%,transparent_70%)]",
-					"opacity-[0.07]",
-				)}
-			/>
-
+			{/* No glow behind the page, as the lobby has none now: it was a
+			    gradient, and the owner's rule is that there are none. */}
 			<main className="relative mx-auto flex max-w-lg flex-col gap-4 p-5 text-fg sm:p-6">
 				<nav className="animate-rise flex items-center gap-2">
 					<a
@@ -177,7 +173,7 @@ export function Apps() {
 					</div>
 				</nav>
 
-				<header className="animate-rise flex flex-col gap-1 pt-2 [animation-delay:60ms]">
+				<header className="animate-rise flex flex-col gap-1 pt-2">
 					<h1 className="font-semibold text-[22px] tracking-tight">{t("Get the apps")}</h1>
 					<p className="text-[13px] text-fg-muted leading-relaxed">
 						{t("Tomoshibi on your own devices, for the account you are signed in to here.")}
@@ -188,24 +184,28 @@ export function Apps() {
 					<Promoted guessed={guessed} offered={offered} phone={phone} />
 				) : (
 					<>
-						<div className="animate-rise [animation-delay:120ms]">
+						<div className="animate-rise">
 							<Downloaded shelf={MAC} build={offered.mac} />
 						</div>
 
-						<div className="animate-rise [animation-delay:180ms]">
+						<div className="animate-rise">
 							<Phone {...phone} />
 						</div>
 
-						<div className="animate-rise [animation-delay:240ms]">
+						<div className="animate-rise">
 							<Downloaded shelf={ANDROID_APP} build={offered.android} />
 						</div>
 
-						<div className="animate-rise [animation-delay:300ms]">
+						<div className="animate-rise">
 							{offers(offered.windows) ? (
 								<Downloaded shelf={WINDOWS_APP} build={offered.windows} />
 							) : (
 								<Soon icon={Monitor} name={WINDOWS} />
 							)}
+						</div>
+
+						<div className="animate-rise">
+							<LinuxCard offered={offered} />
 						</div>
 					</>
 				)}
@@ -237,7 +237,7 @@ function Card({
 				<span
 					className={cn(
 						"flex size-10 shrink-0 items-center justify-center rounded-lg",
-						live ? "bg-tally/15 text-tally" : "bg-surface-hi text-fg-muted",
+						live ? "bg-tally/15 text-tally-ink" : "bg-surface-hi text-fg-muted",
 					)}
 				>
 					<Icon className="size-5" />
@@ -295,6 +295,96 @@ function Downloaded({ shelf, build }: { shelf: Shelf; build: Build }) {
 				<NotYet>{t(shelf.missing)}</NotYet>
 			)}
 		</Card>
+	);
+}
+
+/**
+ * The Linux app at full size: a download for each processor's build there is,
+ * the usual one amber and the other in the plain style under it, then what to
+ * do with the file and which to choose.
+ */
+function LinuxCard({ offered }: { offered: Offered }) {
+	const t = useT();
+	const linux = linuxOf(offered);
+	const available = offersLinux(offered);
+
+	return (
+		<Card
+			icon={LINUX_APP.icon}
+			name={LINUX_APP.name}
+			live={available}
+			detail={available ? <Figures build={linuxFigures(offered)} /> : t(LINUX_APP.meant)}
+		>
+			{available ? (
+				<>
+					<div className="flex flex-col gap-2">
+						{PROCESSORS.filter((one) => offers(linux[one.key])).map((one, index) => (
+							<a
+								key={one.key}
+								href={one.href}
+								download
+								className={cn(buttonVariants({ variant: index === 0 ? "primary" : "outline" }), "w-full")}
+							>
+								<Download />
+								{t(LINUX_APP.take, { architecture: one.name })}
+							</a>
+						))}
+					</div>
+
+					<p className="text-[11.5px] text-fg-muted leading-snug">{t(LINUX_APP.install)}</p>
+					<p className="text-[11.5px] text-fg-muted leading-snug">{t(LINUX_APP.caution)}</p>
+
+					<LinuxCommand />
+				</>
+			) : (
+				<NotYet>{t(LINUX_APP.missing)}</NotYet>
+			)}
+		</Card>
+	);
+}
+
+/**
+ * The Linux app as a row: the version, and a small download for each
+ * processor, named by it, under the row's line rather than at its end. At its
+ * end the two buttons left the name and the version a column a hundred pixels
+ * wide at 375, and the version, kept whole, ran under the first button.
+ */
+function LinuxRow({ offered }: { offered: Offered }) {
+	const t = useT();
+	const linux = linuxOf(offered);
+	const available = offersLinux(offered);
+
+	return (
+		<Row
+			icon={LINUX_APP.icon}
+			name={LINUX_APP.name}
+			line={available ? <Figures build={linuxFigures(offered)} /> : t(LINUX_APP.missing)}
+		>
+			{available && (
+				<div className="flex flex-col gap-3 pl-11">
+					<div className="flex flex-wrap gap-2">
+						{PROCESSORS.filter((one) => offers(linux[one.key])).map((one) => (
+							<a
+								key={one.key}
+								href={one.href}
+								download
+								aria-label={t(LINUX_APP.take, { architecture: one.name })}
+								className={buttonVariants({ variant: "outline", size: "sm" })}
+							>
+								<Download />
+								{one.name}
+							</a>
+						))}
+					</div>
+
+					{/* The command here too. It was on the full card alone, which
+					    only a Linux browser is shown, and the owner, reading the
+					    page on a Mac to send it to somebody on Linux, found no
+					    command anywhere. */}
+					<LinuxCommand />
+				</div>
+			)}
+		</Row>
 	);
 }
 
@@ -357,7 +447,7 @@ function Soon({ icon: Icon, name }: { icon: LucideIcon; name: string }) {
 
 			<div className="flex min-w-0 flex-col gap-0.5">
 				<h2 className="font-medium text-[14px] text-fg/80">{name}</h2>
-				<span className="silk text-fg-muted/80">{t("Coming soon")}</span>
+				<span className="silk text-fg-muted/80 day:text-fg-muted">{t("Coming soon")}</span>
 			</div>
 		</section>
 	);
@@ -365,10 +455,11 @@ function Soon({ icon: Icon, name }: { icon: LucideIcon; name: string }) {
 
 /**
  * The order the platforms are listed in, wherever none is promoted out of it.
- * Windows last, where it was kept a place before it had an app, so that it is
- * where anybody who looked for it before will look again.
+ * Windows after the phones, where it was kept a place before it had an app, so
+ * that it is where anybody who looked for it before will look again; Linux,
+ * the newest, after it.
  */
-const ORDER: readonly Platform[] = ["mac", "ios", "android", "windows"];
+const ORDER: readonly Platform[] = ["mac", "ios", "android", "windows", "linux"];
 
 /**
  * The reader's platform at full size, and every other one under it as a row.
@@ -382,7 +473,7 @@ function Promoted({ guessed, offered, phone }: { guessed: Platform; offered: Off
 
 	return (
 		<>
-			<div className="animate-rise [animation-delay:120ms]">
+			<div className="animate-rise">
 				{guessed === "mac" && <Downloaded shelf={MAC} build={offered.mac} />}
 				{guessed === "ios" && <Phone {...phone} />}
 				{guessed === "android" && <Downloaded shelf={ANDROID_APP} build={offered.android} />}
@@ -392,9 +483,10 @@ function Promoted({ guessed, offered, phone }: { guessed: Platform; offered: Off
 					) : (
 						<SoonCard icon={Monitor} name={WINDOWS} />
 					))}
+				{guessed === "linux" && <LinuxCard offered={offered} />}
 			</div>
 
-			<section aria-labelledby="other-platforms" className="animate-rise flex flex-col gap-2 pt-2 [animation-delay:180ms]">
+			<section aria-labelledby="other-platforms" className="animate-rise flex flex-col gap-2 pt-2">
 				<h2 id="other-platforms" className="px-1 font-medium text-[11px] text-fg-muted uppercase tracking-wide">
 					{t("Other platforms")}
 				</h2>
@@ -411,6 +503,7 @@ function Promoted({ guessed, offered, phone }: { guessed: Platform; offered: Off
 								) : (
 									<SoonRow icon={Monitor} name={WINDOWS} />
 								))}
+							{one === "linux" && <LinuxRow offered={offered} />}
 						</li>
 					))}
 				</ul>
@@ -552,7 +645,7 @@ function PhoneRow(props: PhoneProps) {
 function SoonRow({ icon, name }: { icon: LucideIcon; name: string }) {
 	const t = useT();
 
-	return <Row icon={icon} name={name} action={<span className="silk text-fg-muted/80">{t("Coming soon")}</span>} />;
+	return <Row icon={icon} name={name} action={<span className="silk text-fg-muted/80 day:text-fg-muted">{t("Coming soon")}</span>} />;
 }
 
 /**

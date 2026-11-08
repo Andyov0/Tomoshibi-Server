@@ -20,7 +20,10 @@ import (
 
 	"tomoshibi/internal/admin"
 	"tomoshibi/internal/config"
+	"tomoshibi/internal/guess"
 	"tomoshibi/internal/limit"
+	"tomoshibi/internal/lockout"
+	"tomoshibi/internal/remote"
 	"tomoshibi/internal/room"
 	"tomoshibi/internal/rtc"
 	"tomoshibi/internal/store"
@@ -55,6 +58,21 @@ type App struct {
 	relays *relays
 	// enrolment is set where a relay may bring itself up from a script.
 	enrolment *admin.Enrolment
+
+	// probes is what each relay's probe host resolves to, for the list a
+	// stranger is given (listed.go).
+	probes probeBook
+
+	// presence is who was in each room when last asked, for the host
+	// endpoints' acceptance of an expired join token (host.go, whoIs).
+	presence presence
+
+	// summed is the hash of the binary handed to new relays, remembered
+	// against the file it was taken from (binarySum).
+	summed struct {
+		sync.Mutex
+		stamp, sum string
+	}
 	// reach remembers which relays answered, so a client is not offered one
 	// nobody can get to. Nil until a cluster is wired in, and nil is the
 	// answer "everything is worth offering", which is right for a deployment
@@ -107,6 +125,10 @@ func New(conf *config.Config, st *store.Store, media *rtc.Server, web http.Handl
 		relays:  newRelays(conf, st),
 		stop:    make(chan struct{}),
 	}
+
+	// A lockout names the device it shut out the way a join names the device
+	// it came from, so the management pages describe both alike.
+	a.admin.Lockout().Describe(clientOf)
 
 	// A full deployment acts on its own media server. A control node has none
 	// yet and is given the cluster later, by UseCluster.
@@ -262,6 +284,14 @@ func (a *App) sweep() {
 	} else if gone > 0 {
 		slog.Info("swept expired watch tickets", "gone", gone)
 	}
+
+	// The sign-in lockouts that have ended. Each is ignored once past its end,
+	// so this is growth again: a row per caller ever shut out.
+	if gone, err := a.store.SweepLockouts(now); err != nil {
+		slog.Error("failed to sweep the sign-in lockouts", "error", err)
+	} else if gone > 0 {
+		slog.Info("swept sign-in lockouts that have ended", "gone", gone)
+	}
 }
 
 // forget clears one sweep's worth, and keeps going while there is more.
@@ -349,7 +379,7 @@ func (a *App) Handler() http.Handler {
 			// handler, fell through to the /twirp/ catch-all, and was offered
 			// to a media server that does not serve it.
 			mux.Handle("GET "+rtc.StatsPath,
-				rtc.StatsHandler(a.media, a.conf.Key, a.conf.Secret, admin.Started))
+				rtc.StatsHandler(a.media, a.conf.Key, a.conf.Secret, admin.Started, a.conf.Meet.TLSCert))
 			a.takesCertificates(mux)
 
 			return silence(mux)
@@ -374,7 +404,7 @@ func (a *App) Handler() http.Handler {
 		// here and how much is flowing, which is exactly the shape of thing that
 		// should not be readable by whoever finds the port.
 		mux.Handle("GET "+rtc.StatsPath,
-			rtc.StatsHandler(a.media, a.conf.Key, a.conf.Secret, admin.Started))
+			rtc.StatsHandler(a.media, a.conf.Key, a.conf.Secret, admin.Started, a.conf.Meet.TLSCert))
 		a.takesCertificates(mux)
 
 		return mux
@@ -384,6 +414,10 @@ func (a *App) Handler() http.Handler {
 	// accounts page. Handed over here rather than in New because this is where
 	// both halves exist however the application was assembled.
 	a.admin.UseSpent(&a.relayed)
+
+	// Which app versions are handed out, for the page about the apps, read
+	// from the same directory and manifest the download page reads.
+	a.admin.UseShelf(adminShelf{desk: a.apps})
 
 	// Registered before the client's fallback, and only where somebody
 	// configured an administrator. Absent that, these paths are not refused —
@@ -449,6 +483,12 @@ func (a *App) Handler() http.Handler {
 	// is the same document behind the same sign-in.
 	a.mountApps(mux)
 
+	// The Linux app in one pasted command (linuxinstall.go). Registered even
+	// where there are no shelves, to say so: unclaimed, the path would reach
+	// the client's fallback, and a shell piped the page's document would run
+	// HTML.
+	mux.HandleFunc("GET /linux.sh", a.linuxInstall)
+
 	// The statements that let the Android app and the Apple apps open this
 	// deployment's links. Below the relay's return above on purpose: a relay's
 	// address is in no link anybody opens, and answering here would make it a
@@ -472,6 +512,9 @@ type joinRequest struct {
 
 	// Identity a client was given previously, if it has one.
 	Identity string `json:"identity"`
+	// Proof is what it was given with an issued identity, without which that
+	// identity is not kept (room.GuestProof).
+	Proof string `json:"proof"`
 	// Name they would like to be called.
 	Name string `json:"name"`
 	// Passphrase turning that name into one nobody else can wear.
@@ -489,6 +532,9 @@ type joinResponse struct {
 	Token string `json:"token"`
 	// Identity is what the bearer will be known as.
 	Identity string `json:"identity"`
+	// Proof is what to send back with an issued identity for the next join to
+	// keep it. Absent for an identity a passphrase or a session keeps.
+	Proof string `json:"proof,omitempty"`
 	// Room is the name that was actually authorised, after normalisation.
 	Room string `json:"room"`
 	// Holding is what to call the machine the meeting is actually on, where that
@@ -574,6 +620,39 @@ type deployment struct {
 	// left and rejoined after a deployment rejoined on the code from before it,
 	// which is how a sound fix was first reported as not working.
 	Build string `json:"build,omitempty"`
+
+	// Turnstile is the widget the sign-in forms draw, where this deployment
+	// asks for a human check at its sign-in doors, and absent where it does
+	// not.
+	//
+	// Here because this is what every page reads before anybody has typed
+	// anything, the management pages' sign-in among them: those pages are
+	// served only where this endpoint is, and asking the management API before
+	// signing in would be asking a surface that answers nobody signed out. The
+	// site key is public by design — it is in every page that draws the widget
+	// — and says nothing about any account.
+	Turnstile *humanCheck `json:"turnstile,omitempty"`
+
+	// Notice is the lobby notice the apps are told (remote.json, published on
+	// the management pages), while it is up, for the web's lobby to show as
+	// the apps' lobbies do, and only to a caller signed in to an account: it
+	// is for the people who belong. The owner set one, opened the page in
+	// Chrome, and saw nothing: it went to the apps alone, and the page that
+	// published it said so in a line that was easy to read past.
+	//
+	// Here rather than at /api/apps/remote, which answers only the apps and
+	// carries switches and wording that are theirs. The notice is the one
+	// part a page shows, and this is what every page already reads first.
+	Notice *remote.Notice `json:"notice,omitempty"`
+
+	// SignInNotice is the sign-in page's notice, for people not signed in, to
+	// anybody who asks while it is up.
+	SignInNotice *remote.Notice `json:"signInNotice,omitempty"`
+}
+
+// humanCheck is what a page needs to draw the widget.
+type humanCheck struct {
+	SiteKey string `json:"siteKey"`
 }
 
 // manage serves the management document.
@@ -634,6 +713,21 @@ func (a *App) join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Only from this deployment's own pages, or from something that is not a
+	// browser at all.
+	//
+	// The join answers a question worth guessing at — is this passphrase an
+	// administrator's, an account's — and every wrong guess is charged to a
+	// budget with a ceiling. Without this, any page anywhere could make its
+	// visitors' browsers post wrong passphrases here, no-cors, and spend that
+	// ceiling for them: the visitors as the attacker's addresses, and everybody
+	// with a passphrase refused at the door. The browser sets this header and
+	// the page cannot; the apps and scripts send none.
+	if !admin.FromHere(r) {
+		fail(w, http.StatusForbidden, reasonCrossSite)
+		return
+	}
+
 	name := strings.ToLower(r.PathValue("room"))
 	if !room.ValidName(name) {
 		fail(w, http.StatusBadRequest, reasonBadRoom)
@@ -670,18 +764,76 @@ func (a *App) join(w http.ResponseWriter, r *http.Request) {
 	// Charged only where a passphrase was actually offered. An empty one belongs
 	// to everybody who joins an open room, and counting those would rate-limit
 	// the ordinary case to protect against a guess nobody made.
+	//
+	// And not charged where nobody is guessing, which is most passphrase joins.
+	// Every one used to count as a failure unless it was an administrator's, so
+	// the people who use a passphrase as intended — the field is filled from
+	// local storage on every visit — spent the budget by arriving, and a
+	// meeting starting on the hour was enough to shut the door on the people
+	// coming to it. Two kinds are not guesses. A passphrase this browser has
+	// joined with before carries a cookie saying so (knownHere), and is not
+	// asked about at all: whoever holds the cookie already knew the answer. An
+	// account's passphrase is a correct answer, and is let through the budget
+	// without being charged, as an administrator's always was.
+	//
+	// The known one skips the budget rather than settling it, deliberately. A
+	// door that answered "refused" to strangers and "come in" to known
+	// passphrases while the budget was spent would be the oracle it exists to
+	// stop; a browser can only skip it for a passphrase it has already used.
 	isAdmin := false
 	if !body.Passphrase.Empty() {
-		attempt, allowed := a.admin.Guessing().Take(limit.Caller(r, a.conf.Meet.Hops()))
-		if !allowed {
-			fail(w, http.StatusTooManyRequests, reasonRateLimited)
+		said := strings.TrimSpace(string(body.Passphrase))
+		remembered := a.knownHere(r, room.Trip(a.tripKey, said))
+
+		// And not at all from a caller shut out of signing in, unless this
+		// browser has joined with this passphrase before.
+		//
+		// The join answers the sign-in's question in its own words. The
+		// identity it hands back is t and the signature the passphrase
+		// makes, and the signatures are public — one is beside every name in
+		// every room — so for anybody whose signature is known, an
+		// administrator's above all, a join with a guess is a sign-in
+		// without a name. A lockout that shut only the two sign-ins left the
+		// guessing to carry on here, at the join's own budget, and a review
+		// did exactly that: shut out at the account sign-in, it joined a
+		// fresh room with the owner's passphrase and read the owner's
+		// signature back out of the identity.
+		//
+		// Refused, rather than let in with the passphrase set aside. Set
+		// aside, it would make somebody a guest without saying so: a host
+		// arriving at their own meeting would find they could not run it,
+		// and a member of a scope would be told the room was not for them,
+		// when what is true is that they are shut out for so many minutes.
+		// The answer is the lockout's own, so the page says how long. A join
+		// without a passphrase gives nobody's signature away and goes on as
+		// it always has, so the meeting is never closed to them; and a
+		// passphrase this browser holds the cookie for is one it has joined
+		// with before, which whoever holds the cookie already knew, so it is
+		// not a guess and is let through, as it skips the budget.
+		//
+		// Nothing here counts towards a lockout. Most passphrases at the join
+		// are somebody's own, made up on the spot and belonging to no
+		// account, and "did not match" means nothing about them.
+		if !remembered && a.admin.Lockout().Shut(w, lockout.Of(r, a.conf.Meet.Hops()), reasonRateLimited) {
 			return
+		}
+
+		var attempt *guess.Attempt
+		if !remembered {
+			var allowed bool
+			attempt, allowed = a.admin.Guessing().Join.Take(limit.Caller(r, a.conf.Meet.Hops()))
+			if !allowed {
+				fail(w, http.StatusTooManyRequests, reasonRateLimited)
+				return
+			}
 		}
 
 		_, isAdmin = config.Administrator(a.administrators(), body.Passphrase, a.tripKey)
 
-		if !isAdmin {
-			attempt.Failed()
+		if !remembered && !isAdmin {
+			if _, account := a.store.AccountBySignature(room.Trip(a.tripKey, said)); !account {
+				attempt.Failed()
+			}
 		}
 		attempt.Settled()
 	}
@@ -699,9 +851,26 @@ func (a *App) join(w http.ResponseWriter, r *http.Request) {
 	// round meant for those people to arrive. So a room already held on that
 	// relay lets anybody with the link in — to that room, on that relay, and
 	// nowhere else.
-	if invited, _ := a.store.HeldOn(name); !isAdmin && a.relays.reserved(body.Relay) && invited != body.Relay {
+	//
+	// The same for a relay that is somebody's own (own.go), asked of anybody
+	// else. Asked of the somebody, a relay that is not theirs is not refused:
+	// they may be joining from a page that was not signed in and so was shown
+	// the ordinary list, and the choice is set aside and one of their own taken
+	// instead (relays.pickFor). Refused only when none of theirs can take the
+	// call, and refused here, before the name is written down as used, rather
+	// than after.
+	who := a.callerOf(r, body.Passphrase, isAdmin)
+
+	if invited, _ := a.store.HeldOn(name); !who.restricted() && a.relays.closedTo(body.Relay, who) && invited != body.Relay {
 		fail(w, http.StatusForbidden, reasonRelayNotAllowed)
 		return
+	}
+
+	if who.restricted() {
+		if _, ok := a.relays.pickFor(name, body.Relay, r, a.conf.Meet.TrustProxy, who); !ok {
+			fail(w, http.StatusServiceUnavailable, reasonOwnRelayDown)
+			return
+		}
 	}
 
 	// Refused at the door, which is the only moment anybody asks to come in.
@@ -882,13 +1051,14 @@ func (a *App) join(w http.ResponseWriter, r *http.Request) {
 	}
 
 	grant, err := room.Authorise(a.conf.Key, a.conf.Secret, room.Request{
-		Room:       name,
-		Identity:   body.Identity,
-		Display:    display,
-		Passphrase: passphrase,
-		Account:    account,
-		TripKey:    a.tripKey,
-		TTL:        a.conf.Meet.TokenTTL,
+		Room:          name,
+		Identity:      body.Identity,
+		IdentityProof: body.Proof,
+		Display:       display,
+		Passphrase:    passphrase,
+		Account:       account,
+		TripKey:       a.tripKey,
+		TTL:           a.conf.Meet.TokenTTL,
 	})
 	if err != nil {
 		slog.Error("failed to authorise a join", "room", name, "error", err)
@@ -923,12 +1093,22 @@ func (a *App) join(w http.ResponseWriter, r *http.Request) {
 	// once, for the call they are being moved out of, and a pin that outlived
 	// that would overrule every choice they made afterwards without appearing
 	// anywhere they could see it.
+	// By the identity the token carries rather than the one the request
+	// named: a pin is for the person it was set on, and an issued identity sent
+	// back without its proof has just been replaced by a fresh one, so it does
+	// not get somebody else's pin.
 	wanted := body.Relay
-	if pinned := a.store.TakePin(name, body.Identity); pinned != "" {
+	if pinned := a.store.TakePin(name, grant.Identity); pinned != "" {
 		wanted = pinned
 	}
 
-	entry := a.relays.pick(name, wanted, r, a.conf.Meet.TrustProxy, isAdmin)
+	entry, ours := a.relays.pickFor(name, wanted, r, a.conf.Meet.TrustProxy, who)
+	if !ours {
+		// Asked above, and asked again because a relay can stop answering in
+		// between; rare, and said the same way.
+		fail(w, http.StatusServiceUnavailable, reasonOwnRelayDown)
+		return
+	}
 	holding := entry
 
 	// Where this person probably is, taken now, before anything below sends
@@ -1043,7 +1223,7 @@ func (a *App) join(w http.ResponseWriter, r *http.Request) {
 	// changes and the call goes directly to the room, which is what happened
 	// before any of this existed.
 	if holding.Name != entry.Name && !pairable(entry, holding) {
-		if bridge, ok := a.relays.bridging(holding, isAdmin); ok {
+		if bridge, ok := a.relays.bridging(holding, who); ok {
 			entry = bridge
 		}
 	}
@@ -1077,6 +1257,32 @@ func (a *App) join(w http.ResponseWriter, r *http.Request) {
 			// got before forwarding existed.
 			entry = holding
 		}
+	}
+
+	// Where this client opens its signalling, decided before anything below is
+	// written down: a join refused here must not leave a room noted as held
+	// somewhere nobody was sent.
+	//
+	// Refused where that would be a relay carrying media only with nothing to
+	// carry its signalling — the meeting is held there, or every relay that
+	// signals for itself is gone (relays.stranded) — and refused as well
+	// where there are relays and none could be chosen, which is the same
+	// state seen from the choosing side: handing out this node's own address
+	// would be a call to a machine that holds no media.
+	// Somebody with relays of their own comes in through one of them or not at
+	// all. Everything above that could change the entry — a meeting held on a
+	// machine their relay does not forward to, credentials that could not be
+	// minted, a pair kept apart — ends by sending them straight to the machine
+	// holding the meeting, and for them that is a machine that is not theirs.
+	if who.restricted() && !who.own[entry.Name] {
+		fail(w, http.StatusServiceUnavailable, reasonOwnRelayDown)
+		return
+	}
+
+	signals, carried := a.signalsFor(r.Context(), name, entry, holding)
+	if !carried || (signals.Name == "" && a.relays.any()) {
+		fail(w, http.StatusServiceUnavailable, reasonNoSignalling)
+		return
 	}
 
 	// The machine the meeting is on, not the one this client dialled. Noting the
@@ -1145,6 +1351,12 @@ func (a *App) join(w http.ResponseWriter, r *http.Request) {
 		slog.Error("failed to note an arrival", "room", name, "error", err)
 	}
 
+	// Remembered in this browser, so that its next join with the same
+	// passphrase is not a guess (see knownHere).
+	if !body.Passphrase.Empty() {
+		a.rememberHere(w, r, room.Trip(a.tripKey, strings.TrimSpace(string(body.Passphrase))))
+	}
+
 	// Noted, where the signature belongs to an account. Nothing is recorded
 	// about anybody else: an anonymous visitor's signature is drawn from
 	// nothing and differs in every tab, so a list of them would be a list of
@@ -1154,9 +1366,10 @@ func (a *App) join(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond(w, joinResponse{
-		URL:      a.signallingURLFor(a.signalsFor(r.Context(), name, entry, holding), r),
+		URL:      a.signallingURLFor(signals, r),
 		Token:    grant.Token,
 		Identity: grant.Identity,
+		Proof:    grant.Proof,
 		Room:     name,
 		Relay:    entry.Shown(),
 		Region:   arrived,
@@ -1226,9 +1439,11 @@ type relayEntry struct {
 	Fallback bool `json:"fallback,omitempty"`
 
 	// AdminOnly marks one that only an administrator may use. It is only ever
-	// sent to an administrator — anybody else does not receive the relay at all
-	// — so this is a label rather than a gate: whoever sees it should know that
-	// what they are looking at is not on everybody else's list.
+	// sent to an administrator — anybody else does not receive the relay at all,
+	// which until it was made true was what this comment claimed and the list
+	// did not do — so this is a label rather than a gate: whoever sees it
+	// should know that what they are looking at is not on everybody else's
+	// list.
 	AdminOnly bool `json:"adminOnly,omitempty"`
 }
 
@@ -1247,12 +1462,53 @@ func (a *App) relayList(w http.ResponseWriter, r *http.Request) {
 	// which decides how much of each relay they are told rather than which
 	// relays they are told about. Everybody is shown every machine (see
 	// offered); only an administrator is shown where it is.
-	admin := false
-	if a.admin != nil {
-		_, admin = a.admin.SessionOf(r)
-	}
+	//
+	// An administrator signed in at the front counts as well, which is how the
+	// apps carry one: they hold an account session and never the management
+	// one, so an administrator in an app was shown what a stranger is, and
+	// could not see, let alone choose, a relay kept for them.
+	//
+	// And who else is asking, since an account with relays of its own is
+	// shown those and nothing else, and a relay that is somebody's own is
+	// shown to nobody else (own.go). Read from the session alone: the list is
+	// asked for before anybody has typed a passphrase.
+	who := a.callerOf(r, "", false)
+	admin := who.admin
 
 	list := a.relays.offered()
+	owners := a.relays.owners()
+
+	// A stranger is not told about the machines kept for administrators, and
+	// is told each probe as an address rather than a name (listed.go).
+	var resolved map[string]string
+	if !admin {
+		kept := list[:0:0]
+		var probes []string
+
+		for _, relay := range list {
+			if !mayUse(who, relay, owners) {
+				continue
+			}
+
+			kept = append(kept, relay)
+
+			if relay.Probe != "" {
+				probes = append(probes, relay.Probe)
+			}
+		}
+
+		list = kept
+		resolved = a.probes.addresses(probes)
+	}
+
+	stranded := map[string]bool{}
+	carried := map[string]bool{}
+	for _, relay := range a.relays.carried(list) {
+		carried[relay.Name] = true
+	}
+	for _, relay := range list {
+		stranded[relay.Name] = !carried[relay.Name]
+	}
 
 	entries := make([]relayEntry, 0, len(list))
 	for _, relay := range list {
@@ -1261,7 +1517,14 @@ func (a *App) relayList(w http.ResponseWriter, r *http.Request) {
 			Label: relay.Shown(), Probe: relay.Probe,
 			Lat: relay.Lat, Lon: relay.Lon,
 			Fallback: relay.Fallback, AdminOnly: relay.AdminOnly,
-			Maintenance: !relay.Enabled,
+			// Greyed as well when it carries media only and nothing can carry
+			// its signalling: not a choice anybody may make, and the join
+			// would give them another relay if they did (relays.stranded).
+			Maintenance: !relay.Enabled || stranded[relay.Name],
+		}
+
+		if !admin && relay.Probe != "" {
+			entry.Probe = resolved[relay.Probe]
 		}
 
 		// Where it is needed, which is an administrator or a relay that cannot
@@ -1271,7 +1534,14 @@ func (a *App) relayList(w http.ResponseWriter, r *http.Request) {
 		// its address to any stranger who asked for the list: not access, since
 		// the join refuses the relay by name, but the address of an internal
 		// machine given away by a page that does not know who is reading it.
-		if admin || (relay.Probe == "" && !relay.AdminOnly) {
+		//
+		// And never a relay that signals through another, to anybody. That
+		// relay is one no TLS reaches: its address is where a client would
+		// open TLS to measure it, and on the networks these machines sit on
+		// that handshake is what gets a machine filtered. Such a relay is
+		// required to have a probe address, and is measured over that or not
+		// at all.
+		if (admin || (relay.Probe == "" && !relay.AdminOnly)) && relay.SignalVia == "" {
 			entry.URL = relay.URL
 		}
 
@@ -1318,13 +1588,7 @@ type fleetCount struct {
 // secret; what a relay needs and must not be given away travels through the
 // enrolment endpoint, which is behind the secret.
 func (a *App) binary(w http.ResponseWriter, r *http.Request) {
-	path := a.conf.Meet.Enrol.Binary
-	if path == "" {
-		if resolved, err := os.Executable(); err == nil {
-			path = resolved
-		}
-	}
-
+	path := a.binaryPath()
 	if path == "" {
 		fail(w, http.StatusServiceUnavailable, "no_binary")
 		return
@@ -1360,8 +1624,37 @@ func (a *App) binary(w http.ResponseWriter, r *http.Request) {
 // yet, and an endpoint that would answer that is a way of testing a guessed
 // administrator's passphrase — a faster one than the sign-in page, which is
 // rate limited for precisely that reason.
-func (a *App) deployment(w http.ResponseWriter, _ *http.Request) {
-	respond(w, deployment{OpenedBy: a.opening(), JoinedBy: a.joining(), Source: a.conf.Meet.SourceURL, Build: buildID})
+func (a *App) deployment(w http.ResponseWriter, r *http.Request) {
+	said := deployment{OpenedBy: a.opening(), JoinedBy: a.joining(), Source: a.conf.Meet.SourceURL, Build: buildID}
+
+	if key := a.admin.HumanCheck().SiteKey(); key != "" {
+		said.Turnstile = &humanCheck{SiteKey: key}
+	}
+
+	if a.apps != nil && a.apps.remote != nil {
+		settings, now := a.apps.remote.Read(), a.now()
+
+		if notice := settings.SignInNotice; notice.Showing(now) {
+			said.SignInNotice = notice
+		}
+
+		// The lobby's to people signed in alone. The owner, having seen it on
+		// the sign-in page: "this one is for people signed in". Held back here
+		// rather than only left undrawn by the page, so that what is said to
+		// the people who belong is not handed to whoever asks.
+		if notice := settings.Notice; notice.Showing(now) {
+			if _, ok := a.signedIn(r); ok {
+				said.Notice = notice
+			}
+		}
+	}
+
+	// Never kept by the CDN in front, now that it carries the notice: a notice
+	// taken down would otherwise go on being shown to every page that reached
+	// a copy, and a new one would wait for the copy to age.
+	w.Header().Set("Cache-Control", "no-store")
+
+	respond(w, said)
 }
 
 // opening is who may use a name nobody has used, as this deployment can
@@ -1433,24 +1726,30 @@ func (a *App) signallingURLFor(chosen store.Relay, r *http.Request) string {
 
 // signalsFor is the relay a client opens its signalling to: the one it was
 // sent to, or for a relay that carries media only (store.Relay SignalVia) one
-// that signals for itself (relays.signalling).
+// that signals for itself (relays.signalling). False where the relay carries
+// media only and nothing can carry its signalling, which the join refuses.
 //
 // A new room is put on the media relay first, where that is where it is to be
 // held: the cluster creates a room on the node that receives its first
 // signalling, and that would be the other relay, taking the media with it to
-// the wrong side of the border. Where no relay can carry the signalling the
-// client signals to its own relay as before, which is a call that may be
-// intercepted rather than one that certainly fails.
-func (a *App) signalsFor(ctx context.Context, room string, entry, holding store.Relay) store.Relay {
+// the wrong side of the border.
+//
+// Where no relay can carry the signalling, the client used to be sent to the
+// media relay's own address, as a call that might be intercepted rather than
+// one that certainly failed. That is the TLS handshake to a mainland machine
+// that the whole arrangement exists to prevent, so it is refused instead (see
+// relays.stranded).
+func (a *App) signalsFor(ctx context.Context, room string, entry, holding store.Relay) (store.Relay, bool) {
 	if entry.SignalVia == "" {
-		return entry
+		return entry, true
 	}
 
 	via, ok := a.relays.signalling(entry.SignalVia)
 	if !ok {
-		slog.Warn("a relay signals through another and none can carry it, so its clients signal to it directly",
+		slog.Warn("a relay signals through another and nothing can carry its signalling, so a join "+
+			"that needed it was refused rather than sent to it directly",
 			"relay", entry.Name, "via", entry.SignalVia)
-		return entry
+		return store.Relay{}, false
 	}
 
 	if via.Name != entry.SignalVia {
@@ -1462,7 +1761,7 @@ func (a *App) signalsFor(ctx context.Context, room string, entry, holding store.
 		a.pinTo(ctx, room, entry)
 	}
 
-	return via
+	return via, true
 }
 
 // forwardedProto reads the scheme a proxy terminated, when there is one to
@@ -1491,7 +1790,17 @@ func respond(w http.ResponseWriter, body any) {
 //
 // So the client owns every word it shows, and this owns only what happened.
 const (
-	reasonRateLimited    = "rate_limited"
+	reasonRateLimited = "rate_limited"
+	reasonCrossSite   = "cross_site"
+	// reasonUnreadable is a sign-in whose body could not be read whole, which
+	// is refused before anything in it is looked at (accountSignIn). The
+	// management pages' code for the same thing.
+	reasonUnreadable = "unreadable"
+	// reasonNoSignalling is a join that would have to signal to a relay that
+	// carries media only, with nothing able to carry its signalling: the
+	// meeting is held there, or nothing else is left. Refused rather than
+	// answered with that relay's address (relays.stranded).
+	reasonNoSignalling   = "no_signalling"
 	reasonBadRoom        = "invalid_room"
 	reasonNotOpen        = "room_not_open"
 	reasonNotInvited     = "not_invited"

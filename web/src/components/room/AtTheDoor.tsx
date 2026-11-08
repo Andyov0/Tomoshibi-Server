@@ -104,7 +104,7 @@ export function AtTheDoor({ waiting, busy, decide }: Door) {
 			<p className="text-fg-muted text-[11px]">{t("Waiting to be let in")}</p>
 
 			{waiting.map((one) => (
-				<div key={one.id} className="flex items-center gap-2">
+				<div key={one.id} className="flex items-center gap-1.5">
 					<span className="min-w-0 flex-1">
 						<span className="block truncate text-[12.5px]">{one.name || t("Somebody")}</span>
 						<span className="readout block truncate text-[10.5px] text-fg-muted">
@@ -117,8 +117,14 @@ export function AtTheDoor({ waiting, busy, decide }: Door) {
 						disabled={busy === one.id}
 						onClick={() => void decide(one.id, true)}
 						className={cn(
-							"rounded-md bg-fg px-2 py-1 text-[11px] text-bg",
-							"transition-opacity hover:opacity-90 disabled:opacity-40",
+							// Thirty-two tall, forty-four under a finger, and apart from
+							// "Not now" by more than a hairline. They were twenty-two
+							// pixels tall and touching: two opposite answers about a
+							// person at the door, a finger's width between them.
+							// Drawn as every primary button is now, the amber with its
+							// dark ink, and grey while it cannot be pressed.
+							"pressable h-8 rounded-lg bg-tally px-3 font-medium text-[12.5px] text-tally-fg pointer-coarse:h-11",
+							"hover:bg-tally/90 active:bg-tally/80 disabled:bg-surface-hi disabled:text-fg-muted",
 						)}
 					>{t("Let in")}</button>
 
@@ -126,7 +132,7 @@ export function AtTheDoor({ waiting, busy, decide }: Door) {
 						type="button"
 						disabled={busy === one.id}
 						onClick={() => void decide(one.id, false)}
-						className="rounded-md border border-border px-2 py-1 text-[11px] hover:bg-surface-hi"
+						className="pressable h-8 rounded-lg border border-border px-3 text-[12.5px] hover:bg-wash active:bg-wash-press disabled:opacity-40 pointer-coarse:h-11"
 					>{t("Not now")}</button>
 				</div>
 			))}

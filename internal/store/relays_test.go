@@ -127,8 +127,8 @@ func TestARelaySignalledThroughKeepsThoseThatNameIt(t *testing.T) {
 
 	for _, relay := range []Relay{
 		{Name: "hongkong", URL: "wss://hk.invalid", Enabled: true},
-		{Name: "guangzhou", URL: "wss://gz.invalid", Enabled: true, SignalVia: "hongkong"},
-		{Name: "wuhan", URL: "wss://wh.invalid", Enabled: true, SignalVia: "hongkong"},
+		{Name: "guangzhou", URL: "wss://gz.invalid", Enabled: true, SignalVia: "hongkong", Probe: "gz.invalid:39218"},
+		{Name: "wuhan", URL: "wss://wh.invalid", Enabled: true, SignalVia: "hongkong", Probe: "wh.invalid:39218"},
 		{Name: "tokyo", URL: "wss://jp.invalid", Enabled: true},
 	} {
 		if err := store.AddRelay(relay); err != nil {
@@ -167,7 +167,7 @@ func TestARelaySignalledThroughKeepsThoseThatNameIt(t *testing.T) {
 
 	// Pointed elsewhere, it goes.
 	for _, name := range []string{"guangzhou", "wuhan"} {
-		relay := Relay{Name: name, URL: "wss://" + name + ".invalid", Enabled: true, SignalVia: "tokyo"}
+		relay := Relay{Name: name, URL: "wss://" + name + ".invalid", Enabled: true, SignalVia: "tokyo", Probe: name + ".invalid:39218"}
 		if err := store.UpdateRelay(relay); err != nil {
 			t.Fatal(err)
 		}
@@ -226,5 +226,20 @@ func TestOnlyOnePersonBecomesTheHostOfARoomOpenedAtOnce(t *testing.T) {
 
 	if host := store.HostOf("standup"); host == "" {
 		t.Error("nobody holds the room, and somebody opened it")
+	}
+}
+
+// A relay that signals through another is one no TLS reaches, and a client
+// measures a relay without a probe by opening TLS to it, so the store refuses
+// the one without the other however it arrives.
+func TestARelaySignallingThroughAnotherNeedsAProbe(t *testing.T) {
+	store := open(t)
+
+	if err := store.AddRelay(Relay{Name: "gz", URL: "wss://gz.invalid", SignalVia: "hk"}); !errors.Is(err, ErrRelayNeedsProbe) {
+		t.Errorf("a relay signalling through another with no probe was added: %v", err)
+	}
+
+	if err := store.AddRelay(Relay{Name: "gz", URL: "wss://gz.invalid", SignalVia: "hk", Probe: "gz.invalid:39218"}); err != nil {
+		t.Errorf("one with a probe was refused: %v", err)
 	}
 }

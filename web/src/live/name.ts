@@ -118,25 +118,56 @@ export function signatureOf(identity: string): Signature | undefined {
 }
 
 /**
- * Whether somebody is wearing a name that another participant has proven.
+ * A name as it reads, for comparing two of them.
  *
- * Only ever said about the one who cannot prove it, and only when the collision
- * is with somebody who can. Two people genuinely called Alex is ordinary and
- * worth no comment; somebody unproven appearing under a name that was proven is
- * the one shape impersonation takes, since impersonating a name nobody
- * recognises achieves nothing.
+ * Compatibility-normalised, so that full-width letters and ligatures read as the
+ * letters they look like; stripped of the characters that take no space, so
+ * that "Ali\u200Bce" is Alice; with runs of spaces collapsed and case folded.
+ * Not every confusable is caught — a Cyrillic а is still not a Latin a — but
+ * every one of these was free to type, and invisible.
+ */
+export function readsAs(name: string): string {
+	return name
+		.normalize("NFKC")
+		.replace(/[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g, "")
+		.replace(/\s+/g, " ")
+		.trim()
+		.toLowerCase();
+}
+
+/**
+ * Whether somebody is wearing a name that another participant has proven as
+ * someone else.
+ *
+ * Said whenever two people read as the same name and the other one proved it
+ * under a different signature. That used to be said only about somebody who
+ * proved nothing, which anybody could step out of by typing any passphrase at
+ * all: a proven signature of their own, under the name somebody else had
+ * proven, raised nothing. And the names were compared as strings, so a
+ * zero-width space or a full-width letter was a different name. Mid-call
+ * renames reach this too, since the media server lets a participant change the
+ * name the token carried.
+ *
+ * Two people who proved different signatures under one name are both marked,
+ * because nothing here can say which of them is the one people know. The same
+ * signature twice is one person in two tabs and is not. Two people genuinely
+ * called Alex who proved nothing is ordinary and worth no comment.
  */
 export function impersonating(
 	participant: { name: string; identity: string },
 	everybody: readonly { name: string; identity: string }[],
 ): boolean {
-	if (signatureOf(participant.identity)?.proven) return false;
-	if (!participant.name) return false;
+	const name = readsAs(participant.name);
+	if (!name) return false;
 
-	return everybody.some(
-		(other) =>
-			other.identity !== participant.identity &&
-			other.name === participant.name &&
-			signatureOf(other.identity)?.proven === true,
-	);
+	const mine = signatureOf(participant.identity);
+
+	return everybody.some((other) => {
+		if (other.identity === participant.identity || readsAs(other.name) !== name) return false;
+
+		const theirs = signatureOf(other.identity);
+		if (!theirs?.proven) return false;
+
+		return !mine?.proven || mine.trip !== theirs.trip;
+	});
 }

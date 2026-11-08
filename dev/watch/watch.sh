@@ -344,6 +344,40 @@ else
     worth_saying backup 0
 fi
 
+# ---------- the copy kept on another machine ----------
+#
+# tomoshibi-offsite-backup.timer sends an encrypted copy of the store and the
+# configuration to the backup host once a night and writes down when the last
+# one arrived. One night that fails is retried the next and is nobody's
+# business; two in a row is a deployment that has gone two days with every copy
+# on the one disk, and that is said. Once, and then once a day while it lasts
+# rather than every hour like the faults above: nothing about it gets worse by
+# the hour, and a reminder every hour about it is how these get swiped away.
+#
+# Read as a time rather than counted as failures, so a timer that has stopped
+# running at all is caught the same way as one that runs and fails.
+OFFSITE_LAST=${OFFSITE_LAST:-/var/lib/tomoshibi-offsite/last-success}
+OFFSITE_STALE=${OFFSITE_STALE:-$((49 * 3600))}
+if [ -e "$OFFSITE_LAST" ]; then
+    offsite_at=""
+    read -r offsite_at _ < "$OFFSITE_LAST" 2>/dev/null
+    [[ $offsite_at =~ ^[0-9]+$ ]] || offsite_at=0
+    offsite_age=$(( $(date +%s) - offsite_at ))
+    offsite_said="$STATE/offsite-said"
+
+    if [ "$offsite_age" -gt "$OFFSITE_STALE" ]; then
+        log "no off-machine copy for $((offsite_age / 3600)) hours"
+        if [ ! -f "$offsite_said" ] ||
+            [ $(( $(date +%s) - $(stat -c %Y "$offsite_said") )) -ge 86400 ]; then
+            add "🟠 <b>No off-machine copy for $((offsite_age / 3600)) hours</b> — the nightly encrypted backup to the backup host has failed at least twice in a row. <code>journalctl -u tomoshibi-offsite-backup</code> says why."
+            touch "$offsite_said"
+        fi
+    elif [ -f "$offsite_said" ]; then
+        rm -f "$offsite_said"
+        say "🟢 <b>The off-machine copy is being made again</b>"
+    fi
+fi
+
 while IFS=$'\t' read -r kind state text; do
     [ -n "$kind" ] || continue
     case "$state" in

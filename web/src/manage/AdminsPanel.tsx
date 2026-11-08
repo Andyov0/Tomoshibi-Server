@@ -2,7 +2,8 @@ import { useLingering } from "@/hooks/useLingering";
 import { useT } from "@/hooks/useT";
 import { cn } from "@/lib/utils";
 import { actionFailed } from "@/live/notices";
-import { Loader2, Plus, Trash2, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Loader2, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type Administrator, api } from "./api";
 import { Box, Fade, Hint, Swap, Working } from "./Boxes";
@@ -10,6 +11,7 @@ import { CAPABILITIES, CAPABILITY_NAMES, type Capability, PERMISSION_NAMES } fro
 import { useOptimistic } from "./pending";
 import { usePoll } from "./poll";
 import { Card, Failed } from "./Shell";
+import { Initial, field, quietIcon } from "./Grouped";
 import { size } from "./units";
 
 /**
@@ -81,30 +83,29 @@ export function AdminsPanel({
 	const moderators = admins.filter((one) => one.can.includes("moderate")).length;
 
 	return (
-		<div className="mx-auto flex max-w-4xl flex-col gap-3 sm:gap-4">
-			<Card
-				title={t("Administrators")}
-				note={
-					moderators === 1
-						? t("One of these can manage everything")
-						: `${moderators} ${t("can manage everything")}`
-				}
-				actions={
-					offer.mounted && (
-						<button
-							type="button"
-							onClick={() => setAdding(true)}
-							className={cn(
-								"flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi",
-								offer.leaving ? "animate-fade-out" : "animate-fade-in",
-							)}
-						>
-							<Plus className="size-3.5" />
-							{t("Add somebody")}
-						</button>
-					)
-				}
-			>
+		<div className="mx-auto flex max-w-[56rem] flex-col gap-7">
+			<header className="flex flex-wrap items-center gap-x-4 gap-y-2 px-1">
+				<div className="flex min-w-0 flex-col gap-1">
+					<h1 className="font-semibold text-[22px] leading-tight tracking-[-0.01em]">{t("Administrators")}</h1>
+					<p className="text-[13.5px] text-fg-muted">
+						{moderators === 1 ? t("One of these can manage everything") : `${moderators} ${t("can manage everything")}`}
+					</p>
+				</div>
+
+				{offer.mounted && (
+					<Button
+						variant="primary"
+						size="sm"
+						onClick={() => setAdding(true)}
+						className={cn("ml-auto", offer.leaving ? "animate-fade-out" : "animate-fade-in")}
+					>
+						<Plus />
+						{t("Add somebody")}
+					</Button>
+				)}
+			</header>
+
+			<Card title={t("Who may open these pages")}>
 				{form.mounted && (
 					<div className={form.leaving ? "animate-depart" : "animate-arrive"}>
 						<AddAdmin
@@ -145,11 +146,11 @@ export function AdminsPanel({
 
 			<OwnPassphrase />
 
-			<p className="px-1 text-fg-muted text-[11.5px] leading-relaxed">
+			<p className="px-1 text-fg-muted text-[12px] leading-relaxed">
 				{t("A signature is what a passphrase produces, and it is public: it prints beside its owner's name in every room they join. Ask somebody for theirs rather than for their passphrase, which this server is never told and could not store.")}
 			</p>
 
-			<p className="px-1 text-fg-muted text-[11.5px] leading-relaxed">
+			<p className="-mt-4 px-1 text-fg-muted text-[12px] leading-relaxed">
 				{t("Every administrator can see everything. Only one who can manage everything can appoint administrators or give anybody Emby.")}{" "}
 				{t("Emby figures count what was relayed since the server last started, and go back to nought when it restarts.")}
 			</p>
@@ -162,7 +163,7 @@ export function AdminsPanel({
  * cut "Manage accounts" across two lines beside a box centred on neither; two
  * from there; and a row of four once there is room for it.
  */
-const CAPABILITY_GRID = "grid grid-cols-1 gap-x-6 gap-y-2.5 pt-1 min-[360px]:grid-cols-2 sm:grid-cols-4";
+const CAPABILITY_GRID = "grid grid-cols-1 gap-x-6 gap-y-0.5 pt-1 min-[360px]:grid-cols-2 sm:grid-cols-4";
 
 /** The three things the role control can say. */
 type Role = "observe" | "moderate" | "custom";
@@ -276,7 +277,8 @@ function Row({
 	const spent = admin.embySpent ?? 0;
 
 	return (
-		<li className="flex flex-wrap items-center gap-x-4 gap-y-2 border-border border-b px-3 py-3 last:border-0 sm:px-4">
+		<li className="relative flex flex-wrap items-start gap-x-4 gap-y-2 px-4 py-3.5 before:absolute before:top-0 before:right-0 before:left-[60px] before:h-px before:bg-border first:before:hidden">
+			<Initial name={admin.name || admin.trip} />
 			<div className="flex min-w-0 flex-col gap-1">
 				<span className="flex items-center gap-2">
 					{canAppoint ? (
@@ -293,18 +295,19 @@ function Row({
 							// Pulled left by its border and padding, so the name starts
 							// where the signature under it does, and the field shows
 							// only on hover and focus, around the text.
-							className="-ml-[5px] w-32 min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 text-fg text-sm outline-none hover:border-border focus:border-border focus:bg-surface-hi"
+							className="-ml-[7px] h-8 w-40 min-w-0 rounded-[8px] border border-transparent bg-transparent px-1.5 font-medium text-[14.5px] text-fg outline-none hover:border-border focus:border-border focus:bg-bg"
 						/>
 					) : (
-						<span className="truncate text-fg text-sm">{admin.name || t("Unnamed")}</span>
+						<span className="truncate font-medium text-[14.5px] text-fg">{admin.name || t("Unnamed")}</span>
 					)}
 					{admin.self && (
-						<span className="rounded-full border border-border px-1.5 text-[10px] text-fg-muted">
+						<span className="rounded-full bg-surface-hi px-2 py-px text-[11.5px] text-fg-muted">
 							{t("you")}
 						</span>
 					)}
 				</span>
 				<span className="readout text-fg-muted text-[12px]">{admin.trip}</span>
+
 
 				{/* Their Emby grant, which being an administrator does not carry:
 				    every other permission they hold by being one, and this one
@@ -329,14 +332,13 @@ function Row({
 					<Fade show={emby || spent > 0}>
 						<span
 							className={cn(
-								"readout rounded bg-tally/15 px-1.5 py-0.5 text-[10.5px] text-tally",
+								"mt-1 inline-flex gap-1.5 rounded-full bg-tally/15 px-2 py-0.5 text-[11.5px] text-tally-ink",
 								!emby && "opacity-60",
 							)}
 						>
 							<span className={cn(!emby && "line-through")}>{t(PERMISSION_NAMES.emby)}</span>
 							{!emby && <span className="sr-only"> {t("not allowed")}</span>}
-							{" · "}
-							{t("{size} relayed since restart", { size: size(spent) })}
+							<span>{t("{size} relayed since restart", { size: size(spent) })}</span>
 						</span>
 					</Fade>
 				)}
@@ -362,7 +364,7 @@ function Row({
 					onChange={(event) => choose(event.target.value as Role)}
 					aria-label={t("May")}
 					className={cn(
-						"rounded-md border border-border bg-surface-hi px-2 py-1 text-[12px] text-fg",
+						"h-8 rounded-[10px] border border-border bg-bg px-2.5 text-[13px] text-fg pointer-coarse:h-11",
 						"outline-none transition-colors hover:border-fg/20",
 						"focus-visible:ring-2 focus-visible:ring-fg/40 disabled:opacity-40",
 					)}
@@ -380,12 +382,9 @@ function Row({
 						onClick={onDrop}
 						aria-label={t("Remove")}
 						title={onlyOwner ? t("The last administrator who can manage everything cannot be removed") : t("Remove")}
-						className={cn(
-							"rounded-md border border-border p-1.5",
-							onlyOwner ? "opacity-40" : "hover:bg-surface-hi hover:text-danger",
-						)}
+						className={cn(quietIcon, !onlyOwner && "hover:text-danger-ink")}
 					>
-						<Trash2 className="size-3.5" />
+						<Trash2 />
 					</button>
 				)}
 			</div>
@@ -393,11 +392,12 @@ function Row({
 			{custom.mounted && (
 				<fieldset
 					className={cn(
-						"w-full min-w-0 rounded-md border border-border px-3 pt-1 pb-3",
+						"w-full min-w-0 rounded-[12px] bg-bg/60 px-3 pt-2 pb-2 sm:ml-11 sm:w-[calc(100%-2.75rem)] day:bg-bg",
 						custom.leaving ? "animate-depart" : "animate-arrive",
 					)}
 				>
-					<legend className="px-1 text-[11px] text-fg-muted">{t("What they may change")}</legend>
+					<legend className="sr-only">{t("What they may change")}</legend>
+					<p className="px-0.5 text-[12.5px] text-fg-muted">{t("What they may change")}</p>
 
 					<div className={CAPABILITY_GRID}>
 						{CAPABILITIES.map((capability) => (
@@ -456,20 +456,20 @@ function AddAdmin({ onDone, onCancel }: { onDone: () => void; onCancel: () => vo
 
 	return (
 		<form
-			className="flex flex-col gap-3 border-border border-b px-3 py-3 sm:px-4"
+			className="flex flex-col gap-4 border-border border-b px-4 py-4"
 			onSubmit={(event) => {
 				event.preventDefault();
 				void submit();
 			}}
 		>
-			<div className="flex flex-wrap gap-2">
+			<div className="flex flex-wrap gap-3">
 				<input
 					value={name}
 					onChange={(event) => setName(event.target.value)}
 					placeholder={t("Name")}
 					aria-label={t("Name")}
 					maxLength={64}
-					className="min-w-32 flex-1 rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
+					className={cn(field, "min-w-32 flex-1")}
 				/>
 
 				<input
@@ -479,16 +479,16 @@ function AddAdmin({ onDone, onCancel }: { onDone: () => void; onCancel: () => vo
 					aria-label={t("Signature")}
 					maxLength={10}
 					required
-					className="readout min-w-40 flex-1 rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
+					className={cn(field, "readout min-w-40 flex-1")}
 				/>
 			</div>
 
-			<label className="flex items-center gap-2 text-[12px] text-fg-muted">
+			<label className="flex items-center gap-2.5 text-[13px] text-fg-muted">
 				{t("May")}
 				<select
 					value={role}
 					onChange={(event) => setRole(event.target.value as Role)}
-					className="rounded-md border border-border bg-surface-hi px-2 py-1 text-[12px] text-fg outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
+					className="h-9 rounded-[10px] border border-border bg-bg px-2.5 text-[13.5px] text-fg outline-none focus-visible:ring-2 focus-visible:ring-fg/40 pointer-coarse:h-11"
 				>
 					<option value="observe">{t("Can watch")}</option>
 					<option value="moderate">{t("Can manage everything")}</option>
@@ -499,11 +499,12 @@ function AddAdmin({ onDone, onCancel }: { onDone: () => void; onCancel: () => vo
 			{custom.mounted && (
 				<fieldset
 					className={cn(
-						"min-w-0 rounded-md border border-border px-3 pt-1 pb-3",
+						"min-w-0 rounded-[12px] bg-bg/60 px-3 pt-2 pb-2 day:bg-bg",
 						custom.leaving ? "animate-depart" : "animate-arrive",
 					)}
 				>
-					<legend className="px-1 text-[11px] text-fg-muted">{t("What they may change")}</legend>
+					<legend className="sr-only">{t("What they may change")}</legend>
+					<p className="px-0.5 text-[12.5px] text-fg-muted">{t("What they may change")}</p>
 
 					<div className={CAPABILITY_GRID}>
 						{CAPABILITIES.map((capability) => (
@@ -528,23 +529,14 @@ function AddAdmin({ onDone, onCancel }: { onDone: () => void; onCancel: () => vo
 			/>
 
 			<div className="flex gap-2">
-				<button
-					type="submit"
-					disabled={saving || trip.trim().length === 0}
-					className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi disabled:opacity-40"
-				>
-					{saving ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
+				<Button type="submit" variant="primary" size="sm" disabled={saving || trip.trim().length === 0}>
+					{saving ? <Loader2 className="animate-spin" /> : <Plus />}
 					{t("Add")}
-				</button>
+				</Button>
 
-				<button
-					type="button"
-					onClick={onCancel}
-					className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi"
-				>
-					<X className="size-3.5" />
+				<Button type="button" variant="ghost" size="sm" onClick={onCancel}>
 					{t("Cancel")}
-				</button>
+				</Button>
 			</div>
 		</form>
 	);
@@ -599,13 +591,13 @@ function OwnPassphrase() {
 	return (
 		<Card title={t("Your passphrase")}>
 			<form
-				className="flex flex-col gap-3 px-3 py-3 sm:px-4"
+				className="flex flex-col gap-3 px-4 py-4"
 				onSubmit={(event) => {
 					event.preventDefault();
 					void submit();
 				}}
 			>
-				<div className="flex flex-wrap gap-2">
+				<div className="flex flex-wrap gap-3">
 					<input
 						type="password"
 						value={current}
@@ -613,7 +605,7 @@ function OwnPassphrase() {
 						placeholder={t("Current passphrase")}
 						aria-label={t("Current passphrase")}
 						autoComplete="current-password"
-						className="min-w-40 flex-1 rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
+						className={cn(field, "min-w-40 flex-1")}
 					/>
 
 					<input
@@ -623,23 +615,19 @@ function OwnPassphrase() {
 						placeholder={t("New passphrase")}
 						aria-label={t("New passphrase")}
 						autoComplete="new-password"
-						className="min-w-40 flex-1 rounded-md border border-border bg-surface-hi px-2.5 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-fg/40"
+						className={cn(field, "min-w-40 flex-1")}
 					/>
 				</div>
 
 				<div className="flex items-center gap-3">
-					<button
-						type="submit"
-						disabled={saving || !current || next.length < 8}
-						className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[12px] hover:bg-surface-hi disabled:opacity-40"
-					>
+					<Button type="submit" variant="primary" size="sm" disabled={saving || !current || next.length < 8}>
 						<Working on={saving} />
 						{t("Change it")}
-					</button>
+					</Button>
 
 					{/* One line in two states, the answer arriving as the hint leaves.
 					    Each used to fade in and simply vanish on its way out. */}
-					<Swap showing={changed ? 1 : 0} className="text-[11.5px] text-fg-muted">
+					<Swap showing={changed ? 1 : 0} className="text-[12.5px] text-fg-muted">
 						<span>{t("At least eight characters.")}</span>
 						<span>
 							{t("Done. Your signature is now")}{" "}

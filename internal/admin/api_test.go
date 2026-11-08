@@ -123,6 +123,8 @@ var endpoints = []struct {
 	{http.MethodGet, "/api/admin/rooms/x/participants", config.Observe},
 	{http.MethodGet, "/api/admin/rooms/x/visits", config.Observe},
 	{http.MethodGet, "/api/admin/runtime", config.Observe},
+	{http.MethodGet, "/api/admin/log", config.Observe},
+	{http.MethodGet, "/api/admin/apps", config.Observe},
 	{http.MethodGet, "/api/admin/policy", config.Observe},
 	{http.MethodGet, "/api/admin/settings", config.Observe},
 	{http.MethodGet, "/api/admin/relays", config.Observe},
@@ -132,6 +134,7 @@ var endpoints = []struct {
 	{http.MethodPost, "/api/admin/admins/me/passphrase", config.Observe},
 	{http.MethodGet, "/api/admin/remote/notice", config.Observe},
 	{http.MethodGet, "/api/admin/remote/switches", config.Observe},
+	{http.MethodGet, "/api/admin/lockouts", config.Observe},
 
 	{http.MethodDelete, "/api/admin/rooms/x", config.ManageRooms},
 	{http.MethodDelete, "/api/admin/rooms/x/participants/y", config.ManageRooms},
@@ -160,6 +163,18 @@ var endpoints = []struct {
 	{http.MethodPost, "/api/admin/admins", config.Moderate},
 	{http.MethodPatch, "/api/admin/admins/x", config.Moderate},
 	{http.MethodDelete, "/api/admin/admins/x", config.Moderate},
+
+	// Letting somebody back in reopens this page's own door to a run of wrong
+	// passphrases, which is not a decision about accounts or rooms.
+	{http.MethodDelete, "/api/admin/lockouts/x", config.Moderate},
+	{http.MethodDelete, "/api/admin/lockouts", config.Moderate},
+
+	// A token for a new machine buys the deployment's key pair, the redis
+	// password and the certificate's key. Bound to the relays capability, it
+	// would hand all three to somebody trusted with a list of machines.
+	{http.MethodPost, "/api/admin/relays/enrolments", config.Moderate},
+	{http.MethodGet, "/api/admin/relays/enrolments", config.Moderate},
+	{http.MethodDelete, "/api/admin/relays/enrolments/x", config.Moderate},
 }
 
 func TestNothingIsReachableWithoutASession(t *testing.T) {
@@ -522,6 +537,7 @@ func (unwritten) HeldOn(string) (string, bool) { return "", false }
 
 func (unwritten) Arrivals(string) map[string]store.Arrival { return nil }
 func (unwritten) Visits(string, int) ([]store.Visit, int)  { return nil, 0 }
+func (unwritten) Devices(int) map[string][]store.Seen      { return nil }
 func (unwritten) ForgetRoom(string) (bool, error)          { return true, nil }
 
 // A record of names that keeps the one setting these tests are about.

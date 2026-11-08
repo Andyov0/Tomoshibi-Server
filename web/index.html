@@ -1,10 +1,29 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-		<meta name="color-scheme" content="dark" />
+		<!-- Day or night as the system says, before the stylesheet has arrived;
+		     a call holds night on top of this (src/live/appearance.ts), and
+		     says so to the toolbar by giving the day tag the night colour. -->
+		<meta name="color-scheme" content="light dark" />
+		<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f2f2f7" />
+		<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f0e0d" />
+		<!-- Night from the first frame of a reload in the middle of a call, by
+		     day as by night: this tab was in the room its address names, so
+		     the page is on its way straight back into the call, and drawing
+		     the join screen pale on the way there was a flash of day between
+		     two dark frames. Read before the stylesheet arrives, from the key
+		     wasIn reads (src/live/api.ts); src/live/appearance.ts counts it as
+		     a hold and App lets it go once it knows where the page is going. -->
+		<script>
+			try {
+				var was = sessionStorage.getItem("meet-live.was-in");
+				var here = decodeURIComponent(location.hash.replace(/^#\/?/, "")).toLowerCase();
+				if (was && was === here) document.documentElement.setAttribute("data-appearance", "night");
+			} catch (e) {}
+		</script>
 		<title>Tomoshibi</title>
 	</head>
 	<!-- Marks the document a call is held in, which is the one that is not a

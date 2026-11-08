@@ -112,11 +112,11 @@ meet:
   #   android_certificates:
   #     - "6F:82:DF:57:95:C6:48:D5:0F:8D:35:90:70:44:D5:E2:A9:75:B3:1E:2C:A8:57:B5:93:B6:EB:2C:D3:44:0F:CC"
   #   apple_app_ids:
-  #     - SM86NB3CPZ.app.tomoshibi.ios
-  #     - SM86NB3CPZ.app.tomoshibi.mac
+  #     - A1B2C3D4E5.app.tomoshibi.ios
+  #     - A1B2C3D4E5.app.tomoshibi.mac
   #   testflight:
   #     key_id: "XXXXXXXXXX"
   #     issuer: "00000000-0000-0000-0000-000000000000"
   #     key_file: /etc/tomoshibi/asc-testflight.p8
   #     group: "00000000-0000-0000-0000-000000000000"
-  #     public_link: https://testflight.apple.com/join/1DFSjfsK
+  #     public_link: https://testflight.apple.com/join/Xq7Lm2Pz

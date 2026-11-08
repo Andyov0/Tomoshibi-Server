@@ -1,6 +1,9 @@
+import { Steady } from "@/components/Steady";
+import type { Phrase } from "@/live/i18n";
 import { useT } from "@/hooks/useT";
 import { cn } from "@/lib/utils";
 import { ipad, platform } from "@/live/platform";
+import { LINUX_APP } from "@/components/apps/shelves";
 import { ChevronRight, Download, Laptop, type LucideIcon, Smartphone, TabletSmartphone } from "lucide-react";
 import { useState } from "react";
 
@@ -25,8 +28,15 @@ import { useState } from "react";
  * be anything — it offers the apps in general. Android's mark is the one its
  * card on the download page has, so the card leads somewhere that looks like
  * where it said it would.
+ *
+ * `compact` is the same way in, drawn small for the line the lobby's greeting
+ * is on, at the right of the content rather than in the page's corner, where a
+ * wide screen with two blocks puts it: as a card it was a fourth row under the
+ * meeting's three, which the servers' card beside them had to match, and the
+ * lobby no longer fitted a laptop's window. A phone keeps the card, last, as
+ * the owner chose.
  */
-export function GetTheApp({ className }: { className?: string }) {
+export function GetTheApp({ className, compact = false }: { className?: string; compact?: boolean }) {
 	const t = useT();
 
 	// Read once, like the download page's own guess: a label that changed under
@@ -35,43 +45,70 @@ export function GetTheApp({ className }: { className?: string }) {
 	const [guessed] = useState(platform);
 	const [onIPad] = useState(ipad);
 
-	const said: { icon: LucideIcon; title: string; line: string } =
+	// Phrases rather than words, so that each is drawn at the size of its
+	// longest language (Steady) and choosing one does not resize the card.
+	const said: { icon: LucideIcon; title: Phrase; line: Phrase } =
 		guessed === "ios"
 			? {
 					icon: Smartphone,
-					title: onIPad ? t("Get the iPad app") : t("Get the iPhone app"),
-					line: t("For iPhone and iPad, through TestFlight."),
+					title: onIPad ? "Get the iPad app" : "Get the iPhone app",
+					line: "For iPhone and iPad, through TestFlight.",
 				}
 			: guessed === "mac"
-				? { icon: Laptop, title: t("Get the Mac app"), line: t("For your Mac.") }
+				? { icon: Laptop, title: "Get the Mac app", line: "For your Mac." }
 				: guessed === "android"
-					? { icon: TabletSmartphone, title: t("Get the Android app"), line: t("For Android 10 or later.") }
-					: { icon: Download, title: t("Get the apps"), line: t("For Mac, Windows, iPhone, iPad and Android.") };
+					? { icon: TabletSmartphone, title: "Get the Android app", line: "For Android 10 or later." }
+					: guessed === "linux"
+						? { icon: LINUX_APP.icon, title: "Get the Linux app", line: LINUX_APP.meant }
+						: { icon: Download, title: "Get the apps", line: "For Mac, Windows, Linux, iPhone, iPad and Android." };
 
 	const Icon = said.icon;
+
+	if (compact) {
+		return (
+			<a
+				href="/apps"
+				title={t(said.line)}
+				className={cn(
+					"group inline-flex shrink-0 items-center gap-2 rounded-full border border-border bg-surface py-1 pr-3 pl-1",
+					"outline-none transition-colors hover:border-fg/20 hover:bg-surface-hi/40",
+					"focus-visible:ring-2 focus-visible:ring-fg/40",
+					className,
+				)}
+			>
+				<span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-hi text-fg">
+					<Icon className="size-4" />
+				</span>
+				<span data-entry-label className="font-medium text-[13px] text-fg">
+					<Steady phrase={said.title} />
+				</span>
+				<ChevronRight className="size-3.5 shrink-0 text-fg-muted transition-transform group-hover:translate-x-0.5" />
+			</a>
+		);
+	}
 
 	return (
 		<a
 			href="/apps"
 			className={cn(
-				"group flex items-center gap-3.5 rounded-xl border border-border bg-surface p-4",
+				"group flex items-center gap-3.5 rounded-[18px] border border-border bg-surface p-4",
 				"outline-none transition-colors hover:border-fg/20 hover:bg-surface-hi/40",
 				"focus-visible:ring-2 focus-visible:ring-fg/40",
 				className,
 			)}
 		>
-			<span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-surface-hi text-fg">
+			<span className="flex size-10 shrink-0 items-center justify-center rounded-[10px] bg-surface-hi text-fg">
 				<Icon className="size-5" />
 			</span>
 
 			<span className="flex min-w-0 flex-1 flex-col gap-0.5">
 				<span data-entry-label className="font-medium text-[14px] text-fg">
-					{said.title}
+					<Steady phrase={said.title} />
 				</span>
 				{/* Balanced rather than filled, so a phone does not leave the
 				    last character of a Chinese line alone on the next: at 375
 				    the iPhone line broke as "...TestFlight 安" over "装。". */}
-				<span className="text-pretty text-[12px] text-fg-muted leading-snug">{said.line}</span>
+				<Steady phrase={said.line} block className="text-pretty text-[12px] text-fg-muted leading-snug" />
 			</span>
 
 			<ChevronRight className="size-4 shrink-0 text-fg-muted transition-transform group-hover:translate-x-0.5" />

@@ -1,8 +1,11 @@
 import { INVITE_KEY } from "./account";
 import { t } from "./i18n";
+import { shutOutFor } from "./lockout";
 import { scopeOf } from "./names";
 import { preferred } from "./relays";
 import { keepForTab, recallForTab } from "@/lib/storage";
+import { learnSiteKey } from "./turnstile";
+import { learnNotice } from "./notice";
 /*
  * The keys below still say the name this was called before.
  *
@@ -13,6 +16,14 @@ import { keepForTab, recallForTab } from "@/lib/storage";
  * and back in English on the morning after a deployment.
  */
 const IDENTITY_KEY = "meet-live.identity";
+/**
+ * What the server handed back with an issued identity, without which it is not
+ * kept. The identity is on every roster in the room, so anybody could send it
+ * back as their own and the media server would seat them and remove whoever had
+ * it; this is what tells the tab it belongs to from anybody who read it there.
+ * Beside the identity, for the reason that is per tab.
+ */
+const PROOF_KEY = "meet-live.identity-proof";
 const WAS_IN_KEY = "meet-live.was-in";
 const RELAY_KEY = "meet-live.relay";
 
@@ -105,6 +116,15 @@ export async function deployment(): Promise<Deployment> {
 
 		const body = (await response.json()) as Partial<Deployment>;
 
+		// The human check's widget, kept where the sign-in forms ask for it,
+		// so that the front page's sign-in, shown after this, does not ask the
+		// same question again (live/turnstile.ts).
+		learnSiteKey(body as { turnstile?: { siteKey?: unknown } });
+
+		// And the two notices: the sign-in page's, and the lobby's, which the
+		// server tells only a caller signed in (live/notice.ts).
+		learnNotice(body as { notice?: unknown; signInNotice?: unknown });
+
 		return {
 			// All three, and not two.
 			//
@@ -139,6 +159,8 @@ export interface Join {
 	url: string;
 	token: string;
 	identity: string;
+	/** Sent back with an issued identity so the next join keeps it. */
+	proof?: string;
 	room: string;
 	/** What to call the machine this call was sent to. */
 	relay?: string;
@@ -189,9 +211,10 @@ export interface Join {
  * than once, so changing or dropping it takes effect immediately.
  *
  * The display name goes with the request rather than being set after
- * connecting, so it is signed into the token: nobody can rename themselves to
- * somebody else mid-call, and the name is there in the first roster update
- * rather than replacing a raw identity a moment later.
+ * connecting, so it is signed into the token and is there in the first roster
+ * update rather than replacing a raw identity a moment later. A rename mid-call
+ * is still possible (see the attributes grant in internal/room/room.go), and is
+ * what the impersonation mark in live/name.ts watches for.
  *
  * Kept in session storage rather than local storage, because the identity
  * belongs to the tab and not to the browser. Local storage is shared across
@@ -206,6 +229,7 @@ export async function join(
 	invite = "",
 ): Promise<Join> {
 	const previous = recallForTab(IDENTITY_KEY) ?? undefined;
+	const proof = recallForTab(PROOF_KEY) ?? undefined;
 
 	// Which relay answered fastest, on a deployment that spreads its media over
 	// several. Empty everywhere else, and empty here if measuring failed: the
@@ -235,20 +259,21 @@ export async function join(
 		// The passphrase goes in the body and nowhere else. A query parameter
 		// would reach the access log, the browser history, and any Referer sent
 		// onward, and none of those are places a secret can be taken back from.
-		body: JSON.stringify({ identity: previous, name, passphrase, relay }),
+		body: JSON.stringify({ identity: previous, proof, name, passphrase, relay }),
 	});
 
 	if (!response.ok) {
-		const reason = await response
+		const said = await response
 			.json()
-			.then((body) => (body as { error?: string }).error)
+			.then((body) => body as { error?: string; until?: string })
 			.catch(() => undefined);
 
-		throw new Refused(reason, explain(reason, room));
+		throw new Refused(said?.error, explain(said?.error, room, said?.until));
 	}
 
 	const result = (await response.json()) as Join;
 	keepForTab(IDENTITY_KEY, result.identity);
+	keepForTab(PROOF_KEY, result.proof || undefined);
 
 	// Which room this tab was in, so a reload can tell "I was just in a call" from
 	// "somebody pasted a link". They look identical in the address bar and want
@@ -295,9 +320,13 @@ export async function join(
  * the general failure rather than being shown raw: `rate_limited` on screen is
  * an implementation detail escaping, and it would escape untranslated.
  */
-function explain(reason: string | undefined, room: string): string {
+function explain(reason: string | undefined, room: string, until?: string): string {
 	switch (reason) {
+		// A caller shut out of signing in is refused a passphrase here too,
+		// and told how long, as the sign-in tells them (live/lockout.ts). The
+		// join's own limits name no end and say to wait a moment.
 		case "rate_limited":
+			if (until) return shutOutFor(until);
 			return t("Too many attempts. Try again in a moment.");
 		case "invalid_room":
 			return t("Room names can only use lowercase letters, numbers and dashes.");
@@ -330,6 +359,19 @@ function explain(reason: string | undefined, room: string): string {
 		// wondering whether the picker did anything.
 		case "relay_not_allowed":
 			return t("Access denied. That server is for administrators.");
+		// The meeting is held on a machine that is reached only through another
+		// relay, and none is answering. Said as something that will pass,
+		// because it will: the server already gives anybody who merely chose
+		// that machine another one, so this is only said when there is no
+		// other way into the meeting at all.
+		case "no_signalling":
+			return t("The server holding this meeting cannot be reached right now. Try again in a few minutes.");
+		// Somebody with servers of their own comes in through one of them or
+		// not at all, so when none can take the call this is said rather than
+		// another server quietly used. Said as something that passes, which it
+		// usually is: the machine is down or being restarted.
+		case "own_relay_unavailable":
+			return t("None of your own servers can take this call right now. Try again in a few minutes.");
 		case "blocked":
 			return t("This passphrase cannot join. Ask the organiser.");
 		case "server_error":

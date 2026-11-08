@@ -75,7 +75,17 @@ export function Plane({
 						)}
 						style={
 							spot
-								? { left: spot.x, top: spot.y, width: spot.width, height: spot.height }
+								? {
+										left: spot.x,
+										top: spot.y,
+										width: spot.width,
+										height: spot.height,
+										// A card over the picture it sits on is lifted rather
+										// than moved later in the list: an element moved in
+										// the document takes its video with it, and the
+										// picture goes black while it starts again.
+										zIndex: spot.over ? 1 : undefined,
+									}
 								: // Parked off the bottom edge at the size it last had
 									// no business keeping. Zero would collapse it, and a
 									// collapsed video element reports no dimensions to
@@ -110,7 +120,7 @@ export function Plane({
 					 * a second page. The arrows either side loop, so there is no
 					 * other way to tell.
 					 */}
-					<div className="-translate-x-1/2 absolute top-3 left-1/2 rounded-full bg-black/50 px-2.5 py-1 text-white/80 text-xs">
+					<div className="-translate-x-1/2 glass readout absolute top-3 left-1/2 flex h-8 items-center rounded-full border px-3 text-fg text-xs">
 						{(page ?? 0) + 1} / {pages}
 					</div>
 				</>
@@ -132,13 +142,17 @@ function PageButton({
 }) {
 	return (
 		<Button
-			variant="secondary"
+			variant="ghost"
 			size="icon"
 			aria-label={label}
 			onClick={onClick}
 			className={cn(
-				"-translate-y-1/2 absolute top-1/2 z-10 rounded-full opacity-60 hover:opacity-100",
-				side === "left" ? "left-3" : "right-3",
+				// The controls' material, round, at a finger's size: they were a
+				// forty-pixel grey square at sixty per cent, the one floating
+				// thing on the room that looked half-switched-off.
+				"-translate-y-1/2 glass absolute top-1/2 z-10 size-11 rounded-full border",
+				"hover:bg-surface-hi [&_svg]:size-5",
+				side === "left" ? "left-2" : "right-2",
 			)}
 		>
 			{children}

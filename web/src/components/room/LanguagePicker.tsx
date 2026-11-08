@@ -1,3 +1,4 @@
+import { SteadyText } from "@/components/Steady";
 import { Button } from "@/components/ui/button";
 import {
 	DropdownMenu,
@@ -28,12 +29,24 @@ export function LanguagePicker() {
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
-				<Button variant="ghost" size="sm" aria-label={t("Language")} className="gap-1.5">
+				{/* The corner's one shape: outlined, thirty-two tall, forty-four
+				    under a finger, like the account and sign-out beside it. */}
+				<Button
+					variant="outline"
+					size="sm"
+					aria-label={t("Language")}
+					className="h-8 gap-1.5 rounded-[10px] px-2.5 font-normal text-[12.5px] text-fg-muted hover:text-fg pointer-coarse:h-11 pointer-coarse:min-w-11 pointer-coarse:px-3"
+				>
 					<Languages className="size-3.5" />
-					{/* The icon alone on the narrowest phones, where the name of
-					    the language was what pushed the page's header past the
-					    edge. The button keeps its label for anybody not looking. */}
-					<span className="max-[360px]:hidden">{LOCALE_NAMES[current]}</span>
+					{/* The icon alone on a phone, where the name of the language was
+					    what pushed the page's header past the edge: below 360 when
+					    the corner's buttons were twenty-eight pixels, and below 420
+					    now that a finger is given forty-four — at 375 the lobby's
+					    corner ran into the fleet's count beside the name. The button
+					    keeps its label for anybody not looking. */}
+					{/* As wide as the widest of the names, so that choosing another
+					    does not move the buttons beside it (Steady). */}
+					<SteadyText texts={LOCALE_NAMES} className="max-[420px]:hidden" />
 				</Button>
 			</DropdownMenuTrigger>
 

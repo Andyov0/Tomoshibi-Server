@@ -1,7 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "@/index.css";
+import { followTheSystem } from "@/live/appearance";
 import { start } from "@/live/i18n";
+import { watchRequests } from "@/live/progress";
+import { TopProgress } from "@/components/TopProgress";
 import { Notices } from "@/components/room/Notices";
 import { Account } from "./Account";
 import { Apps } from "./Apps";
@@ -28,6 +31,13 @@ import { Apps } from "./Apps";
 // picker of its own as well, for the reader the browser guessed wrongly.
 start();
 
+// Day and night fade into each other, and nothing chases the fade (live/appearance.ts).
+followTheSystem();
+
+// Before the first request, so the page's arrival is counted from the start
+// (live/progress.ts).
+watchRequests();
+
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");
 
@@ -41,5 +51,6 @@ createRoot(root).render(
 	<StrictMode>
 		{downloads ? <Apps /> : <Account />}
 		<Notices />
+		<TopProgress />
 	</StrictMode>,
 );

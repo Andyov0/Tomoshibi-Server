@@ -108,7 +108,7 @@ export function SaidInCorner({ said }: { said: Said[] }) {
 		<div
 			className={cn(
 				"pointer-events-none absolute right-3 z-20 flex flex-col items-end gap-1.5",
-				"bottom-[calc(max(1.25rem,env(safe-area-inset-bottom)+0.5rem)+4rem)] sm:bottom-3",
+				"bottom-[calc(max(1.25rem,env(safe-area-inset-bottom)+0.5rem)+4.25rem)] sm:bottom-3",
 			)}
 		>
 			{held.map(({ one, leaving }, index) => {
@@ -122,8 +122,8 @@ export function SaidInCorner({ said }: { said: Said[] }) {
 					<div
 						key={one.id}
 						className={cn(
-							"flex max-w-[17rem] gap-2 rounded-lg border border-border bg-surface/95 px-2.5 py-2",
-							"shadow-lg backdrop-blur-md",
+							"flex max-w-[17rem] gap-2 rounded-[14px] border border-border bg-surface px-2.5 py-2",
+							"shadow-lg",
 							leaving ? "animate-depart" : "animate-arrive",
 						)}
 					>

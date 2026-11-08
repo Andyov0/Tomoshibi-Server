@@ -1,17 +1,18 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useLingering } from "@/hooks/useLingering";
+import { Steady } from "@/components/Steady";
+import { Unfolding } from "@/components/Folding";
+import { Clock, DayGrid, nextQuarter, startOfDay } from "@/components/calendar";
 import { useT } from "@/hooks/useT";
 import { Refused } from "@/live/api";
 import { download, fileNameFor, icsFor } from "@/live/calendar";
-import { locale } from "@/live/i18n";
 import { type Arrangement, arrange, arrangements, cancel, linkFor, whenSaid } from "@/live/meeting";
 import { type Relay } from "@/live/relays";
 import { ServerList } from "@/components/room/ServerPicker";
 import { generateRoomName, normaliseRoomName, validRoomName } from "@/live/names";
 import { actionFailed } from "@/live/notices";
 import { cn } from "@/lib/utils";
-import { CalendarClock, CalendarPlus, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Loader2, X } from "lucide-react";
+import { CalendarClock, CalendarPlus, Check, ChevronDown, Copy, Loader2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
@@ -58,12 +59,16 @@ export function Schedule({
 	onOpenChange,
 	onSignedOut,
 	canArrange = true,
+	serversBeside = false,
 }: {
 	servers: Relay[];
 	server: string;
 	onServer: (relay: string) => void;
 	/** Said so the lobby can put its own server list away while this is open:
-	 * the list is the same list, and two of it on one screen is a mistake. */
+	 * the list is the same list, and two of it on one screen is a mistake.
+	 * Said as the press opens or closes it, so the lobby can move what is
+	 * around it at the same moment; the lobby keeps its own count of how long
+	 * the moving takes. */
 	onOpenChange: (open: boolean) => void;
 	/** The way back to signing in, for a session that has lapsed. */
 	onSignedOut?: () => void;
@@ -76,12 +81,18 @@ export function Schedule({
 	 * asks for itself, and a refusal it sends anyway has a sentence below.
 	 */
 	canArrange?: boolean;
+	/**
+	 * Whether the lobby keeps its own server list in view beside this, as the
+	 * second of its two blocks on a wide screen. The list is then not brought
+	 * in here as well: the same list twice on one screen is the mistake
+	 * onOpenChange exists to avoid the other way round.
+	 */
+	serversBeside?: boolean;
 }) {
 	const t = useT();
 	const [open, setOpen] = useState(false);
 
 	useEffect(() => onOpenChange(open), [open, onOpenChange]);
-	const { mounted, leaving } = useLingering(open);
 
 	// One reading of the clock for both halves of the starting time, so a form
 	// opened on the stroke of a quarter hour does not get the hour from one
@@ -91,6 +102,39 @@ export function Schedule({
 	const [day, setDay] = useState<Date>();
 	const [hour, setHour] = useState(first.getHours());
 	const [minute, setMinute] = useState(first.getMinutes());
+
+	/*
+	 * The time starts afresh each time the card is opened, unless somebody
+	 * chose one.
+	 *
+	 * The card is mounted with the lobby and worked out its quarter hour then,
+	 * once. A lobby left open for an afternoon opened its card on a time long
+	 * gone, and picking today said so before anybody had touched the clock.
+	 * Opening the card now starts the hour and the minute at the next quarter
+	 * hour from that moment. A time somebody picked is theirs and stays, gone
+	 * or not, until a meeting is arranged with it; the day is never chosen for
+	 * anybody, so it is left as it was.
+	 */
+	const timeChosen = useRef(false);
+
+	const toggle = () => {
+		if (!open && !timeChosen.current) {
+			const next = nextQuarter();
+			setHour(next.getHours());
+			setMinute(next.getMinutes());
+		}
+		setOpen(!open);
+	};
+
+	const chooseHour = (n: number) => {
+		timeChosen.current = true;
+		setHour(n);
+	};
+
+	const chooseMinute = (n: number) => {
+		timeChosen.current = true;
+		setMinute(n);
+	};
 	const [arranging, setArranging] = useState(false);
 	const [copied, setCopied] = useState<string>();
 	// The meeting whose link is shown in a box to be copied by hand, because
@@ -228,6 +272,7 @@ export function Schedule({
 		setList((was) => ({ status: "ready", items: [...was.items, made].sort((a, b) => a.at.localeCompare(b.at)) }));
 		setPlanning("");
 		setDay(undefined);
+		timeChosen.current = false;
 		setArranging(false);
 
 		// Straight onto the clipboard, because the link is the whole point and
@@ -265,23 +310,30 @@ export function Schedule({
 	return (
 		<section
 			className={cn(
-				"animate-rise [animation-delay:180ms]",
-				"flex flex-col rounded-xl border border-border bg-surface",
+				"animate-rise",
+				"flex flex-col rounded-[18px] border border-border bg-surface",
 			)}
 		>
 			<button
 				type="button"
-				onClick={() => setOpen((was) => !was)}
+				onClick={toggle}
 				aria-expanded={open}
-				className="flex w-full items-center gap-3.5 p-4 text-left"
+				// The whole head of the card is the button, so it says so when a
+				// pointer is over it and when it is pressed, and the keyboard's
+				// ring follows the card's own corners.
+				className={cn(
+					"flex w-full items-center gap-3.5 rounded-[18px] p-4 text-left outline-none transition-colors",
+					"hover:bg-wash active:bg-wash-press focus-visible:ring-2 focus-visible:ring-fg/70",
+					open && "rounded-b-none",
+				)}
 			>
-				<span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-surface-hi text-fg-muted">
+				<span className="flex size-10 shrink-0 items-center justify-center rounded-[10px] bg-surface-hi text-fg-muted">
 					<CalendarClock className="size-5" />
 				</span>
 				<span className="flex min-w-0 flex-1 flex-col gap-0.5">
 					<span className="font-medium text-[14px]">{t("Schedule a meeting")}</span>
 					<span className="text-[12px] text-fg-muted leading-snug">
-						{t("Pick a time and hand out the link before it starts.")}
+						<Steady phrase="Pick a time and hand out the link before it starts." block />
 					</span>
 				</span>
 				<ChevronDown
@@ -289,13 +341,15 @@ export function Schedule({
 				/>
 			</button>
 
-			{mounted && (
+			{/* Unfolding from the head rather than appearing below it (Unfolding
+			    says why, and how). */}
+			<Unfolding open={open}>
 				<form
 					onSubmit={(event) => {
 						event.preventDefault();
 						void plan();
 					}}
-					className={cn("flex flex-col gap-4 px-4 pb-4", leaving ? "animate-depart" : "animate-arrive")}
+					className="flex flex-col gap-4 px-4 pb-4"
 				>
 					{!canArrange && (
 						<p className="text-[12.5px] text-fg-muted leading-snug">
@@ -322,22 +376,24 @@ export function Schedule({
 
 							<div className="flex flex-col gap-1.5">
 								<span className="text-[11px] text-fg-muted">{t("Day")}</span>
-								<DayGrid value={day} onChange={setDay} />
+								<DayGrid value={day} onChange={setDay} latest={lastDay()} />
 							</div>
 
 							<div className="flex flex-col gap-1.5">
 								<span className="text-[11px] text-fg-muted">{t("Time")}</span>
 								<div className="flex items-center gap-2">
-									<Clock value={hour} onChange={setHour} count={24} label={t("Hour")} />
+									<Clock value={hour} onChange={chooseHour} count={24} label={t("Hour")} />
 									<span className="text-fg-muted">:</span>
-									<Clock value={minute} onChange={setMinute} count={60} step={15} label={t("Minute")} />
+									<Clock value={minute} onChange={chooseMinute} count={60} step={15} label={t("Minute")} />
 								</div>
 							</div>
 
 							{/* The same list the lobby shows for starting and joining, brought
 							    in here so the machine is chosen where the meeting is arranged
 							    rather than somewhere below it. */}
-							{servers.length > 1 && <ServerList relays={servers} value={server} onChange={onServer} />}
+							{servers.length > 1 && !serversBeside && (
+								<ServerList relays={servers} value={server} onChange={onServer} />
+							)}
 
 							<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 								<span className="min-w-0 text-[12.5px] text-fg-muted leading-snug">
@@ -419,7 +475,7 @@ export function Schedule({
 											aria-label={copied === one.id ? t("Link copied") : t("Copy link")}
 											onClick={() => void offer(one)}
 										>
-											{copied === one.id ? <Check className="size-4 text-tally" /> : <Copy className="size-4" />}
+											{copied === one.id ? <Check className="size-4 text-tally-ink" /> : <Copy className="size-4" />}
 										</Button>
 
 										<Button
@@ -462,146 +518,12 @@ export function Schedule({
 						</ul>
 					)}
 				</form>
-			)}
+			</Unfolding>
 		</section>
 	);
 }
 
-/** How far ahead a day may be chosen. The server's bound, so the grid never
- * offers what the server would refuse. */
-const DAYS_AHEAD = 60;
 
-/**
- * A month of days to choose from, limited to the next sixty.
- *
- * Weeks start on Monday, which is how every calendar this deployment's people
- * grew up with is printed. Days outside the window are drawn and disabled
- * rather than hidden, so the grid keeps its shape from one month to the next.
- */
-function DayGrid({ value, onChange }: { value?: Date; onChange: (day: Date) => void }) {
-	const t = useT();
-	const today = startOfDay(new Date());
-	const last = new Date(today);
-	last.setDate(last.getDate() + DAYS_AHEAD);
-
-	const [shown, setShown] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
-
-	const monthSaid = new Intl.DateTimeFormat(locale(), { month: "long", year: "numeric" }).format(shown);
-	const weekdays = useMemo(() => {
-		const f = new Intl.DateTimeFormat(locale(), { weekday: "narrow" });
-		// A known Monday.
-		return Array.from({ length: 7 }, (_, n) => f.format(new Date(2024, 0, 1 + n)));
-	}, []);
-
-	// The cells: leading blanks so the first falls on its weekday, then the
-	// month's days.
-	const first = new Date(shown.getFullYear(), shown.getMonth(), 1);
-	const lead = (first.getDay() + 6) % 7;
-	const count = new Date(shown.getFullYear(), shown.getMonth() + 1, 0).getDate();
-
-	const earlier = new Date(shown.getFullYear(), shown.getMonth() - 1, 1);
-	const later = new Date(shown.getFullYear(), shown.getMonth() + 1, 1);
-	const canGoBack = earlier >= new Date(today.getFullYear(), today.getMonth(), 1);
-	const canGoOn = later <= last;
-
-	return (
-		<div className="flex w-full max-w-sm flex-col gap-2 rounded-lg border border-border bg-surface-hi p-2">
-			<div className="flex items-center justify-between">
-				<button
-					type="button"
-					onClick={() => setShown(earlier)}
-					disabled={!canGoBack}
-					aria-label={t("Previous month")}
-					className="grid size-7 place-items-center rounded-md text-fg-muted hover:bg-surface disabled:opacity-30"
-				>
-					<ChevronLeft className="size-4" />
-				</button>
-				<span className="truncate text-[12.5px] font-medium">{monthSaid}</span>
-				<button
-					type="button"
-					onClick={() => setShown(later)}
-					disabled={!canGoOn}
-					aria-label={t("Next month")}
-					className="grid size-7 place-items-center rounded-md text-fg-muted hover:bg-surface disabled:opacity-30"
-				>
-					<ChevronRight className="size-4" />
-				</button>
-			</div>
-
-			<div className="grid grid-cols-7 gap-0.5 text-center">
-				{weekdays.map((w, n) => (
-					<span key={String(n)} className="py-1 text-[10.5px] text-fg-muted">
-						{w}
-					</span>
-				))}
-
-				{Array.from({ length: lead }, (_, n) => (
-					<span key={`lead-${String(n)}`} />
-				))}
-
-				{Array.from({ length: count }, (_, n) => {
-					const d = new Date(shown.getFullYear(), shown.getMonth(), n + 1);
-					const offered = d >= today && d <= last;
-					const chosen = value !== undefined && sameDay(d, value);
-					const isToday = sameDay(d, today);
-
-					return (
-						<button
-							key={String(n)}
-							type="button"
-							disabled={!offered}
-							onClick={() => onChange(d)}
-							aria-pressed={chosen}
-							aria-label={new Intl.DateTimeFormat(locale(), { dateStyle: "full" }).format(d)}
-							className={cn(
-								"h-9 rounded-md text-[12.5px] transition-colors",
-								offered ? "hover:bg-surface" : "opacity-30",
-								chosen && "bg-fg text-bg hover:bg-fg",
-								isToday && !chosen && "ring-1 ring-fg/40",
-							)}
-						>
-							{n + 1}
-						</button>
-					);
-				})}
-			</div>
-		</div>
-	);
-}
-
-/** One of the two halves of a time. A platform select, which draws a list of
- * twenty-four well and needs no styling to be read. */
-function Clock({
-	value,
-	onChange,
-	count,
-	step = 1,
-	label,
-}: {
-	value: number;
-	onChange: (n: number) => void;
-	count: number;
-	step?: number;
-	label: string;
-}) {
-	return (
-		<select
-			value={value}
-			onChange={(event) => onChange(Number(event.target.value))}
-			aria-label={label}
-			className={cn(
-				"h-10 w-24 rounded-lg border border-border bg-surface-hi px-2 text-sm text-fg",
-				"outline-none transition-colors focus-visible:border-fg/40 focus-visible:ring-2 focus-visible:ring-fg/25",
-			)}
-		>
-			{Array.from({ length: Math.ceil(count / step) }, (_, n) => n * step).map((n) => (
-				<option key={n} value={n}>
-					{String(n).padStart(2, "0")}
-				</option>
-			))}
-		</select>
-	);
-}
 
 /**
  * Put text on the clipboard, and say whether it got there.
@@ -625,22 +547,6 @@ async function copyText(text: string): Promise<boolean> {
 	}
 }
 
-function nextQuarter(): Date {
-	const d = new Date();
-	d.setSeconds(0, 0);
-	d.setMinutes(Math.ceil((d.getMinutes() + 1) / 15) * 15);
-	return d;
-}
-
-function startOfDay(d: Date): Date {
-	const s = new Date(d);
-	s.setHours(0, 0, 0, 0);
-	return s;
-}
-
-function sameDay(a: Date, b: Date): boolean {
-	return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-}
 
 /** Sentences for what the server may answer. The codes stay on the wire. */
 function explainArranging(whatever: unknown, t: ReturnType<typeof useT>): string {
@@ -673,4 +579,15 @@ function explainArranging(whatever: unknown, t: ReturnType<typeof useT>): string
 		default:
 			return t("Something went wrong. Try again.");
 	}
+}
+
+/** How far ahead a day may be chosen. The server's bound, so the grid never
+ * offers what the server would refuse. */
+const DAYS_AHEAD = 60;
+
+/** The last day a meeting may be arranged for. */
+function lastDay(): Date {
+	const last = startOfDay(new Date());
+	last.setDate(last.getDate() + DAYS_AHEAD);
+	return last;
 }

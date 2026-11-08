@@ -709,8 +709,7 @@ export function create(secret: string): Room {
  * Connect.
  *
  * The display name is already in the token, so there is nothing to set
- * afterwards. Setting it here would need a permission this grant deliberately
- * withholds, and the server would refuse.
+ * afterwards.
  */
 /**
  * The token each connected room was authorised with.

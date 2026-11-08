@@ -59,7 +59,7 @@ silent failure.
 | `join_rate` | `10` | C F | Joins per second allowed per caller address (sustained). |
 | `join_burst` | `120` | C F | Joins a caller may make at once before the rate applies. Covers a large meeting arriving together. |
 | `trust_proxy` | `false` | C F | Believe `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and the region headers. Only behind a proxy that sets them. |
-| `proxies` | `0` (read as 1) | C F | How many proxies append to `X-Forwarded-For`; the caller is counted that many from the right. Refused if set without `trust_proxy`, or negative. |
+| `proxies` | `0` (read as 1) | C F | How many proxies append to `X-Forwarded-For`; the caller is counted that many from the right. Refused if set without `trust_proxy`, or negative. With `2` (a CDN in front of nginx), nginx must accept connections only from the CDN: anybody who reaches it directly writes the entry that is read, and with it the address every limit and the sign-in lockout counts, so they are never shut out and can shut out an address of their choosing. |
 | `admins` | empty | C F | Starting administrators; see below. Refused on a relay. With none at all, `/admin` does not exist. |
 | `rooms` | see below | C F | Room policies. |
 | `relays` | empty | C | Starting relay list; see below. **At least one entry is required on every start of a control node**, even after the store holds the real list. Refused on a relay. |
@@ -102,7 +102,7 @@ admins:
 | (none) / `observe` | Reading: the overview, the trend, health checks, rooms and who is in them, the runtime panel, the remote notice and switches. |
 | `rooms` | Closing a room, removing or muting somebody, moving and placing rooms and people, forgetting a name; running any room from inside a call; running rooms under a scope. |
 | `accounts` | Making, renaming, blocking and removing accounts, their passphrases and permissions, except the Emby permission and the passphrase of an account holding it. |
-| `relays` | Adding, editing, ordering and removing relays, and the install command, which carries the enrolment secret. |
+| `relays` | Adding, editing, ordering and removing relays, and reading the install command and script, which carry no secret. Minting the token a new machine enrols with is `moderate`'s. |
 | `settings` | Who may open and enter rooms; the Emby, YouTube and Bilibili relay switches; publishing the apps' notice and feature switches. |
 | `moderate` | All four, plus the administrator list itself and the Emby permission. |
 
@@ -127,15 +127,24 @@ The rest of a relay's record (probe address, TURN address, location, flags)
 exists only in the store and is set on the relay's page;
 [chapter 5](relays.md#the-relay-record) lists it.
 
+### `meet.turn_peers` (relay)
+
+The addresses this relay's TURN server may forward to: the other relays, as
+addresses or CIDRs. Everything else is denied. Empty keeps LiveKit's default
+(every public address) and is warned about at startup where `turn.enabled`.
+A value that is not an address or a CIDR stops the relay at startup.
+
 ### `meet.enrol` (control node)
 
-Absent a `secret` or a `domain`, enrolment is off: `/install`,
+Absent a `domain`, enrolment is off: `/install`,
 `/download/tomoshibi`, `/api/enrol` and `/api/enrol/taken` do not exist.
+Machines enrol with one-time tokens minted on the relays page.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `secret` | empty | What the install command must present. Long-lived and powerful: it buys the API secret, the redis password and the certificate key. Wrong guesses are rate limited with the sign-in budget. |
-| `domain` | empty | Relays become `<prefix>.<domain>`. Not under a CNAME. |
+| `secret` | empty | The long-lived secret enrolment used to run on. Ignored, with a warning at startup, unless `accept_secret` is set. Remove it. |
+| `accept_secret` | `false` | Accept `secret` again, for a machine half way through an old install. Never for taking over a prefix in use; every use is logged at warning level. Turn it off again. |
+| `domain` | empty | Relays become `<prefix>.<domain>`. Not under a CNAME. Must not be the control node's own host (from `public_url`) or the domain directly above it, or a prefix could name the control node: enrolment is then turned off with an error at startup. Use a subdomain of its own, such as `relay.example.com`. |
 | `public_url` | empty | Where a new relay reaches this node. Required in practice: the script, the binary and the enrolment API are fetched from it. |
 | `listen_port` | `13377` | Every relay's `meet.listen`, and the port in its URL. |
 | `udp_port` | `13378` | Every relay's `rtc.udp_port`. |
@@ -163,7 +172,7 @@ that is not one is refused at startup. See [chapter 7](features.md).
 
 | Key | Meaning |
 | --- | --- |
-| `mac_dir` | The directory with the Mac, Android and Windows builds, `apps.json` and `remote.json`. Named after the first platform; it holds all of them. Not a readable directory: warned, and the page says the apps are not available yet. |
+| `mac_dir` | The directory with the Mac, Android, Windows and Linux builds, `apps.json` and `remote.json`. Named after the first platform; it holds all of them. Not a readable directory: warned, and the page says the apps are not available yet. |
 | `android_package` | The Android application id, for `/.well-known/assetlinks.json`. |
 | `android_certificates` | SHA-256 fingerprints of the Android signing keys, 32 colon-separated hex bytes, as `keytool -list -v` prints them. Set together with `android_package` or not at all. |
 | `apple_app_ids` | `TEAMID.bundle.id` for the iOS and Mac apps, for `/.well-known/apple-app-site-association`. |
@@ -211,7 +220,7 @@ Errors read as sentences that name the key and the way out. The common ones:
 | `meet.proxies is N ... meet.trust_proxy is false` | Set both or neither. |
 | `meet.relays[i] has no url` / `is not a WebSocket address` / `is listed twice` | Fix the entry. |
 | `admins[i] has no trip` / `a trip is 10 characters` / `is listed twice` / `is not something an administrator can be allowed` | Fix the entry. |
-| `rooms.opened_by: ... is not who a room can be opened by` | `anyone`, `signed`, `accounts` or `admins`. (The message lists three of the four.) |
+| `rooms.opened_by: ... is not who a room can be opened by` | `anyone`, `signed`, `accounts` or `admins`. |
 | `rooms.joined_by: ... is not who may join a room` | `invited`, `accounts` or `anyone`. |
 | `meet.tls_cert and meet.tls_key: ...` | The files do not load or do not match. |
 | `meet.music.token is N characters and needs at least 24` (and the same for `meet.watch`) | A longer token. |

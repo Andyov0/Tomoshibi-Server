@@ -1,3 +1,5 @@
+import { useAppearance } from "@/hooks/useAppearance";
+import type { Appearance } from "@/live/appearance";
 import { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
@@ -52,6 +54,12 @@ export function Trend({
 	const hover = useRef(onHover);
 	hover.current = onHover;
 
+	// The one thing that does rebuild it. A canvas is handed its colours once
+	// and keeps them, so without this a chart drawn by night would stay drawn
+	// by night on a page that had turned to day; the blank frame the rebuild
+	// costs is lost in the whole page changing colour around it.
+	const appearance = useAppearance();
+
 	useEffect(() => {
 		const element = host.current;
 		if (!element) return;
@@ -65,7 +73,7 @@ export function Trend({
 		if (!element.ownerDocument.createElement("canvas").getContext?.("2d")) return;
 
 		const made = new uPlot(
-			options(element.clientWidth, (index) => hover.current?.(index)),
+			options(element.clientWidth, INK[appearance], (index) => hover.current?.(index)),
 			series(latest.current),
 			element,
 		);
@@ -83,7 +91,7 @@ export function Trend({
 			made.destroy();
 			plot.current = undefined;
 		};
-	}, []);
+	}, [appearance]);
 
 	useEffect(() => {
 		plot.current?.setData(series(points));
@@ -93,6 +101,74 @@ export function Trend({
 }
 
 const HEIGHT = 150;
+
+/*
+ * The rate axis's width, from the longest label it is about to draw.
+ *
+ * It was forty-six pixels, and "1.00 Gbps" and "500.0 Mbps" in ten-pixel
+ * monospace are fifty-four and sixty, so both were drawn with their first
+ * characters outside the canvas: the scale read "00 Gbps" and ".0 Mbps", in
+ * either appearance (the health check of 2026-10-29). Worked out from the
+ * number of characters rather than measured on the canvas: the face is
+ * monospace, whichever one the system has, and every common one is at most
+ * about six-tenths of an em wide, so this is exact enough and needs no canvas,
+ * which the tests do not have. Never narrower than it was, so a scale with
+ * short labels keeps the plot where it always sat.
+ */
+const MONO_ADVANCE = 0.62 * 10;
+const AXIS_GAP = 5 + 4;
+
+export function rateAxisWidth(values: string[] | null): number {
+	const longest = (values ?? []).reduce((most, one) => Math.max(most, one.length), 0);
+
+	return Math.max(46, Math.ceil(longest * MONO_ADVANCE + AXIS_GAP));
+}
+
+/** Half the widest time label ("10:00am", seven characters), and a little over. */
+const LAST_LABEL = 24;
+
+/*
+ * The chart's colours, which a canvas cannot take from the stylesheet.
+ *
+ * Night is what these always were, written out as the stylesheet's own values
+ * once converted — the axis and the incoming line in the muted foreground, the
+ * grid in the border, the outgoing line and its band in the amber — and day is
+ * the same roles in the day values (index.css). Said as strings rather than
+ * read from the stylesheet at run time, so that night is drawn with exactly
+ * the strings it was drawn with before there was a day.
+ */
+export const INK: Record<Appearance, Ink> = {
+	night: {
+		text: "#97928c",
+		rule: "#2e2c2a",
+		line: "#ffa23b",
+		lineFill: "rgba(255, 162, 59, 0.16)",
+		peak: "rgba(255, 162, 59, 0.35)",
+		peakFill: "rgba(255, 162, 59, 0.10)",
+	},
+	day: {
+		// The stylesheet's day muted, which was raised from three fifths to
+		// three quarters so that quieter text reads at four and a half to one
+		// on white; the chart kept the three fifths, and its axis and its
+		// incoming line were the one muted thing on the page still at three
+		// and a third.
+		text: "rgba(60, 60, 67, 0.75)",
+		rule: "rgba(0, 0, 0, 0.1)",
+		line: "#f2901e",
+		lineFill: "rgba(242, 144, 30, 0.16)",
+		peak: "rgba(242, 144, 30, 0.35)",
+		peakFill: "rgba(242, 144, 30, 0.10)",
+	},
+};
+
+interface Ink {
+	text: string;
+	rule: string;
+	line: string;
+	lineFill: string;
+	peak: string;
+	peakFill: string;
+}
 
 /**
  * The four rows uPlot wants: time, then one per line.
@@ -122,11 +198,14 @@ export function series(points: Point[]): uPlot.AlignedData {
 	return [at, peak, out, into];
 }
 
-function options(width: number, hovered: (index: number | null) => void): uPlot.Options {
+function options(width: number, ink: Ink, hovered: (index: number | null) => void): uPlot.Options {
 	return {
 		width: Math.max(width, 1),
 		height: HEIGHT,
-		padding: [8, 4, 0, 0],
+		// Room on the right for half of the last time label, which is drawn
+		// centred on its tick at the plot's edge: with four pixels its second
+		// half was outside the canvas and cut off.
+		padding: [8, LAST_LABEL, 0, 0],
 		cursor: { y: false, points: { size: 5 } },
 		legend: { show: false },
 		// uPlot's own legend is off, so the readout beside the chart is fed from
@@ -139,22 +218,32 @@ function options(width: number, hovered: (index: number | null) => void): uPlot.
 			// reach. A plot that rescales to its own maximum always looks the
 			// same, and the one thing this exists to show — how near the ceiling
 			// an evening came — is exactly what that normalises away.
-			y: { auto: false, range: [0, linkBits()] },
+			//
+			// Asked each time the data is set rather than read once here. The
+			// chart is built before the runtime reading that says what the line
+			// carries has come back, so a hundred-megabit deployment's chart
+			// was drawn against a gigabit for as long as the page stayed open,
+			// with the bar beneath it saying two per cent of a hundred megabits
+			// and the axis saying a gigabit (seen on 2026-10-29). Auto, so that
+			// uPlot asks the range again on each setData — with auto off it
+			// asks once, at construction, which was the fault — and a range
+			// that ignores the data it is handed, so auto rescales nothing.
+			y: { auto: true, range: () => [0, linkBits()] },
 		},
 		axes: [
 			{
-				stroke: "#97928c",
-				grid: { stroke: "#2e2c2a", width: 1 },
-				ticks: { stroke: "#2e2c2a", width: 1 },
+				stroke: ink.text,
+				grid: { stroke: ink.rule, width: 1 },
+				ticks: { stroke: ink.rule, width: 1 },
 				font: "10px ui-monospace, Menlo, monospace",
 				size: 28,
 			},
 			{
-				stroke: "#97928c",
-				grid: { stroke: "#2e2c2a", width: 1 },
+				stroke: ink.text,
+				grid: { stroke: ink.rule, width: 1 },
 				ticks: { show: false },
 				font: "10px ui-monospace, Menlo, monospace",
-				size: 46,
+				size: (_, values) => rateAxisWidth(values),
 				values: (_, ticks) => ticks.map((bits) => (bits === 0 ? "" : rate(bits / 8))),
 			},
 		],
@@ -163,19 +252,19 @@ function options(width: number, hovered: (index: number | null) => void): uPlot.
 			// Drawn first, so it sits behind the mean it belongs to.
 			{
 				label: "peak",
-				stroke: "rgba(255, 162, 59, 0.35)",
+				stroke: ink.peak,
 				width: 1,
-				fill: "rgba(255, 162, 59, 0.10)",
+				fill: ink.peakFill,
 				points: { show: false },
 			},
 			{
 				label: "out",
-				stroke: "#ffa23b",
+				stroke: ink.line,
 				width: 1.6,
-				fill: "rgba(255, 162, 59, 0.16)",
+				fill: ink.lineFill,
 				points: { show: false },
 			},
-			{ label: "in", stroke: "#97928c", width: 1.3, points: { show: false } },
+			{ label: "in", stroke: ink.text, width: 1.3, points: { show: false } },
 		],
 	};
 }

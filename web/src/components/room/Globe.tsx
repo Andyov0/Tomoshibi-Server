@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import {
 	type PointerEvent as ReactPointerEvent,
 	useEffect,
+	useId,
 	useMemo,
 	useRef,
 	useState,
@@ -65,6 +66,51 @@ const MOST = 0.2;
 /** Degrees of longitude and latitude between the guide lines. */
 const GRATICULE = 30;
 
+/**
+ * How far in it zooms: six times, where the four relays within a few degrees of
+ * Hong Kong are dots apart rather than one blot, and the coastline still says
+ * where they are.
+ */
+export const ZOOM_MOST = 6;
+
+/**
+ * How much a wheel or a pinch zooms, per pixel it reports. A trackpad's pinch
+ * arrives as a run of small deltas and a mouse wheel as a few large ones, so the
+ * pinch is given the larger rate; a notch of the wheel (a hundred pixels) is
+ * then about a fifth, and a pinch of the fingers apart about doubles it.
+ */
+const PER_WHEEL_PIXEL = 0.002;
+const PER_PINCH_PIXEL = 0.01;
+
+/** Degrees a two-finger swipe turns the globe per pixel, at no zoom. */
+const PER_SWIPE_PIXEL = 0.25;
+
+function clampZoom(zoom: number): number {
+	return Math.min(ZOOM_MOST, Math.max(1, zoom));
+}
+
+/**
+ * What a wheel event means here. A pinch on a trackpad is sent by Chrome and
+ * Firefox as a wheel with ctrlKey set, and zooms. A mouse wheel turns in lines,
+ * or in whole steps of forty pixels or more straight up and down, and zooms. The
+ * rest is two fingers moving on a trackpad, which turn the globe the way they
+ * move a map in the system's own maps, rather than zooming it, which is what a
+ * pinch is for.
+ */
+export function wheelSays(event: Pick<WheelEvent, "deltaMode" | "deltaX" | "deltaY" | "ctrlKey">):
+	| { zoom: number }
+	| { turn: { x: number; y: number } } {
+	const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1;
+	const x = event.deltaX * unit;
+	const y = event.deltaY * unit;
+
+	if (event.ctrlKey) return { zoom: Math.exp(-y * PER_PINCH_PIXEL) };
+	if (event.deltaMode !== 0 || (x === 0 && Number.isInteger(y) && Math.abs(y) >= 40)) {
+		return { zoom: Math.exp(-y * PER_WHEEL_PIXEL) };
+	}
+	return { turn: { x, y } };
+}
+
 interface Spin {
 	/** Degrees of longitude at the centre, and how far the pole is tipped. */
 	lon: number;
@@ -79,7 +125,7 @@ interface Spin {
  * comparison and is also what makes a marker behind the world disappear rather
  * than showing through it.
  */
-function project(lon: number, lat: number, spin: Spin) {
+function project(lon: number, lat: number, spin: Spin, zoom = 1) {
 	const λ = ((lon - spin.lon) * Math.PI) / 180;
 	const φ = (lat * Math.PI) / 180;
 	const φ0 = (spin.lat * Math.PI) / 180;
@@ -87,9 +133,14 @@ function project(lon: number, lat: number, spin: Spin) {
 	const cosφ = Math.cos(φ);
 	const facing = Math.sin(φ0) * Math.sin(φ) + Math.cos(φ0) * cosφ * Math.cos(λ);
 
+	// Zoomed by drawing the sphere larger than the picture and letting the
+	// picture cut it off, about its centre. The markers and the lines are drawn
+	// at their own sizes whatever the zoom: a marker that grew with it would fill
+	// the gap between neighbours that zooming in was meant to open.
+	const r = R * zoom;
 	return {
-		x: R * cosφ * Math.sin(λ),
-		y: -R * (Math.cos(φ0) * Math.sin(φ) - Math.sin(φ0) * cosφ * Math.cos(λ)),
+		x: r * cosφ * Math.sin(λ),
+		y: -r * (Math.cos(φ0) * Math.sin(φ) - Math.sin(φ0) * cosφ * Math.cos(λ)),
 		facing: facing >= 0,
 	};
 }
@@ -107,12 +158,12 @@ function project(lon: number, lat: number, spin: Spin) {
  */
 
 /** One coastline, as the path of whichever of its points face us. */
-function outline(ring: readonly number[], spin: Spin): string {
+function outline(ring: readonly number[], spin: Spin, zoom = 1): string {
 	let path = "";
 	let drawing = false;
 
 	for (let i = 0; i + 1 < ring.length; i += 2) {
-		const at = project(ring[i] as number, ring[i + 1] as number, spin);
+		const at = project(ring[i] as number, ring[i + 1] as number, spin, zoom);
 
 		if (!at.facing) {
 			// Broken rather than wrapped. A coastline that runs over the horizon
@@ -129,14 +180,14 @@ function outline(ring: readonly number[], spin: Spin): string {
 	return path;
 }
 
-function meridians(spin: Spin): string {
+function meridians(spin: Spin, zoom = 1): string {
 	let path = "";
 
 	for (let lon = -180; lon < 180; lon += GRATICULE) {
 		let drawing = false;
 
 		for (let lat = -90; lat <= 90; lat += 5) {
-			const at = project(lon, lat, spin);
+			const at = project(lon, lat, spin, zoom);
 
 			if (!at.facing) {
 				drawing = false;
@@ -152,7 +203,7 @@ function meridians(spin: Spin): string {
 		let drawing = false;
 
 		for (let lon = -180; lon <= 180; lon += 5) {
-			const at = project(lon, lat, spin);
+			const at = project(lon, lat, spin, zoom);
 
 			if (!at.facing) {
 				drawing = false;
@@ -188,6 +239,26 @@ export function Globe({
 	const [turned, setTurned] = useState(false);
 	const [over, setOver] = useState<string>();
 	const drag = useRef<{ x: number; y: number; from: Spin }>();
+
+	/*
+	 * Zoomed with a mouse's wheel, a trackpad's pinch (Chrome and Firefox send
+	 * it as a wheel with ctrlKey, Safari as gesture events of its own), or two
+	 * fingers apart on a touch screen; turned with two fingers moving on a
+	 * trackpad as well as by dragging. The owner asked for the wheel and the Mac
+	 * trackpad both. While it is zoomed in it does not turn by itself: whoever
+	 * zoomed in is looking at something, and a world drifting out from under a
+	 * close look moves six times as fast on screen.
+	 */
+	const [zoom, setZoom] = useState(1);
+	const zoomNow = useRef(1);
+	zoomNow.current = zoom;
+	const picture = useRef<SVGSVGElement>(null);
+	// Seen through the globe's own round outline when zoomed in, as through a
+	// lens: cut off by the picture's square edges instead, a zoomed globe read as
+	// a map torn out of a page.
+	const lens = useId();
+	const pointers = useRef(new Map<number, { x: number; y: number }>());
+	const pinch = useRef<{ apart: number; from: number }>();
 
 	// When it may start turning by itself again. Somebody with hold of it, or
 	// reaching for a marker, is doing something the globe must not fight.
@@ -234,7 +305,7 @@ export function Globe({
 			const since = (now - last) / 1000;
 			last = now;
 
-			if (drag.current || now < idle.current) return;
+			if (drag.current || now < idle.current || zoomNow.current > 1) return;
 
 			setSpin((was) => ({ ...was, lon: was.lon - SPIN_RATE * Math.min(since, MOST) }));
 		};
@@ -284,11 +355,25 @@ export function Globe({
 		setSpin({ lon: best.lon, lat: Math.max(-60, Math.min(60, best.lat)) });
 	}, [placed, measured, turned]);
 
+	const apart = () => {
+		const [a, b] = [...pointers.current.values()];
+		return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+	};
+
 	const grab = (event: ReactPointerEvent<SVGSVGElement>) => {
 		event.currentTarget.setPointerCapture(event.pointerId);
-		drag.current = { x: event.clientX, y: event.clientY, from: spin };
+		pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
 		aimed.current = true;
 		setTurned(true);
+
+		// A second finger down is a pinch, and the drag the first began is over.
+		if (pointers.current.size === 2) {
+			drag.current = undefined;
+			pinch.current = { apart: apart(), from: zoomNow.current };
+			return;
+		}
+
+		drag.current = { x: event.clientX, y: event.clientY, from: spin };
 	};
 
 	// Held still for a moment after anything somebody did, rather than stopped
@@ -300,6 +385,16 @@ export function Globe({
 	};
 
 	const turn = (event: ReactPointerEvent<SVGSVGElement>) => {
+		if (pointers.current.has(event.pointerId)) {
+			pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+		}
+
+		const pinched = pinch.current;
+		if (pinched && pointers.current.size >= 2 && pinched.apart > 0) {
+			setZoom(clampZoom((pinched.from * apart()) / pinched.apart));
+			return;
+		}
+
 		const held = drag.current;
 		if (!held) return;
 
@@ -308,21 +403,95 @@ export function Globe({
 		// than scrubbing a slider. Latitude is clamped short of the poles: past
 		// them the world turns upside down under the pointer and nobody means
 		// that.
+		// Slower as it is zoomed, so that a drag moves the land about as far as
+		// the pointer moved rather than six times as far.
+		const rate = 0.6 / zoomNow.current;
 		setSpin({
-			lon: held.from.lon - (event.clientX - held.x) * 0.6,
-			lat: Math.max(-75, Math.min(75, held.from.lat + (event.clientY - held.y) * 0.6)),
+			lon: held.from.lon - (event.clientX - held.x) * rate,
+			lat: Math.max(-75, Math.min(75, held.from.lat + (event.clientY - held.y) * rate)),
 		});
 	};
 
-	const release = () => {
+	const release = (event: ReactPointerEvent<SVGSVGElement>) => {
+		pointers.current.delete(event.pointerId);
+		if (pointers.current.size < 2) pinch.current = undefined;
+		// The finger left behind after a pinch does not start a drag from where
+		// it is, which would jump the globe to wherever that is.
 		drag.current = undefined;
 		rest();
 	};
+
+	/*
+	 * The wheel, and Safari's pinch, listened for directly rather than through
+	 * React: React listens for wheels passively, and a listener that cannot call
+	 * preventDefault cannot stop the page scrolling, or the browser zooming the
+	 * whole page, under a wheel or a pinch that was meant for the globe.
+	 */
+	useEffect(() => {
+		const svg = picture.current;
+		if (!svg) return;
+
+		let gesturing = false;
+		let gestureFrom = 1;
+
+		const wheel = (event: WheelEvent) => {
+			event.preventDefault();
+			// Safari's pinch comes as gesture events; a wheel it sends alongside
+			// one is the same pinch said twice.
+			if (gesturing && event.ctrlKey) return;
+
+			const said = wheelSays(event);
+			aimed.current = true;
+			setTurned(true);
+			rest();
+
+			if ("zoom" in said) {
+				setZoom((was) => clampZoom(was * said.zoom));
+				return;
+			}
+
+			const rate = PER_SWIPE_PIXEL / zoomNow.current;
+			setSpin((was) => ({
+				lon: was.lon + said.turn.x * rate,
+				lat: Math.max(-75, Math.min(75, was.lat - said.turn.y * rate)),
+			}));
+		};
+
+		const gestureStart = (event: Event) => {
+			event.preventDefault();
+			gesturing = true;
+			gestureFrom = zoomNow.current;
+			aimed.current = true;
+			setTurned(true);
+		};
+		const gestureChange = (event: Event) => {
+			event.preventDefault();
+			const scale = (event as Event & { scale?: number }).scale ?? 1;
+			setZoom(clampZoom(gestureFrom * scale));
+			rest();
+		};
+		const gestureEnd = (event: Event) => {
+			event.preventDefault();
+			gesturing = false;
+		};
+
+		svg.addEventListener("wheel", wheel, { passive: false });
+		svg.addEventListener("gesturestart", gestureStart);
+		svg.addEventListener("gesturechange", gestureChange);
+		svg.addEventListener("gestureend", gestureEnd);
+		return () => {
+			svg.removeEventListener("wheel", wheel);
+			svg.removeEventListener("gesturestart", gestureStart);
+			svg.removeEventListener("gesturechange", gestureChange);
+			svg.removeEventListener("gestureend", gestureEnd);
+		};
+	}, []);
 
 	return (
 		<div className="relative select-none">
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: the globe is a picture; every relay on it is a button */}
 			<svg
+				ref={picture}
 				viewBox={`${-R - 6} ${-R - 6} ${(R + 6) * 2} ${(R + 6) * 2}`}
 				className="w-full cursor-grab touch-none active:cursor-grabbing"
 				onPointerDown={grab}
@@ -333,22 +502,30 @@ export function Globe({
 			>
 				<title>{t("Where the servers are")}</title>
 
+				<defs>
+					<clipPath id={lens}>
+						<circle r={R} />
+					</clipPath>
+				</defs>
+
+				<g clipPath={`url(#${lens})`}>
+
 				{/* The ocean, and a rim to give the sphere an edge. Without the rim
 				    the coastlines float and the thing reads as a scatter of shapes
 				    rather than as a ball. */}
-				<circle r={R} className="fill-surface stroke-border" strokeWidth={1} />
+				<circle r={R * zoom} className="fill-surface stroke-border" strokeWidth={1} />
 
-				<path d={meridians(spin)} className="stroke-fg-muted/15" strokeWidth={0.5} fill="none" />
+				<path d={meridians(spin, zoom)} className="stroke-fg-muted/15" strokeWidth={0.5} fill="none" />
 
 				<path
-					d={LAND.map((ring) => outline(ring, spin)).join("")}
+					d={LAND.map((ring) => outline(ring, spin, zoom)).join("")}
 					className="fill-none stroke-fg-muted/55"
 					strokeWidth={0.9}
 					strokeLinejoin="round"
 				/>
 
 				{placed.map((relay) => {
-					const at = project(relay.lon as number, relay.lat as number, spin);
+					const at = project(relay.lon as number, relay.lat as number, spin, zoom);
 
 					if (!at.facing) return null;
 
@@ -393,6 +570,9 @@ export function Globe({
 						</g>
 					);
 				})}
+				</g>
+
+				{zoom > 1 && <circle r={R} className="pointer-events-none fill-none stroke-border" strokeWidth={1} />}
 			</svg>
 
 			{/*
@@ -404,7 +584,7 @@ export function Globe({
 			<div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center">
 				<span
 					className={cn(
-						"rounded-full border border-border bg-surface-hi/90 px-2.5 py-1 backdrop-blur",
+						"rounded-full border border-border bg-surface-hi/90 px-2.5 py-1 backdrop-blur afloat",
 						"text-[11.5px] transition-opacity",
 						over || value ? "opacity-100" : "opacity-0",
 					)}

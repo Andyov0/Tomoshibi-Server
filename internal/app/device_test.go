@@ -33,6 +33,8 @@ func TestTheAppsAreReadFromTheirOwnAgent(t *testing.T) {
 			store.Client{Kind: "android", App: "0.1.0.1", System: "Android 16", Device: "samsung SM-F956B"}},
 		{"Tomoshibi/0.1.0 (Windows)",
 			store.Client{Kind: "windows", App: "0.1.0"}},
+		{"Tomoshibi/0.1.7 (Linux; Ubuntu 24.04.4 LTS; LENOVO 21K5 x86_64)",
+			store.Client{Kind: "linux", App: "0.1.7", System: "Ubuntu 24.04.4 LTS", Device: "LENOVO 21K5 x86_64"}},
 		// A platform this server has not heard of is still an app.
 		{"Tomoshibi/1.0 (Vision; visionOS 3)",
 			store.Client{Kind: "app", App: "1.0", System: "visionOS 3"}},
@@ -106,6 +108,53 @@ func TestALongAgentIsCutShort(t *testing.T) {
 	got := clientOf(long)
 	if len(got.Agent) != agentKept || got.Browser != "Chrome 155" {
 		t.Errorf("kept %d bytes as %q", len(got.Agent), got.Browser)
+	}
+}
+
+// An agent of the apps' shape is read into parts, and each part is cut as
+// the agent is: otherwise a megabyte between two semicolons is kept whole as
+// the app's system, beside an agent that was cut to 256 bytes.
+func TestALongAppAgentIsCutShortInEveryPart(t *testing.T) {
+	long := "Tomoshibi/" + strings.Repeat("1", 300_000) + " (iPhone; " + strings.Repeat("i", 300_000) + "; " + strings.Repeat("d", 300_000) + ")"
+
+	got := clientOf(long)
+	if got.Kind != "iphone" {
+		t.Fatalf("read as %q, want an iPhone app", got.Kind)
+	}
+
+	for name, part := range map[string]string{"version": got.App, "system": got.System, "model": got.Device, "agent": got.Agent} {
+		if len(part) > agentKept {
+			t.Errorf("the %s was kept at %d bytes", name, len(part))
+		}
+	}
+}
+
+// The Linux app's model is the firmware's maker and product with the processor
+// last, and the processor is what decides which of the two builds somebody
+// needs. The cut that bounds each part is not to take it: with each part cut
+// at sixty-four bytes, as it was when no app said more than a dozen
+// characters, the first of these was kept as "... C1MG x86_6" and the second
+// as "... Machine aarc", and the page could no longer say which build either
+// runs.
+func TestALinuxAppKeepsItsProcessorWhateverTheFirmwareCallsTheMachine(t *testing.T) {
+	for agent, want := range map[string]store.Client{
+		"Tomoshibi/0.1.7 (Linux; Ubuntu 24.04.4 LTS; Micro-Star International Co., Ltd. Prestige 14 AI Evo C1MG x86_64)": {
+			Kind: "linux", App: "0.1.7", System: "Ubuntu 24.04.4 LTS",
+			Device: "Micro-Star International Co., Ltd. Prestige 14 AI Evo C1MG x86_64",
+		},
+		"Tomoshibi/0.1.7.2 (Linux; Debian GNU/Linux 13 trixie; Parallels International GmbH. Parallels ARM Virtual Machine aarch64)": {
+			Kind: "linux", App: "0.1.7.2", System: "Debian GNU/Linux 13 trixie",
+			Device: "Parallels International GmbH. Parallels ARM Virtual Machine aarch64",
+		},
+	} {
+		got := clientOf(agent)
+		if got.Agent != agent {
+			t.Errorf("the agent as sent was not kept: %q", got.Agent)
+		}
+		got.Agent = ""
+		if *got != want {
+			t.Errorf("%q:\n  got  %+v\n  want %+v", agent, *got, want)
+		}
 	}
 }
 

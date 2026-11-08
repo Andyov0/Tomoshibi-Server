@@ -190,7 +190,16 @@ export function say(text: string): string {
 }
 
 export function t(phrase: Phrase, values?: Values): string {
-	const template = DICTIONARIES[current][phrase] ?? phrase;
+	return tIn(current, phrase, values);
+}
+
+/**
+ * Say something in a given language rather than the reader's: for drawing a
+ * phrase at the size of the longest language it is said in (Steady), so that
+ * changing the language changes the words and not the page.
+ */
+export function tIn(language: Locale, phrase: Phrase, values?: Values): string {
+	const template = DICTIONARIES[language][phrase] ?? phrase;
 	if (!values) return template;
 
 	return segments(template)

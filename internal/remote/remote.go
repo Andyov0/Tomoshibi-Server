@@ -37,7 +37,12 @@ and use that answer when they cannot reach this server:
     app, and on again in a narrower case.
   - params: a handful of numbers the apps would otherwise have compiled in.
   - notice: one notice in the lobby, in the apps' four languages, until a time
-    or until it is taken down.
+    or until it is taken down. For people signed in: the web shows it in its
+    lobby only, and the apps are to do the same.
+  - signin_notice: one notice on the sign-in page, for people not signed in,
+    shaped as the lobby's. The owner, 2026-11-02, after the lobby's had been
+    shown on the web's sign-in too: "separate the sign-in page's; this one is
+    for people signed in".
 
 The file is remote.json, beside the apps' manifest (internal/app/apps.go), and
 read on every request in the same way and for the same reason: a change is the
@@ -48,7 +53,8 @@ file rewritten, and the server is not restarted for it.
 	               "from": "0.1.4", "below": "0.1.5", "note": "why it is off"}],
 	 "params":   [{"name": "screen_share_max_fps", "value": 30, "platforms": ["android"]}],
 	 "notice":   {"id": "2026-10-22-1", "level": "info", "until": "2026-10-23T12:00:00Z",
-	              "text": {"zh-Hans": "…", "zh-Hant": "…", "ja": "…", "en": "…"}}}
+	              "text": {"zh-Hans": "…", "zh-Hant": "…", "ja": "…", "en": "…"}},
+	 "signin_notice": {"id": "2026-11-02-1", "level": "info", "text": {"en": "…"}}}
 
 The features a switch is written for are screen-share (sharing a screen),
 background-blur, watch-together, music (the jukebox) and app-updates (the apps
@@ -64,8 +70,9 @@ is not to be added: the browser client measures by the same rule
 the apps and the browser choosing relays differently.
 
 A rule's platforms are the kinds the apps' user agents are read as
-(internal/app/device.go): mac, iphone, ipad, android and windows, with ios for
-the last two of Apple's together; none at all is every platform. Its from and
+(internal/app/device.go): mac, iphone, ipad, android, windows and linux, with ios
+for the two of Apple's together (linux is both of the Linux app's processors,
+which differ in their builds and in nothing a rule is about); none at all is every platform. Its from and
 below are versions, compared as the update check compares them, and a rule
 holds for an app whose version is from or later and earlier than below. Where
 two rules name one feature or one number, the later one in the list wins, which
@@ -139,7 +146,9 @@ const iOS = "ios"
 
 // platforms is every name a rule's platforms may hold: the kinds clientOf
 // gives the apps (internal/app/device.go) and the one alias for two of them.
-var platforms = map[string]bool{"mac": true, "iphone": true, "ipad": true, "android": true, "windows": true, iOS: true}
+var platforms = map[string]bool{
+	"mac": true, "iphone": true, "ipad": true, "android": true, "windows": true, "linux": true, iOS: true,
+}
 
 var (
 	// ruleName is a feature or a number's name: lowercase, digits, dashes and
@@ -245,6 +254,8 @@ type Settings struct {
 	Switches []Switch
 	Params   []Param
 	Notice   *Notice
+	// SignInNotice is the sign-in page's notice, apart from the lobby's.
+	SignInNotice *Notice
 
 	// UnreadSwitches is how many switches the file holds that are not in
 	// Switches, with a section that is not a list counted as one. The
@@ -331,6 +342,7 @@ func parse(raw []byte, path string) Settings {
 	settings.Switches, settings.UnreadSwitches = switchesOf(sections["switches"], path)
 	settings.Params = paramsOf(sections["params"], path)
 	settings.Notice = noticeOf(sections["notice"], path)
+	settings.SignInNotice = noticeOf(sections["signin_notice"], path)
 
 	return settings
 }
@@ -886,10 +898,19 @@ var ErrUnreadable = errors.New("the apps' remote settings are not a JSON object,
 // keep the file.
 var ErrNoDirectory = errors.New("no apps directory is configured (meet.apps.mac_dir), so there is nowhere to keep the apps' remote settings")
 
-// SetNotice publishes a notice, or with nil takes the one there down.
+// SetNotice publishes the lobby's notice, or with nil takes the one there down.
 func (f *File) SetNotice(notice *Notice) error {
+	return f.setNoticeIn("notice", notice)
+}
+
+// SetSignInNotice publishes the sign-in page's notice, or with nil takes it down.
+func (f *File) SetSignInNotice(notice *Notice) error {
+	return f.setNoticeIn("signin_notice", notice)
+}
+
+func (f *File) setNoticeIn(section string, notice *Notice) error {
 	if notice == nil {
-		return f.replace("notice", nil)
+		return f.replace(section, nil)
 	}
 
 	value, err := indented(notice)
@@ -897,7 +918,7 @@ func (f *File) SetNotice(notice *Notice) error {
 		return err
 	}
 
-	return f.replace("notice", value)
+	return f.replace(section, value)
 }
 
 // SetSwitches replaces every switch with the list given.

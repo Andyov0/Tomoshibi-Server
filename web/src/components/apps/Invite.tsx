@@ -156,7 +156,7 @@ export function Invite({ ios, onChanged, onSignedOut }: InviteProps) {
 						said.leaving ? "animate-depart" : "animate-arrive",
 					)}
 				>
-					<MailCheck className="mt-0.5 size-4 shrink-0 text-tally" />
+					<MailCheck className="mt-0.5 size-4 shrink-0 text-tally-ink" />
 					<p className="min-w-0 text-[12px] text-fg leading-snug [overflow-wrap:anywhere]">
 						{shown.outcome === "sent" ? (
 							<Phrased

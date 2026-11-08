@@ -63,10 +63,19 @@ Requirements and rules:
 - If the named relay is not answering, the control node uses the nearest
   answering relay that signals for itself (not an administrators-only one),
   and logs `a relay signals through one that is not answering, so its clients
-  signal through another`. If there is none, clients signal to the mainland
-  relay directly, logged as `a relay signals through another and none can
-  carry it`: a call that may be intercepted rather than one that certainly
-  fails.
+  signal through another`. If there is none, the mainland relay is
+  **stranded**: no client is ever sent its own address (no client opens TLS to
+  a mainland machine, ever). It is not chosen for anybody — a client that
+  measured it and asked for it is given another relay — it is greyed in
+  `/api/relays` like a relay out of service, its row in **Relays** says
+  "Offered to nobody", and a join that could only get in by signalling to it
+  (the meeting is held there and the relay the client got cannot forward to
+  it) is refused with `503 no_signalling`, logged as `a relay signals through
+  another and nothing can carry its signalling, so a join that needed it was
+  refused`. It used to fall back to the mainland relay's own address, as a
+  call that might be intercepted rather than one that certainly failed; the
+  handshake is what gets the machine filtered, so that fallback is gone, and
+  the native core refuses such an address on its side too.
 - The named relay is kept under watch even when out of service, and cannot be
   removed while a relay signals through it.
 - Usually combined with `SILENT=1` on the mainland relay.

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"tomoshibi/internal/config"
+	"tomoshibi/internal/limit"
 	"tomoshibi/internal/store"
 )
 
@@ -464,7 +465,19 @@ func (a *API) changeOwnPassphrase(session Session, w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Charged like a sign-in, because it is one: somebody holding a session
+	// that is not theirs could otherwise try passphrases here without limit,
+	// and the one they find is the long-lived credential behind the session.
+	attempt, allowed := a.doors.SignIn.Take(limit.Caller(r, a.conf.Meet.Hops()))
+	if !allowed {
+		refuse(w, http.StatusTooManyRequests, "too_many_attempts")
+		return
+	}
+	defer attempt.Settled()
+
 	if a.sessions.Signature(body.Current) != session.Trip {
+		attempt.Failed()
+
 		a.log.Record(Entry{
 			Action: "change passphrase", Trip: session.Trip, Name: session.Name,
 			Failed: true, Reason: "the current passphrase did not match",

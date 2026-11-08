@@ -54,6 +54,18 @@ type Stats struct {
 	// StartedAt is when this relay came up, so a control node can say which of
 	// its relays was restarted without asking anybody.
 	StartedAt time.Time `json:"startedAt"`
+
+	// CertExpires is when the certificate this relay serves stops being good,
+	// for a relay that serves one from a file of its own.
+	//
+	// Sent with the counters because the counters are what the control node
+	// already asks every relay for, every few seconds. The renewal pushes a
+	// certificate to everybody and does not track who took it, so a relay that
+	// refused one — a full disk, a key it could not write — carried on serving
+	// the old one with nothing anywhere saying so until the day it expired, on
+	// that relay alone. Absent behind a proxy that terminates TLS, where there
+	// is no certificate here to read, and from a relay older than this field.
+	CertExpires *time.Time `json:"certExpires,omitempty"`
 }
 
 // Read takes one reading from the embedded media server.
@@ -81,7 +93,13 @@ func (s *Server) Read(started time.Time) Stats {
 // These figures say how many people are in calls here and how much is flowing,
 // which is not a secret worth much on its own and is exactly the shape of thing
 // that should not be readable by anybody who finds the port.
-func StatsHandler(server *Server, key, secret string, started time.Time) http.Handler {
+//
+// certPath is the certificate this relay serves, where it serves one itself;
+// its expiry goes out with the counters (see Stats.CertExpires). Read on each
+// request rather than once, because a renewal replaces the file underneath a
+// running process and the old expiry would otherwise be reported until the
+// next restart.
+func StatsHandler(server *Server, key, secret string, started time.Time, certPath string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !authorised(r, key, secret) {
 			// The same answer an unauthenticated twirp call gets, so this path
@@ -92,7 +110,10 @@ func StatsHandler(server *Server, key, secret string, started time.Time) http.Ha
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(server.Read(started))
+		reading := server.Read(started)
+		reading.CertExpires = CertificateExpiry(certPath)
+
+		_ = json.NewEncoder(w).Encode(reading)
 	})
 }
 

@@ -92,6 +92,15 @@ func Web(files fs.FS) http.Handler {
 		// request is to this origin. Only those two: a meeting embedded in
 		// somebody's own site is a reasonable thing to build, and nothing a
 		// participant can press does harm to anybody else.
+		//
+		// That directive and no other, and that matters to the sign-in: it says
+		// who may frame these pages and nothing about what they may load, so
+		// Cloudflare's human check (its script and its frame, both from
+		// https://challenges.cloudflare.com) loads on every page with a sign-in
+		// form. A script-src, frame-src or default-src added here has to name
+		// that origin, or the widget is blocked, no token is ever issued, and
+		// nobody can sign in, with nothing on the page saying why.
+		// TestEverySignInPageMayLoadTheHumanCheck holds it.
 		if unframed[name] {
 			w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 			w.Header().Set("X-Frame-Options", "DENY")

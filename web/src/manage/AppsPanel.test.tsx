@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AppNotice, AppNoticeReading, AppSwitch, AppSwitches } from "./api";
+import type { AppNotice, AppNoticeReading, AppSwitch, AppSwitches, NoticeSlot } from "./api";
 import { AppsPanel, newer, noticeId } from "./AppsPanel";
 
 /*
@@ -31,12 +31,28 @@ const { notice, publishNotice, takeDownNotice, switches, setSwitches, actionFail
 
 vi.mock("./api", () => ({
 	SignedOut: class SignedOut extends Error {},
-	api: { notice, publishNotice, takeDownNotice, switches, setSwitches },
+	api: {
+		notice,
+		publishNotice,
+		takeDownNotice,
+		switches,
+		setSwitches,
+		// Which versions are handed out, which every test here leaves alone.
+		apps: async () => ({ configured: true, platforms: [] }),
+	},
 }));
 
 vi.mock("@/live/notices", () => ({ actionFailed }));
 
 const none: AppNoticeReading = { notice: null, showing: false };
+
+/** What each notice's address answers, as the file holds it; reset before each test. */
+let readings: Record<NoticeSlot, AppNoticeReading> = { lobby: none, signin: none };
+
+/** One of the two notice cards, found by its title. */
+function card(title: "Lobby notice" | "Sign-in page notice"): HTMLElement {
+	return screen.getByText(title).closest("section") as HTMLElement;
+}
 
 const current: AppNotice = {
 	id: "2026-10-22-080000",
@@ -58,14 +74,15 @@ async function poll() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	// Each write is what the next read answers, as the file is.
-	notice.mockResolvedValue(none);
-	publishNotice.mockImplementation(async (sent: AppNotice) => {
-		notice.mockResolvedValue({ notice: sent, showing: true });
-		return { notice: sent, showing: true };
+	// Each write is what the next read of that notice answers, as the file is.
+	readings = { lobby: none, signin: none };
+	notice.mockImplementation(async (kind: NoticeSlot) => readings[kind]);
+	publishNotice.mockImplementation(async (kind: NoticeSlot, sent: AppNotice) => {
+		readings[kind] = { notice: sent, showing: true };
+		return readings[kind];
 	});
-	takeDownNotice.mockImplementation(async () => {
-		notice.mockResolvedValue(none);
+	takeDownNotice.mockImplementation(async (kind: NoticeSlot) => {
+		readings[kind] = none;
 		return none;
 	});
 	switches.mockResolvedValue(listed([]));
@@ -79,21 +96,23 @@ describe("the lobby's notice", () => {
 	it("publishes what was typed, under a new id each time, in the languages that have words", async () => {
 		render(<AppsPanel canSettings onSignedOut={vi.fn()} />);
 
-		await screen.findByText("No notice is being shown.");
+		await within(await waitFor(() => card("Lobby notice"))).findByText("No notice is being shown.");
+		const lobby = card("Lobby notice");
 
-		const publish = screen.getByRole("button", { name: "Publish" }) as HTMLButtonElement;
+		const publish = within(lobby).getByRole("button", { name: "Publish" }) as HTMLButtonElement;
 		expect(publish.disabled, "a notice in no language was offered for publishing").toBe(true);
 
-		fireEvent.change(screen.getByLabelText("简体中文"), { target: { value: "  今晚十点维护  " } });
-		fireEvent.change(screen.getByLabelText("日本語"), { target: { value: "   " } });
-		fireEvent.click(within(screen.getByRole("radiogroup", { name: "Level" })).getByRole("radio", { name: "Warning" }));
-		fireEvent.change(screen.getByLabelText("Until"), { target: { value: "2099-03-04T05:06" } });
+		fireEvent.change(within(lobby).getByLabelText("简体中文"), { target: { value: "  今晚十点维护  " } });
+		fireEvent.change(within(lobby).getByLabelText("日本語"), { target: { value: "   " } });
+		fireEvent.click(within(within(lobby).getByRole("radiogroup", { name: "Level" })).getByRole("radio", { name: "Warning" }));
+		fireEvent.change(within(lobby).getByLabelText("Until"), { target: { value: "2099-03-04T05:06" } });
 
 		fireEvent.click(publish);
 
 		await waitFor(() => expect(publishNotice).toHaveBeenCalledTimes(1));
 
-		const sent = publishNotice.mock.calls[0]?.[0] as AppNotice;
+		expect(publishNotice.mock.calls[0]?.[0], "the lobby's card published elsewhere").toBe("lobby");
+		const sent = publishNotice.mock.calls[0]?.[1] as AppNotice;
 		expect(sent.text).toEqual({ "zh-Hans": "今晚十点维护" });
 		expect(sent.level).toBe("warning");
 		expect(sent.until).toBe(new Date("2099-03-04T05:06").toISOString());
@@ -101,28 +120,28 @@ describe("the lobby's notice", () => {
 
 		// A second publish, a second later, is a second notice.
 		await new Promise((resolve) => setTimeout(resolve, 1100));
-		fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+		fireEvent.click(within(lobby).getByRole("button", { name: "Publish" }));
 
 		await waitFor(() => expect(publishNotice).toHaveBeenCalledTimes(2));
-		const again = publishNotice.mock.calls[1]?.[0] as AppNotice;
+		const again = publishNotice.mock.calls[1]?.[1] as AppNotice;
 		expect(again.id, "two notices under one id: whoever closed the first never sees the second").not.toBe(
 			sent.id,
 		);
 	});
 
 	it("is filled from the notice in the file, and not over what is being typed", async () => {
-		notice.mockResolvedValue({ notice: current, showing: true });
+		readings.lobby = { notice: current, showing: true };
 
 		render(<AppsPanel canSettings onSignedOut={vi.fn()} />);
 
-		const english = (await screen.findByLabelText("English")) as HTMLTextAreaElement;
+		const english = (await waitFor(() => within(card("Lobby notice")).getByLabelText("English"))) as HTMLTextAreaElement;
 		await waitFor(() => expect(english.value).toBe("Maintenance tonight"));
-		expect(screen.getByText("The apps are showing this now.")).toBeDefined();
+		expect(within(card("Lobby notice")).getByText("This is being shown now.")).toBeDefined();
 
 		fireEvent.change(english, { target: { value: "Maintenance tonight, from ten" } });
 
 		// Another administrator publishes something else meanwhile.
-		notice.mockResolvedValue({ notice: { ...current, id: "2026-10-22-090000", text: { en: "Other words" } }, showing: true });
+		readings.lobby = { notice: { ...current, id: "2026-10-22-090000", text: { en: "Other words" } }, showing: true };
 		await poll();
 
 		await screen.findByText("Other words");
@@ -130,36 +149,62 @@ describe("the lobby's notice", () => {
 	});
 
 	it("is taken down by its own button, offered only while there is a notice", async () => {
-		notice.mockResolvedValue({ notice: current, showing: true });
+		readings.lobby = { notice: current, showing: true };
 
 		render(<AppsPanel canSettings onSignedOut={vi.fn()} />);
 
-		fireEvent.click(await screen.findByRole("button", { name: "Take down" }));
+		fireEvent.click(await waitFor(() => within(card("Lobby notice")).getByRole("button", { name: "Take down" })));
 
-		await waitFor(() => expect(takeDownNotice).toHaveBeenCalledTimes(1));
-		await screen.findByText("No notice is being shown.");
+		await waitFor(() => expect(takeDownNotice).toHaveBeenCalledWith("lobby"));
+		await waitFor(() => expect(within(card("Lobby notice")).getByText("No notice is being shown.")).toBeDefined());
 		await waitFor(() => expect(screen.queryByRole("button", { name: "Take down" })).toBeNull());
 	});
 
 	it("says a notice past its end is no longer shown", async () => {
-		notice.mockResolvedValue({ notice: { ...current, until: "2020-01-01T00:00:00Z" }, showing: false });
+		readings.lobby = { notice: { ...current, until: "2020-01-01T00:00:00Z" }, showing: false };
 
 		render(<AppsPanel canSettings onSignedOut={vi.fn()} />);
 
-		expect(await screen.findByText("This has ended, and the apps no longer show it.")).toBeDefined();
+		expect(await screen.findByText("This has ended, and is no longer shown.")).toBeDefined();
 	});
 
 	it("cannot be changed without the settings, and says so", async () => {
-		notice.mockResolvedValue({ notice: current, showing: true });
+		readings.lobby = { notice: current, showing: true };
 
 		render(<AppsPanel canSettings={false} onSignedOut={vi.fn()} />);
 
-		const english = (await screen.findByLabelText("English")) as HTMLTextAreaElement;
+		const english = (await waitFor(() => within(card("Lobby notice")).getByLabelText("English"))) as HTMLTextAreaElement;
 		expect(english.disabled).toBe(true);
 		expect(screen.queryByRole("button", { name: "Publish" })).toBeNull();
 		expect(screen.queryByRole("button", { name: "Take down" })).toBeNull();
 		expect(screen.queryByRole("button", { name: "Add a rule" })).toBeNull();
-		expect(screen.getAllByText("You can view this but not change it.")).toHaveLength(2);
+		expect(screen.getAllByText("You can view this but not change it.")).toHaveLength(3);
+	});
+
+	// Two notices since the owner asked for the sign-in page's to be its own,
+	// "this one is for people signed in". Each card publishes and takes down
+	// its own, and neither touches the other.
+	it("publishes the sign-in page's notice from its own card, and leaves the lobby's alone", async () => {
+		readings.lobby = { notice: current, showing: true };
+
+		render(<AppsPanel canSettings onSignedOut={vi.fn()} />);
+
+		const signin = await waitFor(() => card("Sign-in page notice"));
+		expect(signin.textContent).toContain("For people not signed in");
+		expect(card("Lobby notice").textContent).toContain("For people signed in");
+
+		await within(signin).findByText("No notice is being shown.");
+		fireEvent.change(within(signin).getByLabelText("English"), { target: { value: "Ask an administrator for an account." } });
+		fireEvent.click(within(signin).getByRole("button", { name: "Publish" }));
+
+		await waitFor(() => expect(publishNotice).toHaveBeenCalledTimes(1));
+		expect(publishNotice.mock.calls[0]?.[0]).toBe("signin");
+		expect((publishNotice.mock.calls[0]?.[1] as AppNotice).text).toEqual({ en: "Ask an administrator for an account." });
+		expect(readings.lobby.notice?.id, "publishing the sign-in notice changed the lobby's").toBe(current.id);
+
+		fireEvent.click(await waitFor(() => within(card("Sign-in page notice")).getByRole("button", { name: "Take down" })));
+		await waitFor(() => expect(takeDownNotice).toHaveBeenCalledWith("signin"));
+		expect(takeDownNotice).not.toHaveBeenCalledWith("lobby");
 	});
 });
 

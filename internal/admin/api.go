@@ -13,10 +13,13 @@ import (
 
 	"tomoshibi/internal/config"
 	"tomoshibi/internal/limit"
+	"tomoshibi/internal/lockout"
+	"tomoshibi/internal/logring"
 	"tomoshibi/internal/remote"
 	"tomoshibi/internal/room"
 	"tomoshibi/internal/rtc"
 	"tomoshibi/internal/store"
+	"tomoshibi/internal/turnstile"
 
 	"github.com/livekit/protocol/livekit"
 )
@@ -83,6 +86,11 @@ type Names interface {
 	// Visits is every join recorded against a room, newest first, which is a
 	// different question from who is in it now and outlives the call.
 	Visits(room string, limit int) ([]store.Visit, int)
+
+	// Devices is what each signature has joined from, newest first, read from
+	// those same joins: the accounts page asks it, so that "what does she use"
+	// is answered on the person rather than by searching every room for her.
+	Devices(perTrip int) map[string][]store.Seen
 
 	// ForgetRoom removes a name and everything written against it, which is a
 	// different action from clearing where it is held.
@@ -183,6 +191,24 @@ type API struct {
 	// enrolment is what a new relay is told; nil where bringing one up from a
 	// page is not configured.
 	enrolment *Enrolment
+	// enrolments is where the tokens minted for new machines wait. Nil where
+	// there is no store, which is a relay.
+	enrolments Enrolments
+	// doors are the guessing budgets, one per door.
+	doors Doors
+	// lockout is who is shut out of signing in, at this door and the
+	// account sign-in together (internal/lockout). Nil in the tests that
+	// build an API by hand, which shuts nobody out.
+	lockout *lockout.Book
+	// human is the human check both sign-in doors ask for, nil where none is
+	// configured. Kept here beside the guessing budgets because it is the same
+	// kind of thing — what a door asks before it looks at a passphrase — and
+	// the account door reads it from here as it reads its budget.
+	human *turnstile.Checker
+	// asking bounds how often one subscriber may have either sign-in ask
+	// Cloudflare (MayAsk). Nil where there is no human check, and then the
+	// doors are as they always were.
+	asking *limit.Limiter
 	// remote is the apps' remote.json, where the lobby's notice and the
 	// feature switches are written (remote.go). Nil where there is no store or
 	// no apps directory, which the pages are told rather than shown a notice
@@ -191,15 +217,26 @@ type API struct {
 	// onRelaysChanged lets the choosing side drop its cache the moment this
 	// list moves, so a relay added here is used by the very next join.
 	onRelaysChanged func()
-	log             *Log
-	history         *History
-	stop            chan struct{}
+	// stranded says whether a relay carries media only with nothing to carry
+	// its signalling, which only the choosing side can work out. Nil where
+	// there is no choosing side.
+	stranded func(store.Relay) bool
+	log      *Log
+	history  *History
+	stop     chan struct{}
 
 	// heed is how long a warning that somebody's call is about to end is given
 	// to reach them before it ends (moving.go). Zero in the tests that build
 	// an API by hand, where nothing is on the other end to hear it.
 	heed    time.Duration
 	closing sync.Once
+
+	// ring is where the log page reads from; the process's own ring unless a
+	// test hands over another (logs.go).
+	ring *logring.Ring
+	// shelf says which app versions are handed out; nil where nothing has
+	// attached one, and the page then says none are.
+	shelf Shelf
 }
 
 // New assembles it.
@@ -234,6 +271,25 @@ func New(conf *config.Config, media *rtc.Server, st *store.Store, tripKey []byte
 	// itself.
 	api.sessions = NewSessions(api.Administrators, tripKey)
 
+	api.doors = Doors{
+		SignIn:  api.sessions.limit,
+		Account: guess.New(),
+		Join:    guess.NewWith(guess.PerAddress, guess.Join),
+		Enrol:   guess.New(),
+	}
+
+	// One book for both sign-ins, so that a caller's failures at each are
+	// counted together. Kept in the store where there is one; the interface is
+	// only handed a store that exists, for the reason kept is above.
+	var shut lockout.Kept
+	if st != nil {
+		shut = st
+	}
+	api.lockout = lockout.New(shut)
+	api.lockout.OnLock(api.lockedOut)
+
+	api.UseHumanCheck(turnstile.New(conf.Meet))
+
 	// The relay list is the store's, where a page's changes go. Nil on a
 	// deployment without one, which is a relay.
 	if st != nil {
@@ -242,6 +298,7 @@ func New(conf *config.Config, media *rtc.Server, st *store.Store, tripKey []byte
 		api.ledger = st
 		api.placing = st
 		api.settings = st
+		api.enrolments = st
 
 		// Only where there is a directory to keep it in. A *remote.File for no
 		// directory is a value, not nil, and put into the interface it would
@@ -415,6 +472,11 @@ func (a *API) UseEnrolment(enrolment *Enrolment) {
 	a.enrolment = enrolment
 }
 
+// UseStranded says how to tell a relay nothing can carry the signalling of.
+func (a *API) UseStranded(fn func(store.Relay) bool) {
+	a.stranded = fn
+}
+
 // OnRelaysChanged registers what to run when the relay list moves.
 func (a *API) OnRelaysChanged(fn func()) {
 	a.onRelaysChanged = fn
@@ -539,6 +601,8 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/admin/rooms/{room}/participants", a.observe(a.participants))
 	mux.HandleFunc("GET /api/admin/rooms/{room}/visits", a.observe(a.visits))
 	mux.HandleFunc("GET /api/admin/runtime", a.observe(a.runtime))
+	mux.HandleFunc("GET /api/admin/log", a.observe(a.readLog))
+	mux.HandleFunc("GET /api/admin/apps", a.observe(a.readApps))
 	mux.HandleFunc("GET /api/admin/policy", a.observe(a.readPolicy))
 	mux.HandleFunc("GET /api/admin/relays", a.observe(a.listRelays))
 	// One row's own measurement. A reading and not a change, so it asks for no
@@ -550,11 +614,17 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/admin/relays", a.need(config.ManageRelays, a.addRelay))
 	mux.HandleFunc("PATCH /api/admin/relays/{relay}", a.need(config.ManageRelays, a.editRelay))
 	mux.HandleFunc("DELETE /api/admin/relays/{relay}", a.need(config.ManageRelays, a.dropRelay))
-	// The install script, served to somebody signed in because it carries the
-	// enrolment secret — which is a relay of one's own, and so the same
-	// capability as adding one, and not a reading despite being a GET.
+	// The install script and the line that runs it. Neither carries a secret
+	// any more — the token is minted below and asked for by the script — so
+	// they are the relays capability's, like adding a relay by hand.
 	mux.HandleFunc("GET /api/admin/relays/script", a.need(config.ManageRelays, a.installScript))
 	mux.HandleFunc("GET /api/admin/relays/command", a.need(config.ManageRelays, a.installCommand))
+
+	// A token for one machine, which buys the deployment's credentials; see
+	// mintEnrolment for why that is moderate's and not the relays'.
+	mux.HandleFunc("POST /api/admin/relays/enrolments", a.moderate(a.mintEnrolment))
+	mux.HandleFunc("GET /api/admin/relays/enrolments", a.moderate(a.enrolmentsWaiting))
+	mux.HandleFunc("DELETE /api/admin/relays/enrolments/{id}", a.moderate(a.withdrawEnrolment))
 	mux.HandleFunc("PUT /api/admin/relays/order", a.need(config.ManageRelays, a.orderRelays))
 
 	// Who else may open these pages. Reading the list needs observe; changing
@@ -566,6 +636,14 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/admin/admins", a.moderate(a.addRole))
 	mux.HandleFunc("PATCH /api/admin/admins/{trip}", a.moderate(a.changeRole))
 	mux.HandleFunc("DELETE /api/admin/admins/{trip}", a.moderate(a.dropRole))
+
+	// Who is shut out of signing in. Every administrator sees the list, as
+	// they see who is in a room and from where; letting somebody back in is
+	// moderate's, because it reopens the door to this page as well as the
+	// account sign-in, and what it lets back in is a run of wrong passphrases.
+	mux.HandleFunc("GET /api/admin/lockouts", a.observe(a.lockouts))
+	mux.HandleFunc("DELETE /api/admin/lockouts/{key}", a.moderate(a.liftLockout))
+	mux.HandleFunc("DELETE /api/admin/lockouts", a.moderate(a.liftLockouts))
 
 	// Changing one's own passphrase needs no capability beyond being signed in.
 	// It is not an administrative act on the deployment; it is somebody looking
@@ -592,8 +670,10 @@ func (a *API) Mount(mux *http.ServeMux) {
 	// What the apps are told between releases: the lobby's notice and which
 	// features are off. The same kind of decision as the switches above, and
 	// behind the same capability. See remote.go.
-	mux.HandleFunc("GET /api/admin/remote/notice", a.observe(a.readNotice))
-	mux.HandleFunc("PUT /api/admin/remote/notice", a.need(config.ManageSettings, a.setNotice))
+	mux.HandleFunc("GET /api/admin/remote/notice", a.observe(a.readNotice(lobbyNotice)))
+	mux.HandleFunc("PUT /api/admin/remote/notice", a.need(config.ManageSettings, a.setNotice(lobbyNotice)))
+	mux.HandleFunc("GET /api/admin/remote/signin-notice", a.observe(a.readNotice(signInNotice)))
+	mux.HandleFunc("PUT /api/admin/remote/signin-notice", a.need(config.ManageSettings, a.setNotice(signInNotice)))
 	mux.HandleFunc("GET /api/admin/remote/switches", a.observe(a.readSwitches))
 	mux.HandleFunc("PUT /api/admin/remote/switches", a.need(config.ManageSettings, a.setSwitches))
 
@@ -624,16 +704,50 @@ func (a *API) MountEnrolment(mux *http.ServeMux) {
 }
 
 // open signs somebody in.
+//
+// In three steps where a human check is configured, in this order: how often
+// anybody may ask, then the check, then the guessing budget. The check comes
+// before the budget so that a request without a good token is not charged to
+// it — the budget is for guesses at a passphrase, and a request that never got
+// as far as one has not made one — and so that it is not held against the
+// budget's ceiling while Cloudflare is asked, which would let a stream of bad
+// tokens shut the door on the administrator who has a good one.
+//
+// The first step is new to this door and exists for the second. The door used
+// to begin at the budget, which costs nothing to consult; the check costs a
+// request to Cloudflare, and with nothing in front of it the door would send
+// one for every request anybody cared to make, at their rate, and the first
+// thing to give would be Cloudflare's patience with this server's address. A
+// limit sized as the join's, charged to the subscriber and shared with the
+// account door (MayAsk), bounds it. Without a human check there is no request
+// to bound, and the door is exactly what it was.
 func (a *API) open(w http.ResponseWriter, r *http.Request) {
+	// Only from these pages, or from something that is not a browser. A page
+	// anywhere could otherwise post wrong passphrases here from its visitors'
+	// browsers and, with the sign-in lockout, shut each visitor out of both
+	// sign-ins for half an hour; the account sign-in says the rest. Every
+	// other request that changes something here is refused the same way, by
+	// the gate.
+	if !FromHere(r) {
+		refuse(w, http.StatusForbidden, "cross_site")
+		return
+	}
+
+	// Then, before the budget, the body, and whatever this door is ever given
+	// to ask in front of the passphrase: a caller shut out is answered and
+	// nothing is spent or judged. See internal/lockout.
+	who := lockout.Of(r, a.conf.Meet.Hops())
+	if a.lockout.Shut(w, who, "too_many_attempts") {
+		return
+	}
+
 	caller := limit.Caller(r, a.conf.Meet.Hops())
 
-	attempt, allowed := a.sessions.limit.Take(caller)
-	if !allowed {
+	if !a.MayAsk(r) {
 		a.log.Record(Entry{Action: "sign in", Trip: "-", Failed: true, Reason: "too many attempts"})
 		refuse(w, http.StatusTooManyRequests, "too_many_attempts")
 		return
 	}
-	defer attempt.Settled()
 
 	var body struct {
 		// Name narrows the guess to one person.
@@ -644,12 +758,57 @@ func (a *API) open(w http.ResponseWriter, r *http.Request) {
 		// has to be right about who as well as what.
 		Name       string          `json:"name"`
 		Passphrase room.Passphrase `json:"passphrase"`
+		// Turnstile is the token the page's widget was given. The native apps
+		// are not let off it here as they are at the account door: they never
+		// call this door, and nothing but a browser opens these pages, so a
+		// caller saying it is an app is asked like everybody else. The one
+		// caller let off is a program on this machine; see below.
+		Turnstile string `json:"turnstile"`
 	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body)
+	// A body that could not be read whole is refused before the check and the
+	// budget, and nothing in it is compared. A field of the wrong type leaves
+	// the decoder's other fields filled, so such a body used to be judged, and
+	// signed in with the right passphrase, while never being counted towards
+	// a lockout: a review repeated "name" with a number after the real one and
+	// guessed at this door without ever being shut out. The account sign-in
+	// says the rest.
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body) != nil {
+		a.log.Record(Entry{Action: "sign in", Trip: "-", Failed: true, Reason: "unreadable request"})
+		refuse(w, http.StatusBadRequest, "unreadable")
+		return
+	}
+
+	// Asked of everybody but a program on this machine that connected to it
+	// directly, such as a health check run by cron on a control node, which
+	// has no browser to draw the widget with (turnstile.FromThisMachine). Such
+	// a program still meets everything else at this door.
+	if !a.human.Spares(r) {
+		if err := a.human.Check(r, body.Turnstile, turnstile.AdminSignIn); err != nil {
+			status, reason, said := HumanRefusal(err)
+			a.log.Record(Entry{Action: "sign in", Trip: "-", Failed: true, Reason: said})
+			refuse(w, status, reason)
+			return
+		}
+	}
+
+	attempt, allowed := a.sessions.limit.Take(caller)
+	if !allowed {
+		a.log.Record(Entry{Action: "sign in", Trip: "-", Failed: true, Reason: "too many attempts"})
+		refuse(w, http.StatusTooManyRequests, "too_many_attempts")
+		return
+	}
+	defer attempt.Settled()
 
 	session, token, ok := a.sessions.Open(body.Name, body.Passphrase)
 	if !ok {
 		attempt.Failed()
+
+		// Counted only where the body offered a passphrase; one that said
+		// none is not a guess at one.
+		if !body.Passphrase.Empty() && a.lockout.Failed(w, who, lockout.Management, "too_many_attempts") {
+			return
+		}
+
 		// Recorded without anything derived from what was typed. A rejected
 		// passphrase is still a passphrase, and one of these logs is going to
 		// be read by somebody it does not belong to.
@@ -820,7 +979,7 @@ func (a *API) now(_ Session, w http.ResponseWriter, r *http.Request) {
 	in, out, window := a.media.Throughput()
 	id, ip := a.media.Node()
 
-	respond(w, map[string]any{
+	reading := map[string]any{
 		"node":    map[string]string{"id": id, "ip": ip},
 		"since":   Started.UTC(),
 		"rooms":   stats.GetNumRooms(),
@@ -839,7 +998,17 @@ func (a *API) now(_ Session, w http.ResponseWriter, r *http.Request) {
 			"nackTotal": stats.GetNackTotal(), "nackPerSec": stats.GetNackPerSec(),
 		},
 		"cpu": map[string]any{"count": stats.GetNumCpus(), "load": stats.GetCpuLoad()},
-	})
+	}
+
+	// The certificate this machine serves, where it serves one itself, read as
+	// a relay reads its own for a control node (rtc.CertificateExpiry): a
+	// deployment of one machine has the same afternoon coming and nobody else
+	// to report it.
+	if expires := rtc.CertificateExpiry(a.conf.Meet.TLSCert); expires != nil {
+		reading["certExpires"] = expires
+	}
+
+	respond(w, reading)
 }
 
 func (a *API) rooms(_ Session, w http.ResponseWriter, r *http.Request) {
@@ -1145,6 +1314,13 @@ func (a *API) runtime(_ Session, w http.ResponseWriter, _ *http.Request) {
 			// because whether a deployment relays video at all was, until
 			// now, a question answered only by reading a file on the host.
 			"watch": a.watching(),
+			// Whether the sign-in doors ask for a human check, under which
+			// widget, and where a token has to have been solved. The site key
+			// and not the secret, for the reason the credentials below show the
+			// key and not the secret: the site key is on every sign-in page
+			// already, and the secret is what makes Cloudflare vouch for a
+			// token.
+			"turnstile": a.humanCheck(),
 		},
 		"rooms": a.currentPolicy(),
 		"rtc": map[string]any{
@@ -1158,6 +1334,21 @@ func (a *API) runtime(_ Session, w http.ResponseWriter, _ *http.Request) {
 		"credentials": map[string]any{"key": a.conf.Key},
 		"codecs":      codecNames(a.conf),
 	})
+}
+
+// humanCheck is what the runtime panel is told about the human check: nil
+// where there is none.
+func (a *API) humanCheck() map[string]any {
+	if a.human == nil {
+		return nil
+	}
+
+	return map[string]any{
+		"siteKey":          a.human.SiteKey(),
+		"hostnames":        a.human.Hostnames(),
+		"exemptNativeApps": a.conf.Meet.Turnstile.ExemptsNativeApps(),
+		"exemptLocal":      a.conf.Meet.Turnstile.ExemptsLocal(),
+	}
 }
 
 func codecNames(conf *config.Config) []string {
@@ -1594,21 +1785,125 @@ func (a *API) SessionOf(r *http.Request) (Session, bool) {
 	return a.sessions.Of(r)
 }
 
-// Guessing is the budget every door that takes a passphrase spends from.
+// Doors are the guessing budgets, one for each door that takes a passphrase or
+// a token.
 //
-// Shared rather than one each, because they check the same secret. The
-// management sign-in was held to ten a minute with a ceiling on the whole
-// endpoint, and the room join — which also asks whether a passphrase belongs to
-// an administrator, and says so in its answer — was held to ten a second with
-// no ceiling at all. Sixty times the rate through a door nobody had counted as
-// a door, and a dictionary that would take centuries at one of them takes an
-// afternoon at the other.
-func (a *API) Guessing() *guess.Attempts {
-	if a == nil || a.sessions == nil {
+// Every one is bounded, by address and in total, because they check secrets
+// worth guessing at: the join asks whether a passphrase is an administrator's
+// and says so in its answer, and the account sign-in accepts an
+// administrator's name and passphrase. They were one shared budget, so that an
+// attacker could not move to the cheaper door; what that bought in practice
+// was that whatever spent the join's budget — a busy hour, or a page anywhere
+// making its visitors' browsers post wrong passphrases — shut the management
+// sign-in, the account sign-in and the enrolment with it. One each now, and
+// the join's ceiling sized for the people who arrive there (package guess).
+type Doors struct {
+	// SignIn is the management sign-in and an administrator changing their own
+	// passphrase.
+	SignIn *guess.Attempts
+	// Account is the account sign-in and an account changing its passphrase.
+	Account *guess.Attempts
+	// Join is the passphrase at the join.
+	Join *guess.Attempts
+	// Enrol is the token a new relay presents.
+	Enrol *guess.Attempts
+}
+
+// Lockout is who is shut out of signing in, which the account sign-in counts
+// against as well. Nil on a nil API, which shuts nobody out.
+func (a *API) Lockout() *lockout.Book {
+	if a == nil {
 		return nil
 	}
 
-	return a.sessions.limit
+	return a.lockout
+}
+
+// Guessing is the doors' budgets. Every field is nil on a nil API, which lets
+// everything through, as a deployment with no administrators always has.
+func (a *API) Guessing() Doors {
+	if a == nil {
+		return Doors{}
+	}
+
+	return a.doors
+}
+
+// HumanCheck is the human check the sign-in doors ask for, nil where none is
+// configured and on a nil API. A nil checker passes every request, so a door
+// can ask it without asking first whether to.
+func (a *API) HumanCheck() *turnstile.Checker {
+	if a == nil {
+		return nil
+	}
+
+	return a.human
+}
+
+// MayAsk charges one request to how often the caller may have this server
+// ask Cloudflare, at either sign-in door, and reports whether it was within
+// that. True where there is no human check.
+//
+// One bound for both doors, so that the two together are what a caller is
+// allowed rather than twice it; and charged to the subscriber, an IPv6
+// address by its /64 as the guessing budgets and the lockout count one
+// (guess.Subscriber), never to the address alone. It was the address alone:
+// the bound was the join's limiter, and a review sent a bad token from each
+// of three hundred addresses in one /64 and had Cloudflare asked three
+// hundred times, at either door, with nothing refused. The bound is there so
+// that a stream of rubbish tokens is not a stream of requests to Cloudflare
+// from this server's address, and an IPv6 subscriber has more addresses than
+// anybody could send from. Sized as the join's limiter, join_rate and
+// join_burst, which a deployment already chose for how often anybody may
+// ask anything.
+func (a *API) MayAsk(r *http.Request) bool {
+	if a == nil || a.asking == nil {
+		return true
+	}
+
+	return a.asking.AllowKey(guess.Subscriber(limit.Caller(r, a.conf.Meet.Hops())))
+}
+
+// UseHumanCheck puts a human check in front of both sign-in doors, or takes it
+// away where checker is nil. New calls it with the configured one; a test calls
+// it with one that asks something standing in for Cloudflare.
+func (a *API) UseHumanCheck(checker *turnstile.Checker) {
+	a.human = checker
+	a.asking = nil
+
+	if checker != nil {
+		a.asking = limit.New(a.conf.Meet.JoinRate, a.conf.Meet.JoinBurst, a.conf.Meet.Hops())
+	}
+}
+
+// HumanRefusal is how a door answers a human check that did not pass: the
+// status, the code the page turns into a sentence, and the words for the
+// management log.
+//
+// One place for both doors, so that a page meets the same code for the same
+// thing at either. Three codes, for the three sentences in package turnstile;
+// none of them is 401, which the management pages read as a session having
+// ended rather than as a refusal to explain.
+func HumanRefusal(err error) (status int, reason, said string) {
+	switch {
+	case errors.Is(err, turnstile.ErrMissing):
+		return http.StatusBadRequest, "human_check_missing", "no human check"
+	case errors.Is(err, turnstile.ErrBusy):
+		// Said quietly: a flood is every request in it, and the line below
+		// for each would be the flood again in the log.
+		slog.Debug("a sign-in was refused because too many human checks were waiting on Cloudflare")
+
+		return http.StatusServiceUnavailable, "human_check_unavailable", "human check could not be reached"
+	case errors.Is(err, turnstile.ErrUnreachable):
+		slog.Warn("a sign-in was refused because Cloudflare could not be asked about its human check",
+			"error", err)
+
+		return http.StatusServiceUnavailable, "human_check_unavailable", "human check could not be reached"
+	default:
+		slog.Debug("a sign-in's human check did not pass", "error", err)
+
+		return http.StatusForbidden, "human_check_failed", "human check failed"
+	}
 }
 
 // visits answers what has happened in one room.

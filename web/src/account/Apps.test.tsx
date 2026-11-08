@@ -31,6 +31,10 @@ const OFFERED = {
 	mac: { available: true, version: "1.4.2", size: 84_213_760 },
 	android: { available: true, version: "0.1.0.6", size: 31_457_280 },
 	windows: { available: true, version: "0.1.0.2", size: 41_943_040 },
+	linux: {
+		x86_64: { available: true, version: "0.1.7", size: 47_185_920 },
+		aarch64: { available: true, version: "0.1.7", size: 45_088_768 },
+	},
 	ios: { invites: true, left: 5 },
 };
 
@@ -83,7 +87,7 @@ describe("somebody signed out", () => {
 	it("is asked to sign in, and told what for", async () => {
 		await open(401);
 
-		expect(screen.getByText("Sign in to download Tomoshibi for Mac, Windows, iPhone, iPad and Android.")).toBeTruthy();
+		expect(screen.getByText("Sign in to download Tomoshibi for Mac, Windows, Linux, iPhone, iPad and Android.")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
 		expect(document.querySelector('a[href^="/api/apps/"]')).toBeNull();
 	});
@@ -316,6 +320,7 @@ describe("the reader's platform", () => {
 			"Mozilla/5.0 (Windows NT 10.0; ARM64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
 		android:
 			"Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
+		linux: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
 	};
 
 	/** The names of the rows under "Other platforms", in the order drawn. */
@@ -361,7 +366,7 @@ describe("the reader's platform", () => {
 		expect(within(windows).getByRole("link", { name: "Download" }).getAttribute("href")).toBe("/api/apps/windows");
 		expect(windows.textContent).toContain("Version 0.1.0.2");
 
-		expect(rows()).toEqual(["macOS", "Android", "Windows"]);
+		expect(rows()).toEqual(["macOS", "Android", "Windows", "Linux"]);
 	});
 
 	it("keeps Windows' row as a place kept, with nothing to press, until it has a build", async () => {
@@ -387,7 +392,7 @@ describe("the reader's platform", () => {
 
 		// The rest are rows, in the usual order with Android taken out of it.
 		expect(screen.queryByRole("region", { name: "macOS" })).toBeNull();
-		expect(rows()).toEqual(["macOS", "iOS", "Windows"]);
+		expect(rows()).toEqual(["macOS", "iOS", "Windows", "Linux"]);
 		expect(within(screen.getByRole("group", { name: "macOS" })).getByRole("link", { name: "Download" })).toBeTruthy();
 		expect(within(screen.getByRole("group", { name: "iOS" })).getByRole("button", { name: "Invite by email" })).toBeTruthy();
 		expect(within(screen.getByRole("group", { name: "Windows" })).getByRole("link", { name: "Download" })).toBeTruthy();
@@ -430,7 +435,7 @@ describe("the reader's platform", () => {
 		await send("ada@example.com");
 		expect((await within(row).findByRole("status")).textContent).toContain("Sent to ada@example.com.");
 
-		expect(rows()).toEqual(["iOS", "Android", "Windows"]);
+		expect(rows()).toEqual(["iOS", "Android", "Windows", "Linux"]);
 		expect(within(screen.getByRole("group", { name: "Android" })).getByRole("link", { name: "Download" })).toBeTruthy();
 	});
 
@@ -449,7 +454,7 @@ describe("the reader's platform", () => {
 			expect(card.textContent).toContain("x64 and ARM PCs");
 			expect(card.textContent).toContain("choose More info, then Run anyway");
 
-			expect(rows()).toEqual(["macOS", "iOS", "Android"]);
+			expect(rows()).toEqual(["macOS", "iOS", "Android", "Linux"]);
 			vi.restoreAllMocks();
 		}
 	});
@@ -475,6 +480,71 @@ describe("the reader's platform", () => {
 		expect(screen.queryByRole("heading", { name: "Other platforms" })).toBeNull();
 
 		const cards = screen.getAllByRole("region").map((card) => card.getAttribute("aria-label"));
-		expect(cards).toEqual(["macOS", "iOS", "Android", "Windows"]);
+		expect(cards).toEqual(["macOS", "iOS", "Android", "Windows", "Linux"]);
+	});
+
+	/*
+	 * Linux is two files, and the page cannot tell which processor the reader
+	 * has (Chrome says x86_64 on an ARM laptop too), so both are offered, the
+	 * usual one first and amber, with what to do with an AppImage before the
+	 * press: a browser saves it without the right to run, and a double click
+	 * then does nothing.
+	 */
+	it("puts Linux first on Linux, with a download for each processor and every other app under it", async () => {
+		on(AGENTS.linux);
+		await open(OFFERED);
+
+		const card = screen.getByRole("region", { name: "Linux" });
+		expect(before(card, screen.getByRole("heading", { name: "Other platforms" }))).toBe(true);
+
+		const downloads = within(card).getAllByRole("link");
+		expect(downloads.map((one) => [one.textContent, one.getAttribute("href")])).toEqual([
+			["Download for Linux (x86-64)", "/api/apps/linux-x86_64"],
+			["Download for Linux (ARM64)", "/api/apps/linux-aarch64"],
+		]);
+		expect(card.textContent).toContain("Allow the AppImage to run as a program");
+		expect(card.textContent).toContain("Choose ARM64 for a computer with an ARM processor.");
+
+		expect(rows()).toEqual(["macOS", "iOS", "Android", "Windows"]);
+	});
+
+	it("offers the one Linux build there is, and says so where there is none", async () => {
+		on(AGENTS.linux);
+		await open({ ...OFFERED, linux: { x86_64: { available: false }, aarch64: OFFERED.linux.aarch64 } });
+
+		const card = screen.getByRole("region", { name: "Linux" });
+		expect(within(card).getAllByRole("link").map((one) => one.getAttribute("href"))).toEqual(["/api/apps/linux-aarch64"]);
+
+		cleanup();
+		on(AGENTS.mac);
+		// A server from before the Linux app says nothing of it at all.
+		const { linux: _, ...before_linux } = OFFERED;
+		await open(before_linux);
+
+		const row = screen.getByRole("group", { name: "Linux" });
+		expect(row.textContent).toContain("The Linux app is not available yet.");
+		expect(row.querySelector("a")).toBeNull();
+		expect(row.textContent).not.toContain("linux.sh");
+	});
+
+	/*
+	 * The one-line install was on the full card alone, which only a Linux
+	 * browser is shown. The owner read the page on a Mac, to pass the command to
+	 * somebody on Linux, and found it nowhere: the Linux row under "Other
+	 * platforms" had the two downloads and nothing else.
+	 */
+	it("gives the one-line install on the Linux row too, for a reader on another computer", async () => {
+		on(AGENTS.mac);
+		await open(OFFERED);
+
+		const command = `curl -fsSL ${window.location.origin}/linux.sh | sh`;
+		const row = screen.getByRole("group", { name: "Linux" });
+		expect(within(row).getByText(command)).toBeTruthy();
+		expect(within(row).getByRole("button", { name: "Copy" })).toBeTruthy();
+
+		cleanup();
+		on(AGENTS.linux);
+		await open(OFFERED);
+		expect(within(screen.getByRole("region", { name: "Linux" })).getByText(command)).toBeTruthy();
 	});
 });

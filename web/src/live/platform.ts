@@ -21,7 +21,7 @@
  * an iPad would be offered the wrong app first.
  */
 
-export type Platform = "mac" | "ios" | "windows" | "android";
+export type Platform = "mac" | "ios" | "windows" | "android" | "linux";
 
 /** What the browser says about itself, as the guess reads it. */
 export interface Said {
@@ -37,8 +37,8 @@ export function guessPlatform({ userAgent, hint, maxTouchPoints = 0 }: Said): Pl
 
 	// The hint's own vocabulary: "Android", "Chrome OS", "Chromium OS", "iOS",
 	// "Linux", "macOS", "Windows" or "Unknown". A value it names is an answer,
-	// "nothing promoted" included for Linux and ChromeOS, which have no app of
-	// their own; anything else falls through to the string.
+	// "nothing promoted" included for ChromeOS, which has no app of its own;
+	// anything else falls through to the string.
 	switch (hint?.trim().toLowerCase()) {
 		case "android":
 			return "android";
@@ -49,6 +49,7 @@ export function guessPlatform({ userAgent, hint, maxTouchPoints = 0 }: Said): Pl
 		case "macos":
 			return touch ? "ios" : "mac";
 		case "linux":
+			return "linux";
 		case "chrome os":
 		case "chromium os":
 			return undefined;
@@ -60,6 +61,9 @@ export function guessPlatform({ userAgent, hint, maxTouchPoints = 0 }: Said): Pl
 	if (/\bAndroid\b/.test(userAgent)) return "android";
 	if (/\bWindows\b/.test(userAgent)) return "windows";
 	if (/\bMacintosh\b|\bMac OS X\b/.test(userAgent)) return touch ? "ios" : "mac";
+	// Linux by name, after Android, which says it too. ChromeOS says CrOS and
+	// not Linux, and a BSD says X11 and not Linux; the app runs on neither.
+	if (/\bLinux\b/.test(userAgent) && !/\bCrOS\b/.test(userAgent)) return "linux";
 
 	return undefined;
 }

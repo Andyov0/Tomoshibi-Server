@@ -25,8 +25,16 @@ setting rather than the default: a relay outside such a network should stay
 readable, because being able to ask whether it is up is worth having.
 */
 
-// silence closes any request that is not a WebSocket upgrade, without
+// silence closes any request that is not a WebSocket upgrade to the signalling
+// path, or a call from the control node to the management API, without
 // answering it.
+//
+// The path is part of the test, and was not. An upgrade to any path got an
+// answer: Go's "404 page not found" for most of them, the media server's own
+// errors for /twirp, a 401 for /rtc. So a prober that added an Upgrade header
+// learnt that the port was an HTTP server, which of the three it was, and from
+// the wording what software ran it — the comment above said a prober learnt
+// only that the port completed TLS, and it learnt a good deal more.
 //
 // Hijacked and closed rather than answered with a status. Every status is an
 // answer, and an answer is the thing being avoided: a prober that receives 400
@@ -35,7 +43,7 @@ readable, because being able to ask whether it is up is worth having.
 // nothing to say should look like.
 func silence(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isUpgrade(r) || carriesCredentials(r) {
+		if (isUpgrade(r) && signalling(r.URL.Path)) || (carriesCredentials(r) && managing(r.URL.Path)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -75,6 +83,18 @@ func silence(next http.Handler) http.Handler {
 // a relay.
 func carriesCredentials(r *http.Request) bool {
 	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// signalling is the media server's signalling socket, which is the only thing
+// a client opens on a relay.
+func signalling(path string) bool {
+	return path == "/rtc" || strings.HasPrefix(path, "/rtc/")
+}
+
+// managing is where the control node calls a relay: the media server's room
+// service and this server's counters and certificate, all under /twirp/.
+func managing(path string) bool {
+	return strings.HasPrefix(path, "/twirp/")
 }
 
 // isUpgrade reports whether this request is asking to become a WebSocket.

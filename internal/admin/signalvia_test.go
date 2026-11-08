@@ -31,7 +31,7 @@ func TestSignallingThroughAnotherRelayIsSetOnlyToOneThatSignals(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 
 	for _, name := range []string{"hongkong", "guangzhou", "shanghai"} {
-		if err := st.AddRelay(store.Relay{Name: name, URL: "wss://" + name + ".invalid", Enabled: true}); err != nil {
+		if err := st.AddRelay(store.Relay{Name: name, URL: "wss://" + name + ".invalid", Enabled: true, Probe: name + ".invalid:39218"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -98,8 +98,8 @@ func TestARelaySignalledThroughIsRenamedAndRemovedWithTheRelaysThatNameIt(t *tes
 
 	for _, relay := range []store.Relay{
 		{Name: "hongkong", URL: "wss://hongkong.invalid", Enabled: true},
-		{Name: "guangzhou", URL: "wss://guangzhou.invalid", Enabled: true, SignalVia: "hongkong"},
-		{Name: "wuhan", URL: "wss://wuhan.invalid", Enabled: true, SignalVia: "atlantis"},
+		{Name: "guangzhou", URL: "wss://guangzhou.invalid", Enabled: true, SignalVia: "hongkong", Probe: "guangzhou.invalid:39218"},
+		{Name: "wuhan", URL: "wss://wuhan.invalid", Enabled: true, SignalVia: "atlantis", Probe: "wuhan.invalid:39218"},
 	} {
 		if err := st.AddRelay(relay); err != nil {
 			t.Fatal(err)
@@ -154,4 +154,86 @@ func reason(recorder *httptest.ResponseRecorder) string {
 	}
 	_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 	return body.Error
+}
+
+// A relay that signals through another is one no TLS reaches, and a client
+// measures a relay with no probe address by opening TLS to it. So the one may
+// not be set without the other, and taking the probe away afterwards is
+// refused too.
+func TestARelayThatSignalsThroughAnotherNeedsAProbe(t *testing.T) {
+	api, mux := mount(t, []config.Admin{{Trip: room.Trip(key, "operator"), Name: "olga", Can: []string{config.ManageRelays}}})
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "meet.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	for _, relay := range []store.Relay{
+		{Name: "hongkong", URL: "wss://hongkong.invalid", Enabled: true},
+		{Name: "guangzhou", URL: "wss://guangzhou.invalid", Enabled: true},
+	} {
+		if err := st.AddRelay(relay); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api.relays = st
+	cookie := signIn(t, api, "operator")
+
+	if got := call(mux, http.MethodPatch, "/api/admin/relays/guangzhou", cookie, `{"signalVia":"hongkong"}`); reason(got) != "relay_needs_probe" {
+		t.Errorf("signalling through another without a probe answered %d %q, want relay_needs_probe", got.Code, reason(got))
+	}
+
+	if got := call(mux, http.MethodPatch, "/api/admin/relays/guangzhou", cookie, `{"signalVia":"hongkong","probe":"guangzhou.invalid:39218"}`); got.Code != http.StatusOK {
+		t.Fatalf("signalling through another with a probe answered %d %q", got.Code, reason(got))
+	}
+
+	if got := call(mux, http.MethodPatch, "/api/admin/relays/guangzhou", cookie, `{"probe":""}`); reason(got) != "relay_needs_probe" {
+		t.Errorf("taking the probe away answered %d %q, want relay_needs_probe", got.Code, reason(got))
+	}
+}
+
+// A relay that carries media only, with nothing answering to carry its
+// signalling, is offered to nobody; the page says why on its row, because
+// otherwise the only sign is that nobody lands there.
+func TestTheRelaysPageSaysWhyAStrandedRelayIsOfferedToNobody(t *testing.T) {
+	api, mux := mount(t, []config.Admin{{Trip: room.Trip(key, "operator"), Name: "olga", Can: []string{config.ManageRelays}}})
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "meet.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	for _, relay := range []store.Relay{
+		{Name: "hongkong", URL: "wss://hongkong.invalid", Enabled: true},
+		{Name: "guangzhou", URL: "wss://guangzhou.invalid", Enabled: true, SignalVia: "hongkong", Probe: "guangzhou.invalid:39218"},
+		{Name: "wuhan", URL: "wss://wuhan.invalid", Enabled: false, SignalVia: "hongkong", Probe: "wuhan.invalid:39218"},
+	} {
+		if err := st.AddRelay(relay); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api.relays = st
+	api.UseStranded(func(relay store.Relay) bool { return relay.SignalVia != "" })
+	cookie := signIn(t, api, "operator")
+
+	var listed struct {
+		Relays []relayView `json:"relays"`
+	}
+	if err := json.Unmarshal(call(mux, http.MethodGet, "/api/admin/relays", cookie, "").Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, relay := range listed.Relays {
+		want := ""
+		if relay.Name == "guangzhou" {
+			want = "no_signalling"
+		}
+
+		// Wuhan is out of service already, which the row says by itself.
+		if relay.Unavailable != want {
+			t.Errorf("%s is shown as unavailable %q, want %q", relay.Name, relay.Unavailable, want)
+		}
+	}
 }

@@ -1,3 +1,4 @@
+import { useNight } from "@/hooks/useAppearance";
 import { useT } from "@/hooks/useT";
 import { useLingering } from "@/hooks/useLingering";
 import { cn } from "@/lib/utils";
@@ -28,6 +29,13 @@ import { Loader2 } from "lucide-react";
 export function Moving({ to }: { to?: string }) {
 	const t = useT();
 	const { mounted, leaving } = useLingering(to !== undefined);
+
+	// Part of the call, and drawn while there is none: the room has come down
+	// and the next is not up yet, and what is underneath for those seconds is
+	// the join screen. Held for as long as this is on screen, so the screen
+	// under it stays as dark as the call on either side of it rather than
+	// turning to day for the length of a move and back again.
+	useNight(mounted);
 
 	if (!mounted) return null;
 

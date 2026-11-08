@@ -49,9 +49,16 @@ export function soundOf(kind: "camera" | "screen"): Sound {
 	return kind === "screen" ? "screen" : "voice";
 }
 
+/**
+ * The loudest anybody may make somebody else: three times as loud as it was
+ * sent. Above one it is played through Web Audio (live/boost.ts), and the
+ * slider says above one that it can harm hearing (the owner, 2026-11-05).
+ */
+export const MAX_VOLUME = 3;
+
 /** What somebody has decided about one sound. */
 export interface Setting {
-	/** Between silent and as loud as it was sent. */
+	/** From silent to three times as loud as it was sent; one is as sent. */
 	volume: number;
 	/**
 	 * Stopped at the media server rather than turned down here.
@@ -173,17 +180,17 @@ function write(identity: string, sound: Sound, next: Setting): void {
 }
 
 /**
- * A volume the browser will accept.
+ * A volume this page will play.
  *
- * `HTMLMediaElement.volume` throws outside nought to one rather than clamping,
- * and this application mixes through elements rather than through Web Audio, so
- * there is no gain node that would take a louder number. A slider cannot produce
- * a bad value; a storage entry somebody edited by hand can.
+ * `HTMLMediaElement.volume` throws outside nought to one rather than clamping;
+ * a volume above one is played through a gain node instead (live/boost.ts), up
+ * to MAX_VOLUME. A slider cannot produce a bad value; a storage entry somebody
+ * edited by hand can.
  */
 function level(value: unknown): number {
 	if (typeof value !== "number" || !Number.isFinite(value)) return AS_SENT.volume;
 
-	return Math.min(1, Math.max(0, value));
+	return Math.min(MAX_VOLUME, Math.max(0, value));
 }
 
 function load(): Book {
